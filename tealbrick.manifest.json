@@ -2717,6 +2717,26 @@
       "idempotency": "supported",
       "receipt": true,
       "audience": "person"
+    },
+    {
+      "id": "data_access_log",
+      "title": "Recent access to your chat accounts",
+      "description": "The owner sees which app asked Connect for chat data: the last 100 data_accounts_list, data_catalog and data_pull calls, newest first (app, op, time, account, rows, ok or refused). A refused call repeated within a minute is one line with a count. No message text. Agents cannot use this.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
     }
   ],
   "scopes": [

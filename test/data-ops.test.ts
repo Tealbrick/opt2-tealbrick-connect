@@ -20,7 +20,7 @@ import { parseDiscordDeletes, parseDiscordMessage, parseDiscordUpdate } from "..
 import { parseSlackEvent } from "../src/channels/providers/slack.ts";
 import { parseTelegramUpdate } from "../src/channels/providers/telegram.ts";
 import { ChannelHub, INBOX_RETENTION_MS } from "../src/channels/service.ts";
-import { DATA_OPS_VERIFIED_PRODUCT_SUPPORTED, verifiedAppProduct } from "../src/data/caller.ts";
+import { verifiedAppProduct } from "../src/data/caller.ts";
 import { encodeCursor, pullMessages, RetryLater } from "../src/data/messages.ts";
 import { DATA_APPS } from "../src/data/shares.ts";
 import { eventCtx, handlerOf, memorySecrets, root, testCtx, testDb } from "./helpers.ts";
@@ -660,7 +660,6 @@ test("A: an app caller without a verified product is refused caller_unverified 4
 
 test("A: verifiedAppProduct answers the verified product of an app caller and null otherwise (no name, no id, no input)", () => {
   const db = testDb();
-  assert.equal(DATA_OPS_VERIFIED_PRODUCT_SUPPORTED, true);
   assert.equal(verifiedAppProduct(testCtx({ db, app: KNOWLEDGE, appName: "Observer", appProduct: "knowledge" })), "knowledge");
   assert.equal(verifiedAppProduct(testCtx({ db, app: KNOWLEDGE, appName: "Observer" })), null, "an app without a product: null, whatever the name");
   assert.equal(verifiedAppProduct(testCtx({ db, app: KNOWLEDGE, appName: "Observer", appProduct: "" })), null, "an empty product is no product");
@@ -1008,4 +1007,92 @@ test("I: the catalog at the available level is exactly names, kinds, counts and 
   });
   const text = JSON.stringify(catalog);
   for (const leak of ["secret launch plan", "Anna", "123456789", "777", "m1", "m2"]) assert.ok(!text.includes(leak), `catalog leaks ${leak}`);
+});
+
+// ── PR #14 review: audit fails closed, refusals are throttled, the owner can read the access list ──
+
+const auditCount = (db: ReturnType<typeof testDb>) => Number(db.prepare("SELECT COUNT(*) AS n FROM connect_data_audit").get()?.n);
+const breakAudit = (db: ReturnType<typeof testDb>) => db.exec("CREATE TRIGGER audit_insert_fails BEFORE INSERT ON connect_data_audit BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
+const repairAudit = (db: ReturnType<typeof testDb>) => db.exec("DROP TRIGGER audit_insert_fails");
+
+test("S3-1: when the audit line cannot be written a served call answers 503 audit_unavailable and returns NO data (all three ops); refused calls stay refused", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1, { text: "private words" }));
+  const calls: [string, Record<string, unknown>][] = [["data_accounts_list", {}], ["data_catalog", { account: acct }], ["data_pull", { account: acct, dataset: "messages" }]];
+  breakAudit(s.db);
+  for (const [op, input] of calls) {
+    const r = await refusal(s.op(op, input, s.ctx.knowledge));
+    assert.deepEqual([r.code, r.httpStatus], ["audit_unavailable", 503], op);
+    assert.ok(!JSON.stringify(r).includes("private words"));
+    // a refused call is still the same refusal (no data was at stake)
+    assert.equal((await refusal(s.op(op, input, s.ctx.agent))).code, "no_access");
+    assert.equal((await refusal(s.op(op, input, s.ctx.unverified))).code, "caller_unverified");
+  }
+  assert.equal(auditCount(s.db), 0);
+  assert.ok(s.logs.some((l) => l.level === "error" && /audit line could not be written/u.test(l.msg)), "the failure is an error in the log");
+  repairAudit(s.db);
+  const page = await s.pull(acct);
+  assert.equal(page.rows.length, 1, "served again once the audit works");
+  assert.equal(auditCount(s.db), 1);
+});
+
+test("S4: a refused call is audited once per minute per caller, product, op and code; the rest are counted; a served call is never folded", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  for (let n = 0; n < 5; n++) await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  await refusal(s.op("data_catalog", { account: acct }, s.ctx.observer)); // another op: its own line
+  await refusal(s.op("data_pull", { account: "cna_nope", dataset: "messages" }, s.ctx.rogue)); // another product
+  for (let n = 0; n < 3; n++) await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.unverified)); // another code
+  for (let n = 0; n < 3; n++) await s.pull(acct);
+  const rows = s.db.prepare("SELECT op, outcome, product, repeats FROM connect_data_audit ORDER BY id").all().map((r) => ({ ...r }));
+  assert.deepEqual(rows, [
+    { op: "data_pull", outcome: "not_found", product: "observer", repeats: 4 },
+    { op: "data_catalog", outcome: "not_found", product: "observer", repeats: 0 },
+    { op: "data_pull", outcome: "not_found", product: "rogue-app", repeats: 0 },
+    { op: "data_pull", outcome: "caller_unverified", product: null, repeats: 2 },
+    { op: "data_pull", outcome: "ok", product: "knowledge", repeats: 0 },
+    { op: "data_pull", outcome: "ok", product: "knowledge", repeats: 0 },
+    { op: "data_pull", outcome: "ok", product: "knowledge", repeats: 0 },
+  ]);
+  // after the minute the same refusal writes a new line
+  s.db.prepare("UPDATE connect_data_audit SET at = at - 61000").run();
+  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  assert.equal(auditCount(s.db), 8);
+});
+
+test("S3-2: data_access_log gives the owner the last 100 calls, newest first, with app name, account label, rows and ok/refused; no text; apps and agents are refused", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1", "Support bot");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1, { text: "private words" }), s.msg(2));
+  await s.pull(acct);
+  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  const out = (await s.op("data_access_log", {})) as unknown as { entries: Record<string, unknown>[] };
+  assert.deepEqual(
+    out.entries.map(({ id: _id, at: _at, ...rest }) => rest),
+    [
+      { op: "data_pull", callerType: "app", product: "observer", app: "Observer", account: "Support bot", ok: false, outcome: "not_found", rows: 0, repeats: 1 },
+      { op: "data_pull", callerType: "app", product: "knowledge", app: "Knowledge", account: "Support bot", ok: true, outcome: "ok", rows: 2, repeats: 0 },
+    ],
+  );
+  assert.ok(!JSON.stringify(out).includes("private words"));
+  assert.match(String(out.entries[0]?.at), /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/u);
+  assert.equal((await refusal(s.op("data_access_log", {}, s.ctx.knowledge))).code, "no_access");
+  assert.equal((await refusal(s.op("data_access_log", {}, s.ctx.agent))).code, "no_access");
+  // only the last 100
+  const insert = s.db.prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, row_count) VALUES (?, 'data_catalog', 'ok', 'app', ?, 'knowledge', 0)");
+  for (let n = 0; n < 150; n++) insert.run(Date.now(), `ins_${n}`);
+  const big = (await s.op("data_access_log", {})) as unknown as { entries: { id: number }[] };
+  assert.equal(big.entries.length, 100);
+  assert.ok(big.entries.every((e, i) => i === 0 || e.id < (big.entries[i - 1] as { id: number }).id), "newest first");
+});
+
+test("manifest: data_access_log is a person read without receipt", () => {
+  const op = manifest.operations.find((o) => o.id === "data_access_log");
+  assert.ok(op);
+  assert.deepEqual([op.audience, op.effect, op.crud, op.receipt, op.idempotency], ["person", "read", ["read"], false, "none"]);
 });

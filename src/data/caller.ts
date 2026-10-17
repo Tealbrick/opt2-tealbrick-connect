@@ -11,9 +11,6 @@
  */
 import type { OpContext } from "@opt2-tealbrick/spec/sdk";
 
-/** true: `verifiedAppProduct` answers from the SDK's verified caller product (miniapp-sdk >= 0.1.27). */
-export const DATA_OPS_VERIFIED_PRODUCT_SUPPORTED = true;
-
 /** The verified product id of an app caller, or null (not an app, no product, or an empty one). */
 export function verifiedAppProduct(ctx: OpContext): string | null {
   const caller = ctx.caller;

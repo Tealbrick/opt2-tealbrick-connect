@@ -1,5 +1,5 @@
 /**
- * C230 R3 on the REAL SDK (miniapp-sdk 0.1.27, SDK-CALLER-PRODUCT): Connect runs under `startApp` behind a fake bridge and
+ * C230 R3 on the REAL SDK (miniapp-sdk 0.1.28, SDK-CALLER-PRODUCT): Connect runs under `startApp` behind a fake bridge and
  * the data_* ops are called over HTTP with signed grants and call proofs. The SDK itself builds `ctx.caller.product` from the
  * Portal-signed slice (`companionCallers`), so this test proves the identity Connect keys on is the verified product and
  * not the app's name: an app named "Observer" whose verified product is Knowledge reads exactly what the owner shared with

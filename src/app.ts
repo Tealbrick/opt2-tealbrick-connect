@@ -533,9 +533,14 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     quarantined?: number;
   }
   /**
-   * One audit line per data_* call, refused ones too (outcome = the refusal code): who called (type and id), which op, the
-   * verified product when there is one, account, dataset, row count. Never message text. The account and dataset are
-   * recorded as the caller named them (clipped), because a refusal has no resolved account.
+   * One audit line per data_* call (who called: type and id; which op; the verified product when there is one; account,
+   * dataset, row count). Never message text. The account and dataset are recorded as the caller named them (clipped),
+   * because a refusal has no resolved account.
+   *
+   * FAIL CLOSED: a SERVED call writes its line BEFORE the answer is returned; when the line cannot be written the call
+   * answers 503 `audit_unavailable` and the data is dropped (nothing leaves unrecorded). A REFUSED call carries no data, so
+   * it stays refused when its line cannot be written (the failure is an error in the log). Refused calls are throttled: the
+   * same caller, product, op and code write one line per minute, and `repeats` counts the rest.
    */
   const audited = async (op: string, ctx: OpContext, input: Json, body: (note: AuditNote) => Promise<Json>): Promise<Json> => {
     const i = asInput(input);
@@ -543,25 +548,39 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       ...(typeof i.account === "string" ? { account: i.account.slice(0, 64) } : {}),
       ...(typeof i.dataset === "string" ? { dataset: i.dataset.slice(0, 64) } : {}),
     };
-    const record = (outcome: string) => {
+    const logLine = (outcome: string) => ctx.log.info(op, { outcome, caller: ctx.caller.type, app: note.product ?? null, account: note.account ?? null, rows: note.rows ?? 0, quarantined: note.quarantined ?? 0 });
+    const insert = (outcome: string, now: number) =>
+      ctx.db
+        .prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, account_id, dataset, row_count, quarantined) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(now, op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null, note.account ?? null, note.dataset ?? null, note.rows ?? 0, note.quarantined ?? 0);
+    const recordRefused = (outcome: string) => {
       try {
-        ctx.db
-          .prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, account_id, dataset, row_count, quarantined) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-          .run(Date.now(), op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null, note.account ?? null, note.dataset ?? null, note.rows ?? 0, note.quarantined ?? 0);
-        ctx.log.info(op, { outcome, caller: ctx.caller.type, app: note.product ?? null, account: note.account ?? null, rows: note.rows ?? 0, quarantined: note.quarantined ?? 0 });
+        const now = Date.now();
+        const same = ctx.db
+          .prepare("SELECT id FROM connect_data_audit WHERE at > ? AND op = ? AND outcome = ? AND caller_type = ? AND caller_id = ? AND product IS ? ORDER BY id DESC LIMIT 1")
+          .get(now - AUDIT_REFUSAL_WINDOW_MS, op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null);
+        if (same) ctx.db.prepare("UPDATE connect_data_audit SET repeats = repeats + 1 WHERE id = ?").run(Number(same.id));
+        else insert(outcome, now);
+        logLine(outcome);
       } catch (error) {
-        // Not silent: the call itself goes on, the failed audit line is an error in the log.
         ctx.log.error("data audit line could not be written", { op, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
       }
     };
+    let out: Json;
     try {
-      const out = await body(note);
-      record("ok");
-      return out;
+      out = await body(note);
     } catch (error) {
-      record(typeof (error as { code?: unknown }).code === "string" ? String((error as { code: string }).code).slice(0, 64) : "error");
+      recordRefused(typeof (error as { code?: unknown }).code === "string" ? String((error as { code: string }).code).slice(0, 64) : "error");
       throw error;
     }
+    try {
+      insert("ok", Date.now());
+    } catch (error) {
+      ctx.log.error("data audit line could not be written; the answer is withheld", { op, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+      return fail("audit_unavailable", "Connect could not record this access, so it sent no data. Try again later.", 503, { retryable: true });
+    }
+    logLine("ok");
+    return out;
   };
 
   const handlers: Record<string, Handler | HandlerSpec> = {
@@ -1029,6 +1048,36 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         return { account: id, product, level, shares: s.shares.forAccount(id).map(shareView) } as unknown as Json;
       });
     },
+    // The owner (a person) sees which app asked for what: the last ACCESS_LOG_LIMIT audit lines, newest first. No message text.
+    async data_access_log(_input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner sees the access list.", 403);
+        const s = services(ctx);
+        const labels = new Map<string, string>();
+        const entries = ctx.db
+          .prepare("SELECT id, at, op, outcome, caller_type, product, account_id, row_count, repeats FROM connect_data_audit ORDER BY id DESC LIMIT ?")
+          .all(ACCESS_LOG_LIMIT)
+          .map((r) => {
+            const accountId = r.account_id === null ? null : String(r.account_id);
+            if (accountId !== null && !labels.has(accountId)) labels.set(accountId, s.accounts.get(accountId)?.label ?? "");
+            const product = r.product === null ? null : String(r.product);
+            return {
+              id: Number(r.id),
+              at: new Date(Number(r.at)).toISOString(),
+              op: String(r.op),
+              callerType: String(r.caller_type),
+              product,
+              app: product === null ? null : (DATA_APPS[product] ?? product),
+              account: accountId === null ? null : labels.get(accountId) || null,
+              ok: r.outcome === "ok",
+              outcome: String(r.outcome),
+              rows: Number(r.row_count),
+              repeats: Number(r.repeats),
+            };
+          });
+        return { entries } as unknown as Json;
+      });
+    },
     async account_connect(input, ctx) {
       return guard(async () => {
         const s = services(ctx);
@@ -1433,6 +1482,10 @@ type IdentityRow = {
   identity: string;
 };
 const IDENTITIES_PAGE = 200;
+/** A refused data_* call writes one audit line per minute for the same caller, product, op and code (the rest are counted). */
+const AUDIT_REFUSAL_WINDOW_MS = 60_000;
+/** The owner's "Recent access" list shows this many audit lines. */
+const ACCESS_LOG_LIMIT = 100;
 const rowKey = (r: IdentityRow): string => `${r.agent}\u0000${r.channel}\u0000${r.identity}`;
 const encodeCursor = (key: string): string => Buffer.from(key, "utf8").toString("base64url");
 

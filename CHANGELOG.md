@@ -33,6 +33,14 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - UI: the share control re-reads the list after every save.
 - Migration 0011: per-account `rev` (renumbered in one pass with a window function and `UPDATE ... FROM`: 200 000 rows in about 0.2 s), `sender_is_bot`, `include_history`, `unmatched_changes`, an index on `received_at` for the purge, `connect_account_rev`, `connect_data_audit`; the global counter table of 0010 is dropped.
 
+### Review fixes (PR #14)
+- Audit fails closed: a served `data_accounts_list`, `data_catalog` or `data_pull` writes its audit line BEFORE the answer is returned. When the line cannot be written the call answers 503 `audit_unavailable` and sends no data (before: the data went out and the failure was only logged). A refused call stays refused.
+- Refused calls are throttled: the same caller, product, op and code write one audit line per minute; further ones raise `repeats` on that line (migration 0012). A served call always has its own line.
+- Owner op `data_access_log` and, in Accounts, "Recent access": the last 100 calls, newest first (app, request, time, account, messages, served or refused). No message text. The record is kept 90 days.
+- Accounts: under each app row, one plain sentence says what that level gives the app: every conversation of the bot; only messages from the share time on unless "Include the last 30 days"; names and counts of every conversation for the whole log at the catalog level; revoke at any time.
+- The unused `DATA_OPS_VERIFIED_PRODUCT_SUPPORTED` constant is removed.
+- **Do not roll back from 0.6.0 to 0.5.11.** Migrations 0010 to 0012 have no down step. A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
+
 ### Changed
 - `channel_reply` to a message that was deleted answers 404 `channel_message_unknown` (a deleted message is no longer in the agent inbox). Accepted.
 - `channel_inbox` returns a `nextSeq` that moves past rows it hides (deleted messages, other bots' messages), so the next call does not scan them again.
@@ -46,4 +54,4 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - Buzz is not a connected account and is not part of the dataset in this phase.
 
 ### Gaps
-- Needs a miniapp-sdk that names the verified caller product (SDK-CALLER-PRODUCT, expected 0.1.27). Then `verifiedAppProduct` in `src/data/caller.ts` reads it and `DATA_OPS_VERIFIED_PRODUCT_SUPPORTED` becomes true.
+- Calls the SDK itself rejects (bad grant, `grant_invalid` on a `prd`/slice mismatch, paused, stale slice) never reach a handler, so they are not in the access list. By design.
