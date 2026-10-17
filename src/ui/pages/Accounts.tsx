@@ -1,9 +1,10 @@
-import { Button, Card, EmptyState, Select, TextInput } from "@opt2-tealbrick/ui";
+import { Button, Card, EmptyState, Select, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { type FormEvent, useMemo, useState } from "react";
 
 import { ConfirmDialog, KindBadge, LoadError, Notice, PageHead, ServiceTile, StatusLabel } from "../components.tsx";
 import { errorText, useLoad } from "../hooks.ts";
 import {
+  type AccessEntry,
   type AccessLevel,
   type Account,
   type AgentInfo,
@@ -14,6 +15,7 @@ import {
   agentsList,
   catalogAccountTest,
   type DataApp,
+  dataAccessLog,
   type McpToolRow,
   mcpToolReadSet,
   mcpToolsList,
@@ -39,6 +41,7 @@ const LEVEL_OPTIONS: { value: Picked; label: string }[] = [
 
 export function Accounts() {
   const accounts = useLoad(accountsOverview);
+  const access = useLoad(dataAccessLog);
   const agents = useLoad(agentsList);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -117,6 +120,10 @@ export function Accounts() {
           </ul>
         </section>
       ))}
+
+      {accounts.data && (accounts.data.accounts.some((a) => a.source === "channel") || (access.data?.entries.length ?? 0) > 0) ? (
+        <RecentAccess entries={access.data?.entries ?? null} error={access.error} busy={access.loading} onReload={() => void access.reload()} />
+      ) : null}
 
       <ConfirmDialog
         open={confirm !== null}
@@ -403,9 +410,94 @@ function AppSharing({ account, apps, onChanged }: { account: Account; apps: Data
                 <span className="tb-soft">Include the last 30 days</span>
               </label>
             ) : null}
+            <p className="tb-soft acc-note">{shareSentence(level, current?.includeHistory ?? false, current?.setAt)}</p>
           </div>
         );
       })}
     </fieldset>
+  );
+}
+
+/** One plain sentence per sharing level: what the app really gets (S3-3). */
+function shareSentence(level: ShareLevel, includeHistory: boolean, setAt: string | undefined): string {
+  if (level === "available") return "This app sees the name and message count of every conversation of this bot, for the whole log Connect holds, and no message text. You can stop sharing at any time.";
+  if (level === "shared" && includeHistory) return "This app reads every conversation of this bot: the last 30 days Connect already holds and every new message. You can stop sharing at any time.";
+  if (level === "shared") {
+    const since = setAt ? ` (${new Date(setAt).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })})` : "";
+    return `This app reads every conversation of this bot, but only the messages Connect received from the time you shared${since}; tick “Include the last 30 days” to add the older ones. You can stop sharing at any time.`;
+  }
+  return "This app sees nothing of this connection. Pick a level to share; you can revoke it at any time.";
+}
+
+const ACCESS_OPS: Record<string, string> = {
+  data_accounts_list: "Listed the shared accounts",
+  data_catalog: "Read names and counts",
+  data_pull: "Read messages",
+};
+const REFUSED_TEXT: Record<string, string> = {
+  not_found: "Not shared with this app",
+  scope_denied: "Names and counts only",
+  caller_unverified: "App not verified",
+  no_access: "Not an app",
+  audit_unavailable: "Could not be recorded",
+};
+
+function accessWhen(iso: string): string {
+  return new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * C230 R3 (S3-2): which app asked Connect for chat data, newest first, the last 100 calls. The owner only. No message text.
+ * A refusal repeated within a minute is one line with a count.
+ */
+function RecentAccess({ entries, error, busy, onReload }: { entries: AccessEntry[] | null; error: string | null; busy: boolean; onReload(): void }) {
+  return (
+    <section className="tb-stack" aria-labelledby="recent-access">
+      <div className="group-head">
+        <h2 id="recent-access">Recent access</h2>
+        <Button size="sm" disabled={busy} onClick={onReload}>
+          Refresh
+        </Button>
+      </div>
+      <p className="tb-soft">The last 100 times an app asked Connect for the messages of your chat accounts. Connect keeps this record for 90 days.</p>
+      {error ? <LoadError message={error} busy={busy} onRetry={onReload} /> : null}
+      {entries === null ? (
+        error ? null : (
+          <p className="tb-soft" role="status">
+            Loading access.
+          </p>
+        )
+      ) : entries.length === 0 ? (
+        <EmptyState title="No app has asked for your chat messages yet." />
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>App</th>
+              <th>Request</th>
+              <th>Account</th>
+              <th>Messages</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td className="num">{accessWhen(e.at)}</td>
+                <td>{e.app ?? (e.callerType === "app" ? "An app without a verified product" : e.callerType === "agent" ? "An agent" : e.callerType)}</td>
+                <td>{ACCESS_OPS[e.op] ?? e.op}</td>
+                <td>{e.account ?? ""}</td>
+                <td className="num">{e.op === "data_pull" && e.ok ? e.rows : ""}</td>
+                <td>
+                  <Tag status={e.ok ? "live" : "default"}>{e.ok ? "Served" : `Refused: ${REFUSED_TEXT[e.outcome] ?? e.outcome}`}</Tag>
+                  {e.repeats > 0 ? <span className="tb-soft">{` and ${e.repeats} more in the same minute`}</span> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </section>
   );
 }

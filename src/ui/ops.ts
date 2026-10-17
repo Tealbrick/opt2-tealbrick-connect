@@ -45,6 +45,21 @@ export interface AppShare {
 
 /** R3: what an app may do with a chat account. none = nothing; available = dataset names and counts; shared = pull messages too. */
 export type ShareLevel = "none" | "available" | "shared";
+/** One line of the owner's "Recent access" list (R3 audit): which app asked for what. No message text. */
+export interface AccessEntry {
+  id: number;
+  at: string;
+  op: string;
+  callerType: string;
+  product: string | null;
+  app: string | null;
+  account: string | null;
+  ok: boolean;
+  outcome: string;
+  rows: number;
+  /** identical refusals within the same minute folded into this line */
+  repeats: number;
+}
 export interface DataApp {
   product: string;
   name: string;
@@ -73,6 +88,7 @@ export const servicesSearch = (query: string) => callOp<{ composioKey: boolean; 
 export const accountsOverview = () => callOp<{ accounts: Account[]; dataApps?: DataApp[] }>("accounts_overview", {});
 export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean) =>
   callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", { account, product, level, includeHistory });
+export const dataAccessLog = () => callOp<{ entries: AccessEntry[] }>("data_access_log", {});
 export const accountConnect = (input: { service: string; label: string; kind: AccountKind; agent?: string }) =>
   callOp<{ account: Account; redirectUrl: string }>("account_connect", input);
 export const catalogAccountConnect = (input: {
