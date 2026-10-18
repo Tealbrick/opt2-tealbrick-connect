@@ -37,6 +37,10 @@ export interface Account {
 
 export interface AppShare {
   product: string;
+  /** C240: the app instance the share is bound to (null = a share from before 0.6.0) */
+  instance: string | null;
+  /** false = that instance is gone (removed or reinstalled) or the share is from before 0.6.0: it serves nothing */
+  current: boolean;
   level: ShareLevel;
   /** the owner included the log kept before the share began (30 days) */
   includeHistory: boolean;
@@ -63,6 +67,15 @@ export interface AccessEntry {
 export interface DataApp {
   product: string;
   name: string;
+  /** C240: the installed instances of this app that can call Connect (verified, from the signed slice) */
+  instances?: DataAppInstance[];
+}
+export interface DataAppInstance {
+  instance: string;
+  name: string;
+  provider: string | null;
+  /** runs on the owner's own infrastructure (provider own_infra) */
+  ownInfra: boolean;
 }
 
 export interface BuzzIdentity {
@@ -86,8 +99,14 @@ export type RelayOutcome = { relay: string; ok: true } | { relay: string; ok: fa
 
 export const servicesSearch = (query: string) => callOp<{ composioKey: boolean; catalogAvailable?: boolean; services: ServiceHit[] }>("services_search", { query });
 export const accountsOverview = () => callOp<{ accounts: Account[]; dataApps?: DataApp[] }>("accounts_overview", {});
-export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean) =>
-  callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", { account, product, level, includeHistory });
+export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null) =>
+  callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", {
+    account,
+    product,
+    level,
+    includeHistory,
+    ...(level !== "none" && instance ? { instance } : {}),
+  });
 export const dataAccessLog = () => callOp<{ entries: AccessEntry[] }>("data_access_log", {});
 export const accountConnect = (input: { service: string; label: string; kind: AccountKind; agent?: string }) =>
   callOp<{ account: Account; redirectUrl: string }>("account_connect", input);

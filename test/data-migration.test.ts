@@ -36,3 +36,21 @@ test("migration 0011 renumbers 200 000 log rows (5 accounts) in under 5 s, per a
   const order = db.prepare("SELECT message_id FROM connect_channel_inbox WHERE account_id = 'a1' ORDER BY rev LIMIT 3").all().map((r) => r.message_id);
   assert.deepEqual(order, ["m1", "m6", "m11"]);
 });
+
+test("migration 0013 (C240) adds the share instance; a share from before it keeps NULL and matches no caller", async () => {
+  const { ShareStore } = await import("../src/data/shares.ts");
+  const db = new DatabaseSync(":memory:");
+  const files = readdirSync(dir).filter((n) => n.endsWith(".sql")).sort();
+  assert.ok(files.includes("0013_share_instance.sql"));
+  for (const f of files.filter((n) => n < "0013")) db.exec(sql(f));
+  db.exec(`INSERT INTO connect_accounts (id, service, source, kind, label, owner_agent, status, detail, created_at, updated_at) VALUES ('a1','telegram','channel','as_itself','x','agt_1','connected','',1,1)`);
+  db.exec(`INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at) VALUES ('a1', 'knowledge', 'shared', 1, 5)`);
+  db.exec(sql("0013_share_instance.sql"));
+  const shares = new ShareStore(db as never);
+  assert.equal(shares.get("a1", "knowledge")?.instance, null);
+  assert.equal(shares.forCaller("a1", "knowledge", "ins_01KNOWLEDGE00000000000000"), null);
+  assert.deepEqual(shares.accountsForCaller("knowledge", "ins_01KNOWLEDGE00000000000000"), []);
+  shares.set("a1", "knowledge", "shared", true, "ins_01KNOWLEDGE00000000000000", 9);
+  assert.deepEqual(shares.forCaller("a1", "knowledge", "ins_01KNOWLEDGE00000000000000"), { product: "knowledge", instance: "ins_01KNOWLEDGE00000000000000", level: "shared", includeHistory: true, setAt: 9 });
+  assert.throws(() => shares.set("a1", "observer", "shared", true, null), /needs the app instance/);
+});

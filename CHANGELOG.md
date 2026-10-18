@@ -40,7 +40,15 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - Accounts: under each app row, one plain sentence says what that level gives the app: every conversation of the bot; only messages from the share time on unless "Include the last 30 days"; names and counts of every conversation for the whole log at the catalog level; revoke at any time.
 - Recent access shows a caller without a verified product as "Unverified app" (refused `caller_unverified`).
 - The unused `DATA_OPS_VERIFIED_PRODUCT_SUPPORTED` constant is removed.
-- **Do not roll back from 0.6.0 to 0.5.11.** Migrations 0010 to 0012 have no down step. A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
+
+### A share is bound to one installed app (C240, SDK-COMPANION-CALLERS)
+- `account_app_share` takes `instance` (required unless `level` is `none`). The owner picks it from the installed apps that can call Connect (`ctx.companionCallers()`, person ops, miniapp-sdk 0.1.32 / spec 0.1.48). An instance that is not listed for that product is refused `app_instance_unknown` (404); no instance is refused `instance_required` (400). An SDK without the function lists nothing, so no share can be made (fail closed).
+- A data call is served only when its verified product AND its instance id (`ctx.caller.id`, the verified grant subject) are the pair the owner shared with. Another instance of the same product gets the same `not_found` as an unshared app. A reinstalled app has a new instance id and needs a new share. Nothing is bound on a first call.
+- Migration 0013 adds `connect_account_shares.instance_id`. A share from before it has no instance and serves nobody; Accounts shows it as "Not shared" with a note to share again.
+- Accounts: when two instances of an app are installed the owner picks which one; an app that is not installed says so; an instance on the owner's own server (provider `own_infra`) is named, with "Connect cannot check the code that runs there".
+- `accounts_overview`: `dataApps[].instances` (`instance`, `name`, `provider`, `ownInfra`), and per share `instance` and `current`.
+
+- **Do not roll back from 0.6.0 to 0.5.11.** Migrations 0010 to 0013 have no down step. A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
 
 ### Changed
 - `channel_reply` to a message that was deleted answers 404 `channel_message_unknown` (a deleted message is no longer in the agent inbox). Accepted.

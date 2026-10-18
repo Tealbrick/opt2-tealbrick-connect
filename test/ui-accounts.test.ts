@@ -28,9 +28,17 @@ for (const k of ["window", "document", "navigator", "location", "history", "sess
 }
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
-type Share = { product: string; level: "available" | "shared"; includeHistory: boolean; setAt: string };
+type Share = { product: string; instance: string | null; current: boolean; level: "available" | "shared"; includeHistory: boolean; setAt: string };
+type Inst = { instance: string; name: string; provider: string | null; ownInfra: boolean };
+const K1 = "ins_01KNOWLEDGE00000000000000";
+const O1 = "ins_01OBSERVER0000000000000000";
+const inst = (instance: string, name: string, ownInfra = false): Inst => ({ instance, name, provider: ownInfra ? "own_infra" : "railway", ownInfra });
+const DEFAULT_APPS = () => [
+  { product: "knowledge", name: "Knowledge", instances: [inst(K1, "Knowledge")] },
+  { product: "observer", name: "Observer", instances: [inst(O1, "Observer")] },
+];
 type Entry = { id: number; at: string; op: string; callerType: string; product: string | null; app: string | null; account: string | null; ok: boolean; outcome: string; rows: number; repeats: number };
-const stub: { shares: Share[]; entries: Entry[] } = { shares: [], entries: [] };
+const stub: { shares: Share[]; entries: Entry[]; dataApps: { product: string; name: string; instances: Inst[] }[] } = { shares: [], entries: [], dataApps: DEFAULT_APPS() };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const account = () => ({ id: "cna_1", service: "telegram", source: "channel", kind: "as_itself", label: "Support bot", ownerAgent: "agt_1", status: "connected", detail: "", shares: stub.shares });
 
@@ -40,7 +48,7 @@ globalThis.fetch = (async (input: string | URL | Request) => {
   const path = url.pathname.replace("/a/connect/tb/v1/", "");
   if (path === "session") return json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: [] });
   const op = /^ops\/(.+)$/.exec(path)?.[1];
-  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: [account()], dataApps: [{ product: "knowledge", name: "Knowledge" }, { product: "observer", name: "Observer" }] } });
+  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: [account()], dataApps: stub.dataApps } });
   if (op === "data_access_log") return json(200, { status: "ok", output: { entries: stub.entries } });
   if (op === "tb.agents_list") return json(200, { status: "ok", output: { agents: [{ id: "agt_1", name: "Front desk", status: "active" }] } });
   return json(404, { error: { code: "not_found", message: String(op) } });
@@ -93,8 +101,8 @@ describe("Accounts page: app sharing sentences", () => {
     await none.unmount();
 
     stub.shares = [
-      { product: "knowledge", level: "available", includeHistory: false, setAt: SETAT },
-      { product: "observer", level: "shared", includeHistory: false, setAt: SETAT },
+      { product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT },
+      { product: "observer", instance: O1, current: true, level: "shared", includeHistory: false, setAt: SETAT },
     ];
     const mixed = await mount(h(mod.Accounts));
     const [catalog, fromNow] = notes(mixed.host);
@@ -103,10 +111,52 @@ describe("Accounts page: app sharing sentences", () => {
     assert.equal(notes(mixed.host).length, 2, "one sentence under each app row");
     await mixed.unmount();
 
-    stub.shares = [{ product: "knowledge", level: "shared", includeHistory: true, setAt: SETAT }];
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: true, setAt: SETAT }];
     const history = await mount(h(mod.Accounts));
     assert.match(notes(history.host)[0] ?? "", /reads every conversation of this bot: the last 30 days Connect already holds and every new message\. You can stop sharing at any time\./u);
     await history.unmount();
+  });
+});
+
+describe("Accounts page: a share is bound to one installed app (C240)", () => {
+  const NOTHING = "This app sees nothing of this connection. Pick a level to share; you can revoke it at any time.";
+  it("a share whose app was reinstalled shows Not shared and asks to share again; a removed app says so", async () => {
+    stub.entries = [];
+    stub.shares = [{ product: "knowledge", instance: K1, current: false, level: "shared", includeHistory: true, setAt: SETAT }];
+    stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [inst("ins_01KNOWLEDGETWO00000000000000", "Knowledge")] }];
+    const again = await mount(h(mod.Accounts));
+    assert.deepEqual(notes(again.host), [NOTHING, "The Knowledge you shared with before was removed or installed again, so it gets nothing now. Pick a level to share with the installed Knowledge."]);
+    await again.unmount();
+    stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [] }];
+    const gone = await mount(h(mod.Accounts));
+    assert.deepEqual(notes(gone.host), [NOTHING, "The Knowledge you shared with before was removed, so it gets nothing now."]);
+    await gone.unmount();
+  });
+
+  it("an app that is not installed says how to share; a quiet page has no extra notes", async () => {
+    stub.shares = [];
+    stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [] }];
+    const missing = await mount(h(mod.Accounts));
+    assert.deepEqual(notes(missing.host), [NOTHING, "Install Knowledge in your workspace to share this account with it."]);
+    await missing.unmount();
+    stub.dataApps = DEFAULT_APPS();
+    const quiet = await mount(h(mod.Accounts));
+    assert.deepEqual(notes(quiet.host), [NOTHING, NOTHING], "no reinstall, install or own-server note on the good case");
+    await quiet.unmount();
+  });
+
+  it("names a target on the owner's own server (C240 item 3), and offers a choice when two are installed", async () => {
+    stub.shares = [];
+    stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [inst(K1, "Knowledge", true)] }];
+    const own = await mount(h(mod.Accounts));
+    assert.deepEqual(notes(own.host), [NOTHING, "This Knowledge runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server."]);
+    assert.equal(own.host.querySelector('[aria-label="Which Knowledge gets Support bot"]'), null, "one instance: no choice");
+    await own.unmount();
+    stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [inst(K1, "Knowledge"), inst("ins_01KNOWLEDGETWO00000000000000", "Knowledge lab", true)] }];
+    const two = await mount(h(mod.Accounts));
+    assert.ok(two.host.querySelector('[aria-label="Which Knowledge gets Support bot"]'), "two instances: the owner picks one");
+    await two.unmount();
+    stub.dataApps = DEFAULT_APPS();
   });
 });
 

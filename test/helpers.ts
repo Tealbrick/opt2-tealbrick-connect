@@ -112,6 +112,11 @@ export function testCtx(input: {
   appName?: string;
   /** the VERIFIED product of the companion app caller (SDK >= 0.1.27 `ctx.caller.product`); absent = an app the slice does not list */
   appProduct?: string;
+  /**
+   * TEST DOUBLE of miniapp-sdk 0.1.32 / spec 0.1.48 (SDK-COMPANION-CALLERS, C240): on a PERSON call, `ctx.companionCallers()`
+   * returns these entries (the verified app instances of the current signed slice). Absent = an SDK without the function.
+   */
+  companionCallers?: { product: string; ins: string; name: string; provider?: string | null }[];
   /** SDK workspace (slice / person principal); defaults to `ws` */
   workspace?: string | null;
   publicUrl?: string | null;
@@ -157,6 +162,7 @@ export function testCtx(input: {
     statusChanged() {},
     ownerLink: () => null,
     companionTargets: () => [],
+    ...(input.person && input.companionCallers ? { companionCallers: () => (input.companionCallers ?? []).map((c) => Object.freeze({ ...c })) } : {}),
     appsPolicy: () => null,
     agentScopeRequest: () => null,
     ownerLinkFor: () => null,

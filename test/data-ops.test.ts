@@ -20,7 +20,7 @@ import { parseDiscordDeletes, parseDiscordMessage, parseDiscordUpdate } from "..
 import { parseSlackEvent } from "../src/channels/providers/slack.ts";
 import { parseTelegramUpdate } from "../src/channels/providers/telegram.ts";
 import { ChannelHub, INBOX_RETENTION_MS } from "../src/channels/service.ts";
-import { verifiedAppProduct } from "../src/data/caller.ts";
+import { companionCallersFor, verifiedAppProduct } from "../src/data/caller.ts";
 import { encodeCursor, pullMessages, RetryLater } from "../src/data/messages.ts";
 import { DATA_APPS } from "../src/data/shares.ts";
 import { eventCtx, handlerOf, memorySecrets, root, testCtx, testDb } from "./helpers.ts";
@@ -64,7 +64,7 @@ function fakeProvider(service: ChannelService, sinks: Map<string, InboundSink>, 
 
 const net: ChannelNet = { fetch: (() => Promise.reject(new Error("no network"))) as typeof fetch, webSocket: () => { throw new Error("no ws"); }, now: () => Date.now(), sleep: async () => undefined };
 
-async function setup(options: { history?: ChannelService[]; services?: ChannelService[] } = {}) {
+async function setup(options: { history?: ChannelService[]; services?: ChannelService[]; callers?: { product: string; ins: string; name: string; provider?: string | null }[] } = {}) {
   const sinks = new Map<string, InboundSink>();
   const services = options.services ?? ["telegram", "slack", "discord", "teams"];
   const providers = new Map<ChannelService, ChannelProvider>(services.map((s) => [s, fakeProvider(s, sinks, options.history?.includes(s) ? { readsHistory: true } : {})]));
@@ -80,7 +80,13 @@ async function setup(options: { history?: ChannelService[]; services?: ChannelSe
   await app.events?.agentAdded?.({ id: AGENT as `agt_${string}`, name: "Agent", mode: "free", status: "active" }, eventCtx(db));
   const accounts = new AccountStore(db);
   const hub = new ChannelHub({ db, accounts, secrets: memorySecrets(), providers, net, log });
-  const person = testCtx({ db, person: true, log });
+  // the owner's page sees the verified app instances that can call Connect (test double of miniapp-sdk 0.1.32
+  // ctx.companionCallers, C240); a share binds the product AND the instance picked here
+  const callers = options.callers ?? [
+    { product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "railway" },
+    { product: "observer", ins: OBSERVER, name: "Observer", provider: "railway" },
+  ];
+  const person = testCtx({ db, person: true, log, companionCallers: callers });
   // app callers carry what the real SDK (>= 0.1.27) puts in ctx.caller.product: the product of the Portal-signed slice entry
   const knowledge = testCtx({ db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", log });
   const observer = testCtx({ db, app: OBSERVER, appName: "Observer", appProduct: "observer", log });
@@ -95,7 +101,9 @@ async function setup(options: { history?: ChannelService[]; services?: ChannelSe
     await new Promise((r) => setTimeout(r, 5));
     return out.account.id;
   };
-  const share = (account: string, product: string, level: string, includeHistory = true) => op("account_app_share", { account, product, level, includeHistory });
+  const instanceOf: Record<string, string> = { knowledge: KNOWLEDGE, observer: OBSERVER };
+  const share = (account: string, product: string, level: string, includeHistory = true, instance: string | undefined = instanceOf[product]) =>
+    op("account_app_share", { account, product, level, includeHistory, ...(level === "none" || instance === undefined ? {} : { instance }) });
   const msg = (n: number, extra: Partial<InboundMessage> = {}): InboundMessage => ({
     conversation: "chan-1",
     conversationName: "general",
@@ -310,11 +318,123 @@ test("accounts_overview lists the shares of a chat account and the apps one can 
   const acct = await s.connect("telegram", "t1");
   s.accounts.create({ service: "gmail", source: "composio", kind: "as_me", label: "Mail", status: "connected" });
   await s.share(acct, "observer", "available");
-  const out = (await s.op("accounts_overview", {})) as unknown as { accounts: { id: string; source: string; shares?: unknown[] }[]; dataApps: { product: string; name: string }[] };
-  assert.deepEqual(out.accounts.find((a) => a.id === acct)?.shares, [{ product: "observer", level: "available", includeHistory: true, setAt: new Date(shareSetAt(s.db, acct, "observer")).toISOString() }]);
+  const out = (await s.op("accounts_overview", {})) as unknown as { accounts: { id: string; source: string; shares?: unknown[] }[]; dataApps: unknown[] };
+  assert.deepEqual(out.accounts.find((a) => a.id === acct)?.shares, [
+    { product: "observer", instance: OBSERVER, current: true, level: "available", includeHistory: true, setAt: new Date(shareSetAt(s.db, acct, "observer")).toISOString() },
+  ]);
   assert.ok(!("dataOpsAvailable" in out), "the gate is gone: sharing works");
   assert.equal(out.accounts.find((a) => a.source === "composio")?.shares, undefined);
-  assert.deepEqual(out.dataApps, [{ product: "knowledge", name: "Knowledge" }, { product: "observer", name: "Observer" }]);
+  assert.deepEqual(out.dataApps, [
+    { product: "knowledge", name: "Knowledge", instances: [{ instance: KNOWLEDGE, name: "Knowledge", provider: "railway", ownInfra: false }] },
+    { product: "observer", name: "Observer", instances: [{ instance: OBSERVER, name: "Observer", provider: "railway", ownInfra: false }] },
+  ]);
+});
+
+// ── C240: a share binds the verified product AND the instance id picked at share time ──
+
+const KNOWLEDGE_2 = "ins_01KNOWLEDGETWO00000000000000";
+type Overview = { accounts: { id: string; shares?: { product: string; instance: string | null; current: boolean; level: string }[] }[]; dataApps: { product: string; instances: { instance: string; name: string; provider: string | null; ownInfra: boolean }[] }[] };
+const DATA_OPS = (acct: string) => [["data_catalog", { account: acct }], ["data_pull", { account: acct, dataset: "messages" }]] as const;
+
+test("C240: the bound instance is served; another instance with the same verified product gets the no-share refusal on every data op", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1));
+  const twin = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge" });
+  // quiet on good: the bound instance reads
+  assert.equal((await s.pull(acct)).rows.length, 1);
+  assert.equal(((await s.op("data_accounts_list", {}, s.ctx.knowledge)) as unknown as { accounts: unknown[] }).accounts.length, 1);
+  // fires on bad: same product, other instance
+  for (const [op, input] of DATA_OPS(acct)) assert.deepEqual((await refusal(s.op(op, input, twin))).code, "not_found", op);
+  assert.deepEqual(((await s.op("data_accounts_list", {}, twin)) as unknown as { accounts: unknown[] }).accounts, []);
+});
+
+test("C240: reinstall = new share. The old instance leaves the slice, the share shows current:false and serves nobody; sharing again binds the new instance", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  const firstSetAt = shareSetAt(s.db, acct, "knowledge");
+  // the owner reinstalled Knowledge: the slice now lists only the new instance
+  const owner = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE_2, name: "Knowledge", provider: "railway" }] });
+  const reinstalled = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge" });
+  const view = (await s.op("accounts_overview", {}, owner)) as unknown as Overview;
+  assert.deepEqual(view.accounts.find((a) => a.id === acct)?.shares?.map((x) => [x.instance, x.current]), [[KNOWLEDGE, false]]);
+  assert.deepEqual(view.dataApps.find((a) => a.product === "knowledge")?.instances.map((i) => i.instance), [KNOWLEDGE_2]);
+  for (const [op, input] of DATA_OPS(acct)) assert.equal((await refusal(s.op(op, input, reinstalled))).code, "not_found", op);
+  await tick();
+  await s.op("account_app_share", { account: acct, product: "knowledge", instance: KNOWLEDGE_2, level: "shared", includeHistory: true }, owner);
+  assert.ok(shareSetAt(s.db, acct, "knowledge") > firstSetAt, "a new instance is a new share (set_at moves)");
+  assert.equal(((await s.op("data_catalog", { account: acct }, reinstalled)) as unknown as { account: string }).account, acct);
+  // the old instance (if it still called) is not served any more
+  assert.equal((await refusal(s.op("data_catalog", { account: acct }, s.ctx.knowledge))).code, "not_found");
+});
+
+test("C240: share time refuses an instance that is missing, unknown, of another product, or not visible (SDK without companionCallers); no row is written", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  const rows = () => Number(s.db.prepare("SELECT COUNT(*) AS n FROM connect_account_shares").get()?.n);
+  const oldSdk = testCtx({ db: s.db, person: true });
+  const cases: [Record<string, unknown>, typeof s.ctx.person, string, number][] = [
+    [{ account: acct, product: "knowledge", level: "shared" }, s.ctx.person, "instance_required", 400],
+    [{ account: acct, product: "knowledge", level: "available", instance: KNOWLEDGE_2 }, s.ctx.person, "app_instance_unknown", 404],
+    [{ account: acct, product: "knowledge", level: "shared", instance: OBSERVER }, s.ctx.person, "app_instance_unknown", 404],
+    [{ account: acct, product: "knowledge", level: "shared", instance: KNOWLEDGE }, oldSdk, "app_instance_unknown", 404],
+  ];
+  for (const [input, ctx, code, status] of cases) {
+    const r = await refusal(s.op("account_app_share", input, ctx));
+    assert.deepEqual([r.code, r.httpStatus], [code, status], JSON.stringify(input));
+  }
+  assert.equal(rows(), 0);
+  // quiet on good: a listed instance of that product is bound
+  await s.share(acct, "knowledge", "available");
+  assert.equal(s.db.prepare("SELECT instance_id FROM connect_account_shares").get()?.instance_id, KNOWLEDGE);
+  // "none" needs no instance and works even when the app is gone from the slice
+  await s.op("account_app_share", { account: acct, product: "knowledge", level: "none" }, oldSdk);
+  assert.equal(rows(), 0);
+});
+
+test("C240: a share row from before migration 0013 (no instance) serves no caller and shows current:false", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  s.db.prepare("INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at) VALUES (?, 'knowledge', 'shared', 1, ?)").run(acct, Date.now());
+  for (const [op, input] of DATA_OPS(acct)) assert.equal((await refusal(s.op(op, input, s.ctx.knowledge))).code, "not_found", op);
+  assert.deepEqual(((await s.op("data_accounts_list", {}, s.ctx.knowledge)) as unknown as { accounts: unknown[] }).accounts, []);
+  const view = (await s.op("accounts_overview", {})) as unknown as Overview;
+  assert.deepEqual(view.accounts.find((a) => a.id === acct)?.shares?.map((x) => [x.instance, x.current]), [[null, false]]);
+});
+
+test("C240 item 3: the owner page marks a target on the owner's own infrastructure (provider own_infra); unknown provider is null", async () => {
+  const s = await setup({
+    callers: [
+      { product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "own_infra" },
+      { product: "observer", ins: OBSERVER, name: "Observer" },
+      { product: "rogue-app", ins: ROGUE, name: "Knowledge", provider: "railway" },
+    ],
+  });
+  const view = (await s.op("accounts_overview", {})) as unknown as Overview;
+  assert.deepEqual(view.dataApps.map((a) => [a.product, a.instances]), [
+    ["knowledge", [{ instance: KNOWLEDGE, name: "Knowledge", provider: "own_infra", ownInfra: true }]],
+    ["observer", [{ instance: OBSERVER, name: "Observer", provider: null, ownInfra: false }]],
+  ]);
+});
+
+test("C240: companionCallersFor reads person calls only and skips malformed entries", () => {
+  const db = testDb();
+  const entries = [
+    { product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "railway" },
+    { product: "", ins: OBSERVER, name: "x" },
+    { product: "observer", ins: "agt_01NOTANINSTANCE0000000000", name: "x" },
+    { product: "observer", ins: OBSERVER, name: "" },
+  ];
+  const person = testCtx({ db, person: true, companionCallers: entries });
+  assert.deepEqual(companionCallersFor(person), [
+    { product: "knowledge", instance: KNOWLEDGE, name: "Knowledge", provider: "railway" },
+    { product: "observer", instance: OBSERVER, name: OBSERVER, provider: null },
+  ]);
+  const app = { ...testCtx({ db, app: KNOWLEDGE, appProduct: "knowledge" }), companionCallers: () => entries };
+  assert.deepEqual(companionCallersFor(app as never), []);
+  assert.deepEqual(companionCallersFor(testCtx({ db, person: true })), []);
 });
 
 // ── pull: paging, cursors ──
@@ -891,10 +1011,10 @@ test("C: set_at is kept by a call that changes nothing and moves when the level 
 test("E: account_app_share writes a receipt line; every data_* call writes one audit line (op, outcome, caller, product, account, dataset, row count; no text), refusals too", async () => {
   const s = await setup();
   const acct = await s.connect("telegram", "t1", "Support bot");
-  const person = testCtx({ db: s.db, person: true });
-  await s.op("account_app_share", { account: acct, product: "knowledge", level: "shared", includeHistory: true }, person);
+  const person = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE, name: "Knowledge" }] });
+  await s.op("account_app_share", { account: acct, product: "knowledge", instance: KNOWLEDGE, level: "shared", includeHistory: true }, person);
   assert.deepEqual(person.receipts.summary, ["Sharing of “Support bot” with Knowledge: messages, read only"]);
-  assert.deepEqual(person.receipts.meta, [{ account: acct, product: "knowledge", level: "shared", includeHistory: true }]);
+  assert.deepEqual(person.receipts.meta, [{ account: acct, product: "knowledge", instance: KNOWLEDGE, level: "shared", includeHistory: true }]);
   s.ingest(acct, s.msg(1, { text: "private words" }), s.msg(2));
   await s.pull(acct, { limit: 1 });
   await s.pull(acct);

@@ -16,7 +16,7 @@ import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
 import { ChannelError, type ChannelNet, type ChannelProvider, type ChannelService as ChannelServiceId } from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
 import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
-import { verifiedAppProduct } from "./data/caller.ts";
+import { companionCallersFor, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
 import { classifyMcpTool, isSendTool, recipientsOf } from "./effect.ts";
@@ -480,32 +480,55 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
   // ── data_* op family (C230 R3): apps only, one confused-deputy rule for all three ops ──
 
   /**
-   * The calling app's VERIFIED product id (ctx.caller.product, miniapp-sdk >= 0.1.27). Persons and agents: no_access. An app
-   * caller without a verified product is refused (fail closed): never its name, its instance id or an input field.
+   * The calling app's VERIFIED product id (ctx.caller.product, miniapp-sdk >= 0.1.27) and its verified instance id (C240).
+   * Persons and agents: no_access. An app caller without a verified product is refused (fail closed): never its name or an
+   * input field. Shares match on BOTH (ShareStore.forCaller), so a reinstalled app needs a new share.
    */
-  const dataCaller = (ctx: OpContext): string => {
+  const dataCaller = (ctx: OpContext): { product: string; instance: string } => {
     if (ctx.caller.type !== "app") return fail("no_access", "The data operations serve apps only. Agents and people cannot use them.", 403);
-    return verifiedAppProduct(ctx) ?? fail("caller_unverified", "The calling app has no verified product, so it cannot use the data operations.", 403);
+    return verifiedAppCaller(ctx) ?? fail("caller_unverified", "The calling app has no verified product, so it cannot use the data operations.", 403);
   };
   /** The ONE refusal for every account the calling app cannot see (unknown, not a chat account, not connected, not shared with it). */
   const noSuchAccount = (): never => fail("not_found", "No such account.", 404);
   const dataAccount = (s: Services, ctx: OpContext, raw: unknown, need: "available" | "shared", note?: { product?: string | null }): { account: Account; level: "available" | "shared"; product: string; since: number | null } => {
-    const product = dataCaller(ctx);
+    const { product, instance } = dataCaller(ctx);
     if (note) note.product = product;
     const id = str(raw);
     const account = id ? s.accounts.get(id) : null;
     if (account?.source !== "channel" || account.status !== "connected") return noSuchAccount();
-    const share = s.shares.get(account.id, product);
+    // C240: the share must be bound to this product AND this instance (a row from before 0013 has no instance: no match)
+    const share = s.shares.forCaller(account.id, product, instance);
     if (!share) return noSuchAccount();
     if (need === "shared" && share.level !== "shared") fail("scope_denied", "This account is shared with you for its catalog only. Ask the owner to share it for reading.", 403);
     return { account, level: share.level, product, since: share.includeHistory ? null : share.setAt };
   };
-  const shareView = (r: { product: string; level: string; includeHistory: boolean; setAt: number }) => ({
+  /**
+   * One share as the owner page shows it. `current` (C240): the bound instance is still an app that can call Connect (in the
+   * current signed slice). false = the app was removed or reinstalled, or the row is from before 0013: it serves no call
+   * and the owner shares again.
+   */
+  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number }, callers: { instance: string }[]) => ({
     product: r.product,
+    instance: r.instance,
+    current: r.instance !== null && callers.some((c) => c.instance === r.instance),
     level: r.level,
     includeHistory: r.includeHistory,
     setAt: new Date(r.setAt).toISOString(),
   });
+  /** The data apps the owner can share with (C240): each verified instance of a known data product, with where it runs. */
+  const dataTargets = (ctx: OpContext) => {
+    const callers = companionCallersFor(ctx).filter((c) => isDataApp(c.product));
+    return {
+      callers,
+      dataApps: Object.entries(DATA_APPS).map(([product, name]) => ({
+        product,
+        name,
+        instances: callers
+          .filter((c) => c.product === product)
+          .map((c) => ({ instance: c.instance, name: c.name, provider: c.provider, ownInfra: c.provider === OWN_INFRA_PROVIDER })),
+      })),
+    };
+  };
   const messagesDeps = (s: Services, ctx: OpContext) => ({
     db: ctx.db,
     log: ctx.log,
@@ -589,9 +612,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       return audited("data_accounts_list", ctx, input, async (note) =>
         guard(async () => {
           const s = services(ctx);
-          const product = dataCaller(ctx);
+          const { product, instance } = dataCaller(ctx);
           note.product = product;
-          const accounts = s.shares.forProduct(product).flatMap((share) => {
+          const accounts = s.shares.accountsForCaller(product, instance).flatMap((share) => {
             const a = s.accounts.get(share.account);
             return a?.source === "channel" && a.status === "connected"
               ? [{ account: a.id, service: a.service, label: a.label, kinds: ["messages"], level: share.level }]
@@ -1024,8 +1047,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     async accounts_overview(_input, ctx) {
       const s = services(ctx);
       // Chat accounts also list who the owner shared them with (C230 R3); `dataApps` are the apps one can share with.
-      const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map(shareView) } : accountView(a)));
-      return { accounts, dataApps: Object.entries(DATA_APPS).map(([product, name]) => ({ product, name })) } as unknown as Json;
+      // C240: `dataApps[].instances` are the verified app instances that can call Connect (ctx.companionCallers, person ops,
+      // miniapp-sdk >= 0.1.32), each with its provider; `ownInfra` marks one that runs on the owner's own infrastructure.
+      const { callers, dataApps } = dataTargets(ctx);
+      const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a)));
+      return { accounts, dataApps } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
@@ -1041,11 +1067,20 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const account = s.accounts.get(id);
         if (account?.source !== "channel") fail("account_not_found", "No such chat connection.", 404);
         if (level !== "none" && account?.status !== "connected") fail("channel_account_not_connected", "This chat connection is not connected. Connect it again first.", 409);
-        s.shares.set(id, product, level as ShareLevel, i.includeHistory === true);
-        ctx.log.info("account shared with an app", { account: id, product, level: level as string });
+        // C240: bind the share to the verified product AND the instance the owner picked, from the CURRENT signed slice.
+        // Not listed (not installed, removed, reinstalled, an SDK without companionCallers, an expired slice) = refused.
+        const { callers } = dataTargets(ctx);
+        let instance: string | null = null;
+        if (level !== "none") {
+          instance = str(i.instance) ?? fail("instance_required", `Pick which ${DATA_APPS[product]} to share with.`);
+          const target = callers.find((c) => c.instance === instance && c.product === product);
+          if (!target) fail("app_instance_unknown", `This ${DATA_APPS[product]} is not installed in your workspace or cannot call Connect. Reload the page and pick it again.`, 404);
+        }
+        s.shares.set(id, product, level as ShareLevel, i.includeHistory === true, instance);
+        ctx.log.info("account shared with an app", { account: id, product, instance, level: level as string });
         ctx.receipt.summary(`Sharing of “${account?.label ?? id}” with ${DATA_APPS[product]}: ${level === "none" ? "not shared" : level === "available" ? "names and counts only" : "messages, read only"}`);
-        ctx.receipt.meta({ account: id, product, level: level as string, includeHistory: i.includeHistory === true });
-        return { account: id, product, level, shares: s.shares.forAccount(id).map(shareView) } as unknown as Json;
+        ctx.receipt.meta({ account: id, product, instance, level: level as string, includeHistory: i.includeHistory === true });
+        return { account: id, product, instance, level, shares: s.shares.forAccount(id).map((r) => shareView(r, callers)) } as unknown as Json;
       });
     },
     // The owner (a person) sees which app asked for what: the last ACCESS_LOG_LIMIT audit lines, newest first. No message text.

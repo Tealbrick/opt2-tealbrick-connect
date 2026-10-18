@@ -37,6 +37,9 @@
 /* phone: nothing may widen the page; wide tables scroll inside themselves */
 .app-page, .app-page > *, .split > * { min-width: 0; }
 .app-page .tb-table, .scroll-x { position: relative; }
+/* every width: a long unbroken value (account label, app name) wraps inside its cell instead of widening the page, and a
+   bidi control in it stays inside its cell */
+.app-page .tb-table td { overflow-wrap: anywhere; unicode-bidi: isolate; }
 @media (max-width: 720px) {
   .app-page .tb-table { display: block; overflow-x: auto; max-width: 100%; }
   .hide-phone { display: none !important; }

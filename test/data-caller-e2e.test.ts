@@ -190,7 +190,7 @@ const inputOf = (op: string): Record<string, Json> => (op === "data_accounts_lis
 const code = (r: { body: Record<string, any> }): unknown => r.body.error?.code ?? r.body.code;
 
 test("the SDK gives an app caller the verified product from the signed slice, whatever the app is named", async () => {
-  shares.set(account, "observer", "shared", true);
+  shares.set(account, "observer", "shared", true, w.observer);
   // the liar is named "Observer" and Observer has the share, but its verified product is Knowledge: it sees nothing
   const list = await call(w.liar, "data_accounts_list");
   assert.equal(list.status, 200, JSON.stringify(list.body));
@@ -210,7 +210,7 @@ test("with an owner share for the verified product the app gets data; without on
   assert.deepEqual((await call(w.liar, "data_accounts_list")).body.output, { accounts: [] }, "no share: nothing");
   assert.equal(code(await call(w.liar, "data_catalog", { account })), "not_found");
 
-  shares.set(account, "knowledge", "shared", true);
+  shares.set(account, "knowledge", "shared", true, w.liar);
   const list = await call(w.liar, "data_accounts_list");
   assert.deepEqual(list.body.output.accounts.map((a: { account: string }) => a.account), [account]);
   const catalog = await call(w.liar, "data_catalog", { account });
@@ -227,8 +227,8 @@ test("with an owner share for the verified product the app gets data; without on
 });
 
 test("an app caller the slice does not list has no verified product and is refused, even when a share exists for every data app", async () => {
-  shares.set(account, "knowledge", "shared", true);
-  shares.set(account, "observer", "shared", true);
+  shares.set(account, "knowledge", "shared", true, w.liar);
+  shares.set(account, "observer", "shared", true, w.observer);
   for (const op of ["data_accounts_list", "data_catalog", "data_pull"] as const) {
     const r = await call(w.stranger, op, inputOf(op));
     assert.deepEqual([r.status, code(r)], [403, "caller_unverified"], op);
@@ -240,7 +240,7 @@ test("an app caller the slice does not list has no verified product and is refus
 });
 
 test("an agent (even the account's owner) is refused no_access; every served call is audited under the verified product", async () => {
-  shares.set(account, "knowledge", "shared", true);
+  shares.set(account, "knowledge", "shared", true, w.liar);
   for (const op of ["data_accounts_list", "data_catalog", "data_pull"] as const) {
     const r = await call(w.agent, op, inputOf(op));
     assert.deepEqual([r.status, code(r)], [403, "no_access"], op);
@@ -252,8 +252,8 @@ test("an agent (even the account's owner) is refused no_access; every served cal
 });
 
 test("a grant whose prd differs from the slice product of the same instance is refused grant_invalid by the SDK: no data, no handler call, no audit row", async () => {
-  shares.set(account, "knowledge", "shared", true);
-  shares.set(account, "observer", "shared", true);
+  shares.set(account, "knowledge", "shared", true, w.liar);
+  shares.set(account, "observer", "shared", true, w.observer);
   const before = Number(appDb.prepare("SELECT COUNT(*) AS n FROM connect_data_audit").get()?.n);
   for (const op of ["data_accounts_list", "data_catalog", "data_pull"] as const) {
     // the slice says liar = knowledge; the grant says observer (which also has a share): refused, whichever product is "better"
@@ -272,7 +272,10 @@ test("a grant whose prd differs from the slice product of the same instance is r
 });
 
 test("an app the slice does not list yet is identified by the grant prd (GRANT-PRD), and only by it", async () => {
-  shares.set(account, "knowledge", "shared", true);
+  // C240: a share bound to ANOTHER instance of the same product serves nothing to this one (same refusal as no share)
+  shares.set(account, "knowledge", "shared", true, w.liar);
+  assert.equal(code(await call(w.stranger, "data_catalog", inputOf("data_catalog"), "knowledge")), "not_found");
+  shares.set(account, "knowledge", "shared", true, w.stranger);
   const served = await call(w.stranger, "data_catalog", inputOf("data_catalog"), "knowledge");
   assert.equal(served.status, 200, JSON.stringify(served.body));
   assert.equal(served.body.output.account, account);
