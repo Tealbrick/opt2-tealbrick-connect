@@ -38,6 +38,7 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - Refused calls are throttled: the same caller, product, op and code write one audit line per minute; further ones raise `repeats` on that line (migration 0012). A served call always has its own line.
 - Owner op `data_access_log` and, in Accounts, "Recent access": the last 100 calls, newest first (app, request, time, account, messages, served or refused). No message text. The record is kept 90 days.
 - Accounts: under each app row, one plain sentence says what that level gives the app: every conversation of the bot; only messages from the share time on unless "Include the last 30 days"; names and counts of every conversation for the whole log at the catalog level; revoke at any time.
+- Recent access shows a caller without a verified product as "Unverified app" (refused `caller_unverified`).
 - The unused `DATA_OPS_VERIFIED_PRODUCT_SUPPORTED` constant is removed.
 - **Do not roll back from 0.6.0 to 0.5.11.** Migrations 0010 to 0012 have no down step. A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
 

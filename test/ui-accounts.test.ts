@@ -136,7 +136,7 @@ describe("Accounts page: Recent access", () => {
     assert.deepEqual(rows[0]?.slice(1), ["Observer", "Read messages", "Support bot", "", "Refused: Not shared with this app and 4 more in the same minute"]);
     assert.deepEqual(rows[1]?.slice(1), ["Knowledge", "Read names and counts", "Support bot", "", "Served"]);
     assert.deepEqual(rows[2]?.slice(1), ["Knowledge", "Read messages", "Support bot", "7", "Served"]);
-    assert.deepEqual(rows[3]?.slice(1), ["An app without a verified product", "Read messages", "", "", "Refused: App not verified"]);
+    assert.deepEqual(rows[3]?.slice(1), ["Unverified app", "Read messages", "", "", "Refused: Unverified app"]);
     assert.ok(rows.every((r) => (r[0] ?? "") !== ""), "every line has a time");
     await page.unmount();
   });

@@ -437,7 +437,7 @@ const ACCESS_OPS: Record<string, string> = {
 const REFUSED_TEXT: Record<string, string> = {
   not_found: "Not shared with this app",
   scope_denied: "Names and counts only",
-  caller_unverified: "App not verified",
+  caller_unverified: "Unverified app",
   no_access: "Not an app",
   audit_unavailable: "Could not be recorded",
 };
@@ -485,7 +485,7 @@ function RecentAccess({ entries, error, busy, onReload }: { entries: AccessEntry
             {entries.map((e) => (
               <tr key={e.id}>
                 <td className="num">{accessWhen(e.at)}</td>
-                <td>{e.app ?? (e.callerType === "app" ? "An app without a verified product" : e.callerType === "agent" ? "An agent" : e.callerType)}</td>
+                <td>{e.app ?? (e.callerType === "app" ? "Unverified app" : e.callerType === "agent" ? "An agent" : e.callerType)}</td>
                 <td>{ACCESS_OPS[e.op] ?? e.op}</td>
                 <td>{e.account ?? ""}</td>
                 <td className="num">{e.op === "data_pull" && e.ok ? e.rows : ""}</td>
