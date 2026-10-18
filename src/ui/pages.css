@@ -40,6 +40,8 @@
 /* every width: a long unbroken value (account label, app name) wraps inside its cell instead of widening the page, and a
    bidi control in it stays inside its cell */
 .app-page .tb-table td { overflow-wrap: anywhere; unicode-bidi: isolate; }
+/* a kit tag (nowrap) inside a cell, e.g. a long refusal code in Recent access, wraps too */
+.app-page .tb-table .tb-tag { white-space: normal; max-width: 100%; }
 @media (max-width: 720px) {
   .app-page .tb-table { display: block; overflow-x: auto; max-width: 100%; }
   .hide-phone { display: none !important; }

@@ -416,7 +416,9 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
         const bound = row && row.instance !== null ? row : undefined;
         const legacy = row !== undefined && row.instance === null;
         const listed = bound?.current === true;
-        const unlisted = bound !== undefined && !listed;
+        // with an SDK that cannot list the apps, a bound share is not "removed": the page cannot tell (and data calls fail closed)
+        const unknown = !callersKnown && bound !== undefined;
+        const unlisted = bound !== undefined && !listed && !unknown;
         const level: ShareLevel = bound?.level ?? "none";
         const pick = picked[app.product];
         const target = listed ? instances.find((i) => i.instance === bound?.instance) : (instances.find((i) => i.instance === pick) ?? instances[0]);
@@ -434,7 +436,7 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
         return (
           <div key={app.product} className="acc-row">
             <span>Share with {app.name} (read only)</span>
-            <Select aria-label={`Share ${account.label} with ${app.name}`} options={options} value={level} disabled={isBusy || unlisted || (level === "none" && !target)} onValueChange={(v) => setLevel(v as ShareLevel)} />
+            <Select aria-label={`Share ${account.label} with ${app.name}`} options={options} value={level} disabled={isBusy || unlisted || unknown || (level === "none" && !target)} onValueChange={(v) => setLevel(v as ShareLevel)} />
             {instances.length > 1 ? (
               <>
                 <span className="tb-soft">Which {app.name}</span>
@@ -464,7 +466,7 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
                 <span className="tb-soft">Include the last 30 days</span>
               </label>
             ) : null}
-            {unlisted ? null : <p className="tb-soft acc-note">{shareSentence(level, includeHistory, bound?.setAt)}</p>}
+            {unlisted || unknown ? null : <p className="tb-soft acc-note">{shareSentence(level, includeHistory, bound?.setAt)}</p>}
             {legacy && callersKnown ? <p className="tb-soft acc-note">Share again — this app must be chosen again after the update.</p> : null}
             {unlisted ? <p className="tb-soft acc-note">This app instance was removed; it can no longer read.</p> : null}
             {!callersKnown ? <p className="tb-soft acc-note">Sharing with apps needs the next Connect update.</p> : null}
@@ -472,7 +474,7 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
             {target?.ownInfra ? (
               <p className="tb-soft acc-note">{`This ${app.name} runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server.`}</p>
             ) : null}
-            {unlisted || legacy ? (
+            {unlisted || legacy || unknown ? (
               <div className="tb-ctas acc-actions">
                 <Button size="sm" disabled={isBusy} onClick={() => void change(app, "none", false, null)} aria-label={`Stop sharing ${account.label} with ${app.name}`}>
                   Stop sharing

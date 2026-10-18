@@ -258,6 +258,18 @@ describe("Accounts page: a share is bound to one installed app (C240)", () => {
     await old.unmount();
   });
 
+  it("on an SDK that cannot list the apps, a bound share is not called removed: it says an update is needed and can be stopped", async () => {
+    reset();
+    stub.callersKnown = false;
+    stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [] }];
+    stub.shares = [{ product: "knowledge", instance: K1, current: false, level: "shared", includeHistory: true, setAt: SETAT }];
+    const page = await mount(h(mod.Accounts));
+    assert.deepEqual(notes(page.host), ["Sharing with apps needs the next Connect update."]);
+    assert.equal((page.host.querySelector('[aria-label="Share Support bot with Knowledge"]') as HTMLButtonElement | null)?.disabled, true);
+    assert.ok(button(page.host, "Stop sharing Support bot with Knowledge"));
+    await page.unmount();
+  });
+
   it("not installed, an old SDK, and the quiet good case each say exactly what is true", async () => {
     reset();
     stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [] }];
