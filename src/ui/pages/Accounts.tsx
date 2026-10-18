@@ -114,6 +114,7 @@ export function Accounts() {
                   ownerName={agentName(account.ownerAgent)}
                   agents={agents.data ?? []}
                   dataApps={accounts.data?.dataApps ?? []}
+                  callersKnown={accounts.data?.callersKnown !== false}
                   onShared={() => accounts.reload()}
                   onRenamed={() => {
                     setNotice(null);
@@ -223,7 +224,7 @@ function RefreshTools({ service }: { service: string }) {
   );
 }
 
-function AccountRow(props: { account: Account; ownerName: string; agents: AgentInfo[]; dataApps: DataApp[]; onShared(): Promise<void>; onRenamed(): void; onDisconnect(): void }) {
+function AccountRow(props: { account: Account; ownerName: string; agents: AgentInfo[]; dataApps: DataApp[]; callersKnown: boolean; onShared(): Promise<void>; onRenamed(): void; onDisconnect(): void }) {
   const { account } = props;
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(account.label);
@@ -278,7 +279,7 @@ function AccountRow(props: { account: Account; ownerName: string; agents: AgentI
       {error ? <Notice tone="error">{error}</Notice> : null}
       {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
       {account.status === "connected" ? <AgentAccess account={account} agents={props.agents} /> : null}
-      {account.status === "connected" && account.source === "channel" && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} onChanged={props.onShared} /> : null}
+      {account.status === "connected" && account.source === "channel" && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
         <div className="tb-ctas">
           <Button size="sm" onClick={() => setEditing(true)} aria-label={`Rename ${account.label}`}>
@@ -368,14 +369,18 @@ function AgentAccess({ account, agents }: { account: Account; agents: AgentInfo[
  * messages Connect receives from now on; "Include the last 30 days" adds what Connect already holds. "Names and counts
  * only" shows the app the conversation names and counts and no message. Agents never see this: the data operations
  * serve apps only. The control shows what the server holds: it re-reads the list after every save.
- * C240: a share is bound to one installed instance of the app (picked here when there are several). A share whose instance
- * is gone (removed, reinstalled) serves nothing and shows "Not shared" with a note; an instance on the owner's own server
- * is named as such.
+ * C240: a share is bound to one installed instance of the app (picked here when there are several). The page never
+ * pretends a share is gone while it may still serve:
+ *   - bound to an instance that is no longer listed (removed, installed again, Core lag): its real level shows, with a note
+ *     and "Stop sharing" (the app may still hold a valid grant);
+ *   - from before migration 0013 (no instance): it serves nobody; "Share again" on the row and a page notice;
+ *   - moving a share to another instance is a new share: "Include the last 30 days" starts unticked again.
+ * An instance on the owner's own server is named as such.
  */
-function AppSharing({ account, apps, onChanged }: { account: Account; apps: DataApp[]; onChanged(): Promise<void> }) {
+function AppSharing({ account, apps, callersKnown, onChanged }: { account: Account; apps: DataApp[]; callersKnown: boolean; onChanged(): Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // C240: with several installed instances of one app, the owner picks which one (product -> instance id)
+  // with several installed instances and no live share, the owner picks which one the next share goes to (product -> id)
   const [picked, setPicked] = useState<Record<string, string>>({});
   const share = (app: DataApp) => account.shares?.find((x) => x.product === app.product);
 
@@ -387,6 +392,7 @@ function AppSharing({ account, apps, onChanged }: { account: Account; apps: Data
       await onChanged();
     } catch (e) {
       setError(`${app.name}: ${errorText(e)}`);
+      setPicked(({ [app.product]: _, ...rest }) => rest);
     } finally {
       setBusy(null);
     }
@@ -397,69 +403,92 @@ function AppSharing({ account, apps, onChanged }: { account: Account; apps: Data
       <legend className="tb-label access-legend">Apps (read only)</legend>
       {error ? <Notice tone="error">{error}</Notice> : null}
       {apps.map((app) => {
-        const current = share(app);
         const instances = app.instances ?? [];
-        // a share bound to an instance that is gone (removed, reinstalled) or from before 0.6.0 serves nothing: show "Not shared"
-        const live = current?.current === true ? current : undefined;
-        const stale = current !== undefined && live === undefined;
-        const target = instances.find((i) => i.instance === (picked[app.product] ?? live?.instance)) ?? instances[0];
-        const level = live?.level ?? "none";
-        const includeHistory = live?.includeHistory ?? false;
+        const row = share(app);
+        // a row with an instance can serve; one without (before migration 0013) serves nobody
+        const bound = row && row.instance !== null ? row : undefined;
+        const legacy = row !== undefined && row.instance === null;
+        const listed = bound?.current === true;
+        const unlisted = bound !== undefined && !listed;
+        const level: ShareLevel = bound?.level ?? "none";
+        const pick = picked[app.product];
+        const target = listed ? instances.find((i) => i.instance === bound?.instance) : (instances.find((i) => i.instance === pick) ?? instances[0]);
+        const includeHistory = listed ? (bound?.includeHistory ?? false) : false;
+        const isBusy = busy === app.product;
+        const options = SHARE_OPTIONS.map((o) => (o.value !== "none" && !target ? { ...o, disabled: true } : o));
+        const setLevel = (v: ShareLevel) => {
+          if (v === level) return;
+          if (v === "none") return void change(app, "none", false, null);
+          if (!target) return;
+          // the same instance keeps its history choice; another instance is a new share (history unticked)
+          void change(app, v, target.instance === bound?.instance ? includeHistory : false, target.instance);
+        };
         return (
           <div key={app.product} className="acc-row">
             <span>Share with {app.name} (read only)</span>
-            <Select
-              aria-label={`Share ${account.label} with ${app.name}`}
-              options={SHARE_OPTIONS}
-              value={level}
-              disabled={busy === app.product || (instances.length === 0 && level === "none")}
-              onValueChange={(v) => v !== level && void change(app, v as ShareLevel, includeHistory, target?.instance ?? null)}
-            />
+            <Select aria-label={`Share ${account.label} with ${app.name}`} options={options} value={level} disabled={isBusy || (level === "none" && !target)} onValueChange={(v) => setLevel(v as ShareLevel)} />
             {instances.length > 1 ? (
               <>
                 <span className="tb-soft">Which {app.name}</span>
                 <Select
                   aria-label={`Which ${app.name} gets ${account.label}`}
-                  options={instances.map((i) => ({ value: i.instance, label: i.ownInfra ? `${i.name} (your own server)` : i.name }))}
+                  options={instances.map((i) => ({ value: i.instance, label: instanceLabel(i) }))}
                   value={target?.instance ?? ""}
-                  disabled={busy === app.product}
+                  disabled={isBusy}
                   onValueChange={(v) => {
-                    setPicked((p) => ({ ...p, [app.product]: v }));
-                    if (level !== "none" && v !== live?.instance) void change(app, level, includeHistory, v);
+                    if (listed && level !== "none") {
+                      // moving a live share to another instance is a new share: history starts unticked
+                      if (v !== bound?.instance) void change(app, level, false, v);
+                    } else setPicked((p) => ({ ...p, [app.product]: v }));
                   }}
                 />
               </>
             ) : null}
-            {level === "shared" ? (
+            {level === "shared" && listed ? (
               <label className="tb-row">
                 <input
                   type="checkbox"
                   checked={includeHistory}
-                  disabled={busy === app.product}
-                  onChange={(e) => void change(app, "shared", e.target.checked, target?.instance ?? live?.instance ?? null)}
+                  disabled={isBusy}
+                  onChange={(e) => void change(app, "shared", e.target.checked, bound?.instance ?? null)}
                   aria-label={`Include the last 30 days of ${account.label} for ${app.name}`}
                 />
                 <span className="tb-soft">Include the last 30 days</span>
               </label>
             ) : null}
-            <p className="tb-soft acc-note">{shareSentence(level, includeHistory, live?.setAt)}</p>
-            {stale && current?.instance === null ? <p className="tb-soft acc-note">Share again — this app must be chosen again after the update.</p> : null}
-            {stale && current?.instance !== null ? (
-              <p className="tb-soft acc-note">
-                {instances.length > 0
-                  ? `The ${app.name} you shared with before was removed or installed again, so it gets nothing now. Pick a level to share with the installed ${app.name}.`
-                  : `The ${app.name} you shared with before was removed, so it gets nothing now.`}
-              </p>
+            <p className="tb-soft acc-note">{shareSentence(level, includeHistory || (unlisted && (bound?.includeHistory ?? false)), bound?.setAt)}</p>
+            {legacy ? <p className="tb-soft acc-note">Share again — this app must be chosen again after the update.</p> : null}
+            {unlisted ? (
+              <p className="tb-soft acc-note">{`This account is shared with a ${app.name} that is no longer in your workspace list (removed or installed again). It may still read until you stop sharing.`}</p>
             ) : null}
-            {instances.length === 0 && (!stale || current?.instance === null) ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share this account with it.`}</p> : null}
-            {target?.ownInfra ? (
+            {!callersKnown ? <p className="tb-soft acc-note">Sharing with apps needs the next Connect update.</p> : null}
+            {callersKnown && instances.length === 0 && !unlisted ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share this account with it.`}</p> : null}
+            {target?.ownInfra && !unlisted ? (
               <p className="tb-soft acc-note">{`This ${app.name} runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server.`}</p>
+            ) : null}
+            {unlisted || legacy ? (
+              <div className="tb-ctas acc-actions">
+                <Button size="sm" disabled={isBusy} onClick={() => void change(app, "none", false, null)} aria-label={`Stop sharing ${account.label} with ${app.name}`}>
+                  Stop sharing
+                </Button>
+                {unlisted && target ? (
+                  <Button size="sm" disabled={isBusy} onClick={() => void change(app, level, false, target.instance)} aria-label={`Share ${account.label} with the installed ${app.name} instead`}>
+                    {`Share with the installed ${app.name} instead`}
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         );
       })}
     </fieldset>
   );
+}
+
+/** Two instances with the same name stay apart: where each runs and the end of its id. */
+function instanceLabel(i: { instance: string; name: string; provider: string | null; ownInfra: boolean }): string {
+  const where = i.ownInfra ? "your own server" : (i.provider ?? "unknown host");
+  return `${i.name} · ${where} · …${i.instance.slice(-6)}`;
 }
 
 /** One plain sentence per sharing level: what the app really gets (S3-3). */

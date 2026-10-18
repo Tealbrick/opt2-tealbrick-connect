@@ -48,9 +48,9 @@ test("migration 0013 (C240) adds the share instance; a share from before it keep
   db.exec(sql("0013_share_instance.sql"));
   const shares = new ShareStore(db as never);
   assert.equal(shares.get("a1", "knowledge")?.instance, null);
-  assert.equal(shares.forCaller("a1", "knowledge", "ins_01KNOWLEDGE00000000000000"), null);
-  assert.deepEqual(shares.accountsForCaller("knowledge", "ins_01KNOWLEDGE00000000000000"), []);
-  shares.set("a1", "knowledge", "shared", true, "ins_01KNOWLEDGE00000000000000", 9);
-  assert.deepEqual(shares.forCaller("a1", "knowledge", "ins_01KNOWLEDGE00000000000000"), { product: "knowledge", instance: "ins_01KNOWLEDGE00000000000000", level: "shared", includeHistory: true, setAt: 9 });
+  assert.equal(shares.forCaller("a1", "knowledge", "ins_01HZKNWDG00000000000000000"), null);
+  assert.deepEqual(shares.accountsForCaller("knowledge", "ins_01HZKNWDG00000000000000000"), []);
+  shares.set("a1", "knowledge", "shared", true, "ins_01HZKNWDG00000000000000000", 9);
+  assert.deepEqual(shares.forCaller("a1", "knowledge", "ins_01HZKNWDG00000000000000000"), { product: "knowledge", instance: "ins_01HZKNWDG00000000000000000", level: "shared", includeHistory: true, setAt: 9 });
   assert.throws(() => shares.set("a1", "observer", "shared", true, null), /needs the app instance/);
 });

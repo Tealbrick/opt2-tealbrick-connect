@@ -37,9 +37,9 @@ export interface Account {
 
 export interface AppShare {
   product: string;
-  /** C240: the app instance the share is bound to (null = a share from before 0.6.0) */
+  /** C240: the app instance the share is bound to (null = a share made before migration 0013: it serves nobody) */
   instance: string | null;
-  /** false = that instance is gone (removed or reinstalled) or the share is from before 0.6.0: it serves nothing */
+  /** false = the bound instance is not in the current list of apps that can call Connect, or there is none (before 0013) */
   current: boolean;
   level: ShareLevel;
   /** the owner included the log kept before the share began (30 days) */
@@ -98,7 +98,8 @@ export interface BuzzAgentRow {
 export type RelayOutcome = { relay: string; ok: true } | { relay: string; ok: false; error: string; detail: string };
 
 export const servicesSearch = (query: string) => callOp<{ composioKey: boolean; catalogAvailable?: boolean; services: ServiceHit[] }>("services_search", { query });
-export const accountsOverview = () => callOp<{ accounts: Account[]; dataApps?: DataApp[] }>("accounts_overview", {});
+/** `callersKnown` false = this Connect build cannot list the installed apps yet (miniapp-sdk < 0.1.32): no share can be made. */
+export const accountsOverview = () => callOp<{ accounts: Account[]; dataApps?: DataApp[]; callersKnown?: boolean }>("accounts_overview", {});
 export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null) =>
   callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", {
     account,

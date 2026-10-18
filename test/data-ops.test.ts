@@ -28,10 +28,11 @@ import { eventCtx, handlerOf, memorySecrets, root, testCtx, testDb } from "./hel
 const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
 const schema = JSON.parse(readFileSync(join(root, "test", "contracts", "messages.1.schema.json"), "utf8")) as JsonSchemaObject;
 const AGENT = "agt_01DATAAGENT000000000000000";
-const KNOWLEDGE = "ins_01KNOWLEDGE00000000000000";
-const OBSERVER = "ins_01OBSERVER0000000000000000";
-const ROGUE = "ins_01ROGUE00000000000000000000";
-const UNVERIFIED = "ins_01UNVERIFIED00000000000000";
+const KNOWLEDGE = "ins_01HZKNWDG00000000000000000";
+const OBSERVER = "ins_01HZ0BSRVR0000000000000000";
+const ROGUE = "ins_01HZR0GE000000000000000000";
+const UNVERIFIED = "ins_01HZVNVRFD0000000000000000";
+const KNOWLEDGE_2 = "ins_01HZKNWDG20000000000000000";
 const T0 = 1_760_000_000_000;
 
 type Row = { id: string; conversation: string; thread?: string; sentAt: string; editedAt?: string; deleted?: boolean; author: { kind: string; handle: string; display?: string }; text: string; attachments: { name: string; mime: string; bytes: number }[]; untrusted: true; truncated?: boolean; attachmentsTruncated?: boolean };
@@ -161,6 +162,14 @@ test("manifest: the three data ops are agent-audience, crud read, effect read, i
 test("manifest: the product enum of account_app_share is exactly the data apps Connect knows", () => {
   const allowed = (inputProps("account_app_share").product?.enum ?? []) as string[];
   assert.deepEqual([...allowed].sort(), Object.keys(DATA_APPS).sort());
+});
+
+test("manifest: account_app_share takes an instance id of the spec's shape; the test ids are valid ones (C240)", () => {
+  const input = manifest.operations.find((o) => o.id === "account_app_share")?.input as JsonSchemaObject;
+  const ok = (instance: string) => validateAgainstSchema(input, { account: "cna_1", product: "knowledge", level: "shared", instance } as Json).ok;
+  for (const id of [KNOWLEDGE, OBSERVER, ROGUE, UNVERIFIED, KNOWLEDGE_2]) assert.equal(ok(id), true, id);
+  for (const bad of ["ins_01KNOWLEDGE00000000000000", "agt_01HZKNWDG00000000000000000", "ins_01HZKNWDG", "", "ins_01HZKNWDG00000000000000000 "]) assert.equal(ok(bad), false, bad);
+  assert.equal(validateAgainstSchema(input, { account: "cna_1", product: "knowledge", level: "none" } as Json).ok, true, "none needs no instance");
 });
 
 // ── only apps ──
@@ -332,7 +341,6 @@ test("accounts_overview lists the shares of a chat account and the apps one can 
 
 // ── C240: a share binds the verified product AND the instance id picked at share time ──
 
-const KNOWLEDGE_2 = "ins_01KNOWLEDGETWO00000000000000";
 type Overview = { accounts: { id: string; shares?: { product: string; instance: string | null; current: boolean; level: string }[] }[]; dataApps: { product: string; instances: { instance: string; name: string; provider: string | null; ownInfra: boolean }[] }[] };
 const DATA_OPS = (acct: string) => [["data_catalog", { account: acct }], ["data_pull", { account: acct, dataset: "messages" }]] as const;
 
@@ -417,6 +425,25 @@ test("C240 item 3: the owner page marks a target on the owner's own infrastructu
     ["knowledge", [{ instance: KNOWLEDGE, name: "Knowledge", provider: "own_infra", ownInfra: true }]],
     ["observer", [{ instance: OBSERVER, name: "Observer", provider: null, ownInfra: false }]],
   ]);
+  assert.equal((view as unknown as { callersKnown: boolean }).callersKnown, true);
+  // the receipt names the instance and that it runs on the owner's own server
+  const acct = await s.connect("telegram", "t1", "Support bot");
+  const owner = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE, name: "Knowledge lab", provider: "own_infra" }] });
+  await s.op("account_app_share", { account: acct, product: "knowledge", instance: KNOWLEDGE, level: "available" }, owner);
+  assert.deepEqual(owner.receipts.summary, ["Sharing of “Support bot” with Knowledge “Knowledge lab” (your own server): names and counts only"]);
+});
+
+test("C240: a share is current only when its instance is listed under the SAME product; an SDK without companionCallers says callersKnown:false", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  // the slice now lists that instance id under another product: not current
+  const owner = testCtx({ db: s.db, person: true, companionCallers: [{ product: "observer", ins: KNOWLEDGE, name: "Knowledge" }] });
+  const view = (await s.op("accounts_overview", {}, owner)) as unknown as Overview & { callersKnown: boolean };
+  assert.deepEqual(view.accounts.find((a) => a.id === acct)?.shares?.map((x) => [x.instance, x.current]), [[KNOWLEDGE, false]]);
+  assert.equal(view.callersKnown, true);
+  const old = (await s.op("accounts_overview", {}, testCtx({ db: s.db, person: true }))) as unknown as { callersKnown: boolean };
+  assert.equal(old.callersKnown, false);
 });
 
 test("C240: companionCallersFor reads person calls only and skips malformed entries", () => {
@@ -1013,7 +1040,7 @@ test("E: account_app_share writes a receipt line; every data_* call writes one a
   const acct = await s.connect("telegram", "t1", "Support bot");
   const person = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE, name: "Knowledge" }] });
   await s.op("account_app_share", { account: acct, product: "knowledge", instance: KNOWLEDGE, level: "shared", includeHistory: true }, person);
-  assert.deepEqual(person.receipts.summary, ["Sharing of “Support bot” with Knowledge: messages, read only"]);
+  assert.deepEqual(person.receipts.summary, ["Sharing of “Support bot” with Knowledge “Knowledge”: messages, read only"]);
   assert.deepEqual(person.receipts.meta, [{ account: acct, product: "knowledge", instance: KNOWLEDGE, level: "shared", includeHistory: true }]);
   s.ingest(acct, s.msg(1, { text: "private words" }), s.msg(2));
   await s.pull(acct, { limit: 1 });

@@ -58,5 +58,10 @@ export function companionCallersFor(ctx: OpContext): CompanionCallerView[] {
   return out;
 }
 
+/** false = this SDK has no person-op `companionCallers` (miniapp-sdk < 0.1.32): the owner page says sharing needs an update. */
+export function companionCallersKnown(ctx: OpContext): boolean {
+  return typeof (ctx as OpContext & WithCompanionCallers).companionCallers === "function";
+}
+
 /** An `own_infra` caller runs code the workspace owner operates (S3-4 residual): the owner page says so. */
 export const OWN_INFRA_PROVIDER = "own_infra";

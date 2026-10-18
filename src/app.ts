@@ -16,7 +16,7 @@ import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
 import { ChannelError, type ChannelNet, type ChannelProvider, type ChannelService as ChannelServiceId } from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
 import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
-import { companionCallersFor, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
+import { companionCallersFor, companionCallersKnown, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
 import { classifyMcpTool, isSendTool, recipientsOf } from "./effect.ts";
@@ -507,10 +507,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
    * current signed slice). false = the app was removed or reinstalled, or the row is from before 0013: it serves no call
    * and the owner shares again.
    */
-  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number }, callers: { instance: string }[]) => ({
+  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number }, callers: { product: string; instance: string }[]) => ({
     product: r.product,
     instance: r.instance,
-    current: r.instance !== null && callers.some((c) => c.instance === r.instance),
+    current: r.instance !== null && callers.some((c) => c.instance === r.instance && c.product === r.product),
     level: r.level,
     includeHistory: r.includeHistory,
     setAt: new Date(r.setAt).toISOString(),
@@ -1051,7 +1051,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       // miniapp-sdk >= 0.1.32), each with its provider; `ownInfra` marks one that runs on the owner's own infrastructure.
       const { callers, dataApps } = dataTargets(ctx);
       const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a)));
-      return { accounts, dataApps } as unknown as Json;
+      // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
+      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx) } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
@@ -1071,14 +1072,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         // Not listed (not installed, removed, reinstalled, an SDK without companionCallers, an expired slice) = refused.
         const { callers } = dataTargets(ctx);
         let instance: string | null = null;
+        let target: (typeof callers)[number] | undefined;
         if (level !== "none") {
           instance = str(i.instance) ?? fail("instance_required", `Pick which ${DATA_APPS[product]} to share with.`);
-          const target = callers.find((c) => c.instance === instance && c.product === product);
+          target = callers.find((c) => c.instance === instance && c.product === product);
           if (!target) fail("app_instance_unknown", `This ${DATA_APPS[product]} is not installed in your workspace or cannot call Connect. Reload the page and pick it again.`, 404);
         }
         s.shares.set(id, product, level as ShareLevel, i.includeHistory === true, instance);
         ctx.log.info("account shared with an app", { account: id, product, instance, level: level as string });
-        ctx.receipt.summary(`Sharing of “${account?.label ?? id}” with ${DATA_APPS[product]}: ${level === "none" ? "not shared" : level === "available" ? "names and counts only" : "messages, read only"}`);
+        // which instance, and whether it runs on the owner's own server (C240 item 3), not only the product
+        const who = target ? `${DATA_APPS[product]} “${target.name}”${target.provider === OWN_INFRA_PROVIDER ? " (your own server)" : ""}` : DATA_APPS[product];
+        ctx.receipt.summary(`Sharing of “${account?.label ?? id}” with ${who}: ${level === "none" ? "not shared" : level === "available" ? "names and counts only" : "messages, read only"}`);
         ctx.receipt.meta({ account: id, product, instance, level: level as string, includeHistory: i.includeHistory === true });
         return { account: id, product, instance, level, shares: s.shares.forAccount(id).map((r) => shareView(r, callers)) } as unknown as Json;
       });
