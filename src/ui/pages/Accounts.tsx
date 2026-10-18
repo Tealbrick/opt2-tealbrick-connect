@@ -76,11 +76,17 @@ export function Accounts() {
     }
   };
 
+  // C240 / migration 0013: a share from before the update has no app instance; it serves nothing until the owner shares again
+  const reshare = (accounts.data?.accounts ?? []).reduce((n, a) => n + (a.shares ?? []).filter((x) => x.instance === null).length, 0);
+
   return (
     <section className="app-page" aria-label="Accounts">
       <PageHead title="Accounts" lede="Your connected accounts, and what each agent may do with them. READ/UPDATE includes creating and sending." />
       {notice ? <Notice tone="ok">{notice}</Notice> : null}
       {error ? <Notice tone="error">{error}</Notice> : null}
+      {reshare > 0 ? (
+        <Notice>{`Connect was updated. ${reshare === 1 ? "1 app share" : `${reshare} app shares`} must be chosen again: look for “Share again” below. Until then that app gets nothing.`}</Notice>
+      ) : null}
       {accounts.error ? <LoadError message={accounts.error} busy={accounts.loading} onRetry={() => void accounts.reload()} /> : null}
       {accounts.loading && !accounts.data ? (
         <p className="tb-soft" role="status">
@@ -437,14 +443,15 @@ function AppSharing({ account, apps, onChanged }: { account: Account; apps: Data
               </label>
             ) : null}
             <p className="tb-soft acc-note">{shareSentence(level, includeHistory, live?.setAt)}</p>
-            {stale ? (
+            {stale && current?.instance === null ? <p className="tb-soft acc-note">Share again — this app must be chosen again after the update.</p> : null}
+            {stale && current?.instance !== null ? (
               <p className="tb-soft acc-note">
                 {instances.length > 0
                   ? `The ${app.name} you shared with before was removed or installed again, so it gets nothing now. Pick a level to share with the installed ${app.name}.`
                   : `The ${app.name} you shared with before was removed, so it gets nothing now.`}
               </p>
             ) : null}
-            {instances.length === 0 && !stale ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share this account with it.`}</p> : null}
+            {instances.length === 0 && (!stale || current?.instance === null) ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share this account with it.`}</p> : null}
             {target?.ownInfra ? (
               <p className="tb-soft acc-note">{`This ${app.name} runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server.`}</p>
             ) : null}

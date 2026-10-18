@@ -44,10 +44,11 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 ### A share is bound to one installed app (C240, SDK-COMPANION-CALLERS)
 - `account_app_share` takes `instance` (required unless `level` is `none`). The owner picks it from the installed apps that can call Connect (`ctx.companionCallers()`, person ops, miniapp-sdk 0.1.32 / spec 0.1.48). An instance that is not listed for that product is refused `app_instance_unknown` (404); no instance is refused `instance_required` (400). An SDK without the function lists nothing, so no share can be made (fail closed).
 - A data call is served only when its verified product AND its instance id (`ctx.caller.id`, the verified grant subject) are the pair the owner shared with. Another instance of the same product gets the same `not_found` as an unshared app. A reinstalled app has a new instance id and needs a new share. Nothing is bound on a first call.
-- Migration 0013 adds `connect_account_shares.instance_id`. A share from before it has no instance and serves nobody; Accounts shows it as "Not shared" with a note to share again.
+- Migration 0013 adds `connect_account_shares.instance_id`. A share from before it has no instance and serves nobody. Accounts shows it as "Not shared" with "Share again — this app must be chosen again after the update" on its row, and one notice at the top of the page counts these shares; it is never silently gone.
 - Accounts: when two instances of an app are installed the owner picks which one; an app that is not installed says so; an instance on the owner's own server (provider `own_infra`) is named, with "Connect cannot check the code that runs there".
 - `accounts_overview`: `dataApps[].instances` (`instance`, `name`, `provider`, `ownInfra`), and per share `instance` and `current`.
 
+- **After the update, choose each shared app again:** shares made before 0.6.0 stop serving at the upgrade until the owner picks the app again in Accounts ("Share again").
 - **Do not roll back from 0.6.0 to 0.5.11.** Migrations 0010 to 0013 have no down step. A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
 
 ### Changed

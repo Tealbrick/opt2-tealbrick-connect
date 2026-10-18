@@ -394,7 +394,7 @@ test("C240: share time refuses an instance that is missing, unknown, of another 
   assert.equal(rows(), 0);
 });
 
-test("C240: a share row from before migration 0013 (no instance) serves no caller and shows current:false", async () => {
+test("C240: a share row from before migration 0013 (no instance) serves no caller and shows current:false (the page says Share again: ui-accounts.test.ts)", async () => {
   const s = await setup();
   const acct = await s.connect("telegram", "t1");
   s.db.prepare("INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at) VALUES (?, 'knowledge', 'shared', 1, ?)").run(acct, Date.now());

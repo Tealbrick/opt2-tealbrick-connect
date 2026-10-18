@@ -133,6 +133,28 @@ describe("Accounts page: a share is bound to one installed app (C240)", () => {
     await gone.unmount();
   });
 
+  it("a share from before the update (no instance) says Share again on its row and in one page notice; never silently gone", async () => {
+    stub.entries = [];
+    // the exact shape accounts_overview returns for a pre-0013 row (data-ops.test.ts: "a share row from before migration 0013")
+    stub.shares = [
+      { product: "knowledge", instance: null, current: false, level: "shared", includeHistory: true, setAt: SETAT },
+      { product: "observer", instance: null, current: false, level: "available", includeHistory: false, setAt: SETAT },
+    ];
+    stub.dataApps = DEFAULT_APPS();
+    const page = await mount(h(mod.Accounts));
+    const SHARE_AGAIN = "Share again — this app must be chosen again after the update.";
+    assert.deepEqual(notes(page.host), [NOTHING, SHARE_AGAIN, NOTHING, SHARE_AGAIN]);
+    const status = [...page.host.querySelectorAll('[role="status"]')].map((n) => (n.textContent ?? "").replace(/\s+/gu, " ").trim());
+    assert.ok(status.includes("Connect was updated. 2 app shares must be chosen again: look for “Share again” below. Until then that app gets nothing."), JSON.stringify(status));
+    await page.unmount();
+    // quiet on good: bound shares give no update notice
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: true, setAt: SETAT }];
+    const good = await mount(h(mod.Accounts));
+    assert.doesNotMatch(text(good.host), /Connect was updated|Share again/u);
+    await good.unmount();
+    stub.shares = [];
+  });
+
   it("an app that is not installed says how to share; a quiet page has no extra notes", async () => {
     stub.shares = [];
     stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [] }];
