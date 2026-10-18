@@ -177,13 +177,15 @@ describe("Accounts page: a share is bound to one installed app (C240)", () => {
     await good.unmount();
   });
 
-  it("a share bound to an instance that is no longer listed keeps its real level, says it may still read, and can be stopped or moved", async () => {
+  it("a share bound to an instance that is no longer listed says it can no longer read; its level is read-only; it can be stopped or moved by button only", async () => {
     reset();
     stub.shares = [{ product: "knowledge", instance: K1, current: false, level: "shared", includeHistory: true, setAt: SETAT }];
     stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [inst(K2, "Knowledge")] }];
     const page = await mount(h(mod.Accounts));
-    assert.equal(page.host.querySelector('[aria-label="Share Support bot with Knowledge"]')?.textContent, "Share messages (read only)", "never shown as Not shared");
-    assert.ok(notes(page.host).includes("This account is shared with a Knowledge that is no longer in your workspace list (removed or installed again). It may still read until you stop sharing."));
+    const levelSelect = page.host.querySelector('[aria-label="Share Support bot with Knowledge"]') as HTMLButtonElement | null;
+    assert.equal(levelSelect?.textContent, "Share messages (read only)", "the stored level shows");
+    assert.equal(levelSelect?.disabled, true, "no level change moves the share silently");
+    assert.deepEqual(notes(page.host), ["This app instance was removed; it can no longer read."]);
     await click(button(page.host, "Share Support bot with the installed Knowledge instead"));
     await click(button(page.host, "Stop sharing Support bot with Knowledge"));
     // moving is a new share: history unticked; stopping needs no instance
@@ -198,6 +200,7 @@ describe("Accounts page: a share is bound to one installed app (C240)", () => {
     stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [] }];
     const none = await mount(h(mod.Accounts));
     assert.ok(button(none.host, "Stop sharing Support bot with Knowledge"));
+    assert.deepEqual(notes(none.host), ["This app instance was removed; it can no longer read."]);
     assert.equal(button(none.host, "Share Support bot with the installed Knowledge instead"), null);
     assert.doesNotMatch(text(none.host), /Install Knowledge/u);
     await none.unmount();
@@ -229,6 +232,30 @@ describe("Accounts page: a share is bound to one installed app (C240)", () => {
     await choose(fresh.host, "Share Support bot with Knowledge", "Share messages");
     assert.deepEqual(stub.sent, [{ account: "cna_1", product: "knowledge", level: "shared", includeHistory: false, instance: K2 }]);
     await fresh.unmount();
+  });
+
+  it("moving an unlisted share to an instance on the owner's own server says so on the button and in the note", async () => {
+    reset();
+    stub.shares = [{ product: "knowledge", instance: K1, current: false, level: "available", includeHistory: false, setAt: SETAT }];
+    stub.dataApps = [{ product: "knowledge", name: "Knowledge", instances: [inst(K2, "Knowledge lab", true)] }];
+    const page = await mount(h(mod.Accounts));
+    assert.ok(notes(page.host).includes("This Knowledge runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server."));
+    const move = button(page.host, "Share Support bot with the installed Knowledge (your own server) instead");
+    assert.equal(move?.textContent, "Share with the installed Knowledge (your own server) instead");
+    await click(move);
+    assert.deepEqual(stub.sent, [{ account: "cna_1", product: "knowledge", level: "available", includeHistory: false, instance: K2 }]);
+    await page.unmount();
+  });
+
+  it("the update notice counts only rows the page shows, and on an old SDK it does not point at a Share again it cannot offer", async () => {
+    reset();
+    stub.shares = [{ product: "knowledge", instance: null, current: false, level: "shared", includeHistory: false, setAt: SETAT }];
+    stub.callersKnown = false;
+    const old = await mount(h(mod.Accounts));
+    const status = [...old.host.querySelectorAll('[role="status"]')].map((n) => (n.textContent ?? "").replace(/\s+/gu, " ").trim());
+    assert.ok(status.includes("Connect was updated. 1 app share must be chosen again after the next Connect update. Until then that app gets nothing."), JSON.stringify(status));
+    assert.doesNotMatch(text(old.host), /Share again —|look for “Share again”/u);
+    await old.unmount();
   });
 
   it("not installed, an old SDK, and the quiet good case each say exactly what is true", async () => {

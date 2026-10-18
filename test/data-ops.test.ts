@@ -89,11 +89,11 @@ async function setup(options: { history?: ChannelService[]; services?: ChannelSe
   ];
   const person = testCtx({ db, person: true, log, companionCallers: callers });
   // app callers carry what the real SDK (>= 0.1.27) puts in ctx.caller.product: the product of the Portal-signed slice entry
-  const knowledge = testCtx({ db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", log });
-  const observer = testCtx({ db, app: OBSERVER, appName: "Observer", appProduct: "observer", log });
+  const knowledge = testCtx({ db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", appListed: true, log });
+  const observer = testCtx({ db, app: OBSERVER, appName: "Observer", appProduct: "observer", appListed: true, log });
   const agent = testCtx({ db, agent: AGENT, access: {}, log });
   // an instance that carries the exact manifest name "Knowledge" but whose verified product is another one
-  const rogue = testCtx({ db, app: ROGUE, appName: "Knowledge", appProduct: "rogue-app", log });
+  const rogue = testCtx({ db, app: ROGUE, appName: "Knowledge", appProduct: "rogue-app", appListed: true, log });
   // an app caller the slice does not list: no verified product at all (its name still says "Knowledge")
   const unverified = testCtx({ db, app: UNVERIFIED, appName: "Knowledge", log });
   const op = (name: string, input: Record<string, unknown>, ctx = person) => handlerOf(app, name)(input as Json, ctx);
@@ -349,7 +349,7 @@ test("C240: the bound instance is served; another instance with the same verifie
   const acct = await s.connect("telegram", "t1");
   await s.share(acct, "knowledge", "shared");
   s.ingest(acct, s.msg(1));
-  const twin = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge" });
+  const twin = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge", appListed: true });
   // quiet on good: the bound instance reads
   assert.equal((await s.pull(acct)).rows.length, 1);
   assert.equal(((await s.op("data_accounts_list", {}, s.ctx.knowledge)) as unknown as { accounts: unknown[] }).accounts.length, 1);
@@ -365,7 +365,7 @@ test("C240: reinstall = new share. The old instance leaves the slice, the share 
   const firstSetAt = shareSetAt(s.db, acct, "knowledge");
   // the owner reinstalled Knowledge: the slice now lists only the new instance
   const owner = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE_2, name: "Knowledge", provider: "railway" }] });
-  const reinstalled = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge" });
+  const reinstalled = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge", appListed: true });
   const view = (await s.op("accounts_overview", {}, owner)) as unknown as Overview;
   assert.deepEqual(view.accounts.find((a) => a.id === acct)?.shares?.map((x) => [x.instance, x.current]), [[KNOWLEDGE, false]]);
   assert.deepEqual(view.dataApps.find((a) => a.product === "knowledge")?.instances.map((i) => i.instance), [KNOWLEDGE_2]);
@@ -376,6 +376,38 @@ test("C240: reinstall = new share. The old instance leaves the slice, the share 
   assert.equal(((await s.op("data_catalog", { account: acct }, reinstalled)) as unknown as { account: string }).account, acct);
   // the old instance (if it still called) is not served any more
   assert.equal((await refusal(s.op("data_catalog", { account: acct }, s.ctx.knowledge))).code, "not_found");
+});
+
+test("C240 call time: a bound instance that is no longer listed (ctx.caller.listed false) is refused share_instance_gone on every data op, audited; listed = served", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1));
+  // quiet on good: listed
+  assert.equal((await s.pull(acct)).rows.length, 1);
+  // fires on bad: the same verified product and instance (a valid grant prd), but no longer in the signed slice
+  const removed = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", appListed: false });
+  for (const [op, input] of [...DATA_OPS(acct), ["data_accounts_list", {}]] as const) {
+    const r = await refusal(s.op(op, input, removed));
+    assert.deepEqual([r.code, r.httpStatus], ["share_instance_gone", 403], op);
+  }
+  const audit = s.db.prepare("SELECT op, outcome FROM connect_data_audit WHERE outcome = 'share_instance_gone' ORDER BY id").all().map((r) => `${r.op}:${r.outcome}`);
+  assert.deepEqual(audit, ["data_catalog:share_instance_gone", "data_pull:share_instance_gone", "data_accounts_list:share_instance_gone"]);
+  // an app with no share bound to it learns nothing new: still the plain not_found / empty list
+  const stranger = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge", appListed: false });
+  assert.equal((await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, stranger))).code, "not_found");
+  assert.deepEqual(((await s.op("data_accounts_list", {}, stranger)) as unknown as { accounts: unknown[] }).accounts, []);
+});
+
+test("C240 call time: an SDK without ctx.caller.listed is refused companion_list_unavailable (503, fail closed) for a bound share", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  const oldSdk = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge" });
+  for (const [op, input] of [...DATA_OPS(acct), ["data_accounts_list", {}]] as const) {
+    const r = await refusal(s.op(op, input, oldSdk));
+    assert.deepEqual([r.code, r.httpStatus], ["companion_list_unavailable", 503], op);
+  }
 });
 
 test("C240: share time refuses an instance that is missing, unknown, of another product, or not visible (SDK without companionCallers); no row is written", async () => {
@@ -826,11 +858,11 @@ test("A: an instance that carries the exact manifest name \"Knowledge\" but is n
   assert.equal((await refusal(s.op("data_catalog", { account: acct }, s.ctx.rogue))).code, "not_found");
   assert.equal((await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.rogue))).code, "not_found");
   // the share the owner gave Observer is not reachable by a name that says Observer
-  const nameOnly = testCtx({ db: s.db, app: ROGUE, appName: "Observer", appProduct: "rogue-app" });
+  const nameOnly = testCtx({ db: s.db, app: ROGUE, appName: "Observer", appProduct: "rogue-app", appListed: true });
   await s.share(acct, "observer", "shared");
   assert.deepEqual(await s.op("data_accounts_list", {}, nameOnly), { accounts: [] });
   // and a verified instance is served whatever name it carries
-  const renamed = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Something else entirely", appProduct: "knowledge" });
+  const renamed = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Something else entirely", appProduct: "knowledge", appListed: true });
   assert.equal(((await s.op("data_accounts_list", {}, renamed)) as unknown as { accounts: unknown[] }).accounts.length, 1);
 });
 

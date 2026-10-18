@@ -16,7 +16,7 @@ import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
 import { ChannelError, type ChannelNet, type ChannelProvider, type ChannelService as ChannelServiceId } from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
 import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
-import { companionCallersFor, companionCallersKnown, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
+import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
 import { classifyMcpTool, isSendTool, recipientsOf } from "./effect.ts";
@@ -488,6 +488,16 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     if (ctx.caller.type !== "app") return fail("no_access", "The data operations serve apps only. Agents and people cannot use them.", 403);
     return verifiedAppCaller(ctx) ?? fail("caller_unverified", "The calling app has no verified product, so it cannot use the data operations.", 403);
   };
+  /**
+   * C240 call-time check (Coordinator): a bound share serves only while the caller instance is STILL listed under its product
+   * in the current signed slice (`ctx.caller.listed`, sdk 0.1.32). A removed instance may still hold a valid grant `prd`: refused
+   * `share_instance_gone`. An SDK without the flag is refused `companion_list_unavailable` (fail closed). Both are audited.
+   */
+  const stillListed = (ctx: OpContext): void => {
+    const state = companionListed(ctx);
+    if (state === "gone") fail("share_instance_gone", "This app instance was removed from the workspace, so it can no longer read shared accounts.", 403);
+    if (state === "unknown") fail("companion_list_unavailable", "Connect cannot check that this app is still installed. Update Connect.", 503);
+  };
   /** The ONE refusal for every account the calling app cannot see (unknown, not a chat account, not connected, not shared with it). */
   const noSuchAccount = (): never => fail("not_found", "No such account.", 404);
   const dataAccount = (s: Services, ctx: OpContext, raw: unknown, need: "available" | "shared", note?: { product?: string | null }): { account: Account; level: "available" | "shared"; product: string; since: number | null } => {
@@ -499,6 +509,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     // C240: the share must be bound to this product AND this instance (a row from before 0013 has no instance: no match)
     const share = s.shares.forCaller(account.id, product, instance);
     if (!share) return noSuchAccount();
+    stillListed(ctx);
     if (need === "shared" && share.level !== "shared") fail("scope_denied", "This account is shared with you for its catalog only. Ask the owner to share it for reading.", 403);
     return { account, level: share.level, product, since: share.includeHistory ? null : share.setAt };
   };
@@ -614,7 +625,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const s = services(ctx);
           const { product, instance } = dataCaller(ctx);
           note.product = product;
-          const accounts = s.shares.accountsForCaller(product, instance).flatMap((share) => {
+          const bound = s.shares.accountsForCaller(product, instance);
+          if (bound.length > 0) stillListed(ctx);
+          const accounts = bound.flatMap((share) => {
             const a = s.accounts.get(share.account);
             return a?.source === "channel" && a.status === "connected"
               ? [{ account: a.id, service: a.service, label: a.label, kinds: ["messages"], level: share.level }]

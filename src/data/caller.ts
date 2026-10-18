@@ -65,3 +65,14 @@ export function companionCallersKnown(ctx: OpContext): boolean {
 
 /** An `own_infra` caller runs code the workspace owner operates (S3-4 residual): the owner page says so. */
 export const OWN_INFRA_PROVIDER = "own_infra";
+
+/**
+ * C240 call-time check (Coordinator, option B): is the calling app instance STILL listed, under its verified product, in the
+ * current signed slice? miniapp-sdk 0.1.32 sets the verified flag `ctx.caller.listed` on app callers (false when the slice is
+ * expired or does not list it). A share is served only when it is true: a grant `prd` alone is not enough (an app removed
+ * from the workspace may still hold a valid grant). No flag (older SDK) = `unknown`: the caller refuses (fail closed).
+ */
+export function companionListed(ctx: OpContext): "listed" | "gone" | "unknown" {
+  const flag = (ctx.caller as { listed?: unknown }).listed;
+  return typeof flag === "boolean" ? (flag ? "listed" : "gone") : "unknown";
+}
