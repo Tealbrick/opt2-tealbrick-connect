@@ -493,10 +493,13 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
    * in the current signed slice (`ctx.caller.listed`, sdk 0.1.32). A removed instance may still hold a valid grant `prd`: refused
    * `share_instance_gone`. An SDK without the flag is refused `companion_list_unavailable` (fail closed). Both are audited.
    */
+  const LIST_RETRY = { retryable: true, retryAfterMs: 30_000 } as const;
   const stillListed = (ctx: OpContext): void => {
     const state = companionListed(ctx);
-    if (state === "gone") fail("share_instance_gone", "This app instance was removed from the workspace, so it can no longer read shared accounts.", 403);
-    if (state === "unknown") fail("companion_list_unavailable", "Connect cannot check that this app is still installed. Update Connect.", 503);
+    // retryable (Coordinator, like C261 caller_unverified): a fresh companion whose grant arrives before the slice lists it
+    // retries after the slice catches up instead of failing hard
+    if (state === "gone") fail("share_instance_gone", "This app instance is not in the workspace list now, so it cannot read shared accounts. Try again later.", 403, LIST_RETRY);
+    if (state === "unknown") fail("companion_list_unavailable", "Connect cannot check that this app is still installed. Update Connect.", 503, LIST_RETRY);
   };
   /** The ONE refusal for every account the calling app cannot see (unknown, not a chat account, not connected, not shared with it). */
   const noSuchAccount = (): never => fail("not_found", "No such account.", 404);

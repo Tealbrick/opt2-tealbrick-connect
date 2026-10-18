@@ -135,12 +135,12 @@ const shareSetAt = (db: ReturnType<typeof testDb>, account: string, product: str
   Number(db.prepare("SELECT set_at FROM connect_account_shares WHERE account_id = ? AND product = ?").get(account, product)?.set_at);
 
 /** The whole refusal: code, status and message. */
-async function refusal(p: Promise<unknown>): Promise<{ code: string; httpStatus: number; message: string }> {
+async function refusal(p: Promise<unknown>): Promise<{ code: string; httpStatus: number; message: string; details?: unknown }> {
   try {
     await p;
   } catch (e) {
-    const { code, httpStatus, message } = e as { code: string; httpStatus: number; message: string };
-    return { code, httpStatus, message };
+    const { code, httpStatus, message, details } = e as { code: string; httpStatus: number; message: string; details?: unknown };
+    return { code, httpStatus, message, ...(details === undefined ? {} : { details }) };
   }
   throw new Error("expected a refusal, the call succeeded");
 }
@@ -390,6 +390,7 @@ test("C240 call time: a bound instance that is no longer listed (ctx.caller.list
   for (const [op, input] of [...DATA_OPS(acct), ["data_accounts_list", {}]] as const) {
     const r = await refusal(s.op(op, input, removed));
     assert.deepEqual([r.code, r.httpStatus], ["share_instance_gone", 403], op);
+    assert.deepEqual(r.details, { retryable: true, retryAfterMs: 30_000 }, `${op}: retryable (slice lag)`);
   }
   const audit = s.db.prepare("SELECT op, outcome FROM connect_data_audit WHERE outcome = 'share_instance_gone' ORDER BY id").all().map((r) => `${r.op}:${r.outcome}`);
   assert.deepEqual(audit, ["data_catalog:share_instance_gone", "data_pull:share_instance_gone", "data_accounts_list:share_instance_gone"]);
@@ -407,6 +408,7 @@ test("C240 call time: an SDK without ctx.caller.listed is refused companion_list
   for (const [op, input] of [...DATA_OPS(acct), ["data_accounts_list", {}]] as const) {
     const r = await refusal(s.op(op, input, oldSdk));
     assert.deepEqual([r.code, r.httpStatus], ["companion_list_unavailable", 503], op);
+    assert.deepEqual(r.details, { retryable: true, retryAfterMs: 30_000 }, op);
   }
 });
 
