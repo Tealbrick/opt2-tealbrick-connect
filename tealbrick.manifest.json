@@ -5,7 +5,7 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "sdkMajor": 1,
   "publisher": {
     "name": "Tealbrick",
@@ -2508,9 +2508,9 @@
   "artifacts": [
     {
       "id": "catalog",
-      "version": "0.1.0",
-      "sha256": "c366f737c80d787ca5364ca6af7e20b96d113ed4ba46c57ee610ca7fbc81d2e2",
-      "url": "https://github.com/Tealbrick/opt2-tealbrick-connect/releases/download/catalog-0.1.0/tealbrick-catalog-0.1.0.json.gz"
+      "version": "0.2.0",
+      "sha256": "f1141792c6a0d135689512ebbc4d6b05b68c58d1df189181aa8996cbd91f2b98",
+      "url": "https://github.com/Tealbrick/opt2-tealbrick-connect/releases/download/catalog-0.2.0/tealbrick-catalog-0.2.0.json.gz"
     }
   ],
   "publicRoutes": [

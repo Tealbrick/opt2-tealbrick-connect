@@ -57,7 +57,7 @@ Services, Accounts, Buzz, Chat bots, Senders, Holds, Receipts, Agents and scopes
 
 ## Requirements and runtime hints
 
-A Composio key only if Composio services are used. Buzz relays only if Buzz is used. Public routes (3, unauthenticated by design): `/oauth/composio/callback`, `/oauth/mcp/callback`, `/inbound/teams` (Bot Framework JWT verified, 128 KiB cap). A catalog artifact `catalog-0.1.0` (sha256 pinned in the manifest).
+A Composio key only if Composio services are used. Buzz relays only if Buzz is used. Public routes (3, unauthenticated by design): `/oauth/composio/callback`, `/oauth/mcp/callback`, `/inbound/teams` (Bot Framework JWT verified, 128 KiB cap). A catalog artifact `catalog-0.2.0` (sha256 pinned in the manifest).
 
 Port 8314. 0.5 cpu, 512 MB. Data 2 GB plus backup 5 GB declared as two volumes; Core and the generated Railway recipe merge them into one volume at the data mount (SDK-API 7.3; `TB_BACKUP_DIR=/data/backup`). Needs a non-sleeping container (long-lived outbound sockets). Backup cron `23 3 * * *`, retain 14. `EXPOSE 8314`.
 
