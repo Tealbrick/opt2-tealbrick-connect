@@ -9,6 +9,7 @@
 import type { JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
 
 import { classify, namesMoney, type ToolClass } from "../../effect.ts";
+import { headerDefault } from "./http.ts";
 
 export const METHODS = ["get", "head", "options", "post", "put", "patch", "delete"] as const;
 export type Method = (typeof METHODS)[number];
@@ -172,12 +173,10 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
       for (const p of merged.values()) {
         const location = String(p.in);
         if (location === "path" || location === "query" || location === "header") {
-          parameters.push({
-            name: String(p.name),
-            in: location,
-            required: location === "path" || p.required === true,
-            schema: inline(doc, swagger ? swaggerParamSchema(p) : (p.schema ?? {})) ?? {},
-          });
+          const schema = inline(doc, swagger ? swaggerParamSchema(p) : (p.schema ?? {})) ?? {};
+          // A header with a const/default is filled in at call time (http.ts headerDefault), so the agent may omit it.
+          const filled = location === "header" && headerDefault({ in: location, schema }) !== undefined;
+          parameters.push({ name: String(p.name), in: location, required: location === "path" || (p.required === true && !filled), schema });
         } else if (location === "body") {
           body = { contentType: "application/json", required: p.required === true, schema: inline(doc, p.schema ?? {}) ?? OPEN };
         } else if (location === "formData") {

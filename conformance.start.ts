@@ -9,6 +9,7 @@ import { join } from "node:path";
 
 import { defineApp, startApp, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type { Manifest } from "@opt2-tealbrick/spec/manifest";
+import type { Json, OpContext } from "@opt2-tealbrick/spec/sdk";
 
 import { AccountStore } from "./src/accounts.ts";
 import { createConnectApp } from "./src/app.ts";
@@ -19,6 +20,8 @@ import { classifyComposioTool, loadPolicies } from "./src/sources/composio/polic
 import { entrySchema, ToolRegistry, toolName } from "./src/tools.ts";
 
 const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "tealbrick.manifest.json"), "utf8")) as Manifest;
+/** Sentinel `sendAt` of the capsAgent setup step in tealbrick-conformance.json. */
+const CONFORMANCE_SEND_AT = "conformance:in-one-hour";
 const TEST_RELAY = "wss://relay.conformance.example";
 const TEST_RELAY_HTTP = "https://relay.conformance.example";
 
@@ -51,8 +54,19 @@ export default async function start(env: Record<string, string>): Promise<{ url:
   // C86 fixture (owner state, like conformance.inputs.json): the owner has set a workspace Buzz sender, so the suite's
   // companion-app call (A12.companion_inbound → buzz_post) runs from it. Without one, the refusal is no_sender_identity
   // (tested in test/senders.test.ts).
+  // A3.caps_count (conformance >= 0.1.21): the setup step in tealbrick-conformance.json has the fresh caps agent schedule one
+  // Buzz post, so its `buzz_schedule_cancel` has a post it OWNS. `buzz_schedule` only accepts a time 30 s to 30 days ahead and a
+  // fixture file cannot hold a moving time, so the fixture names the sentinel below and THIS harness (never production) turns it
+  // into "one hour from now" before the real handler runs. Every other input goes to the real handler unchanged.
+  const realSchedule = definition.handlers.buzz_schedule as (input: Json, ctx: OpContext) => Promise<Json>;
+  const handlers = {
+    ...definition.handlers,
+    buzz_schedule: (input: Json, ctx: OpContext) =>
+      realSchedule(input && typeof input === "object" && !Array.isArray(input) && input.sendAt === CONFORMANCE_SEND_AT ? { ...input, sendAt: new Date(Date.now() + 3_600_000).toISOString() } : input, ctx),
+  };
   const app = defineApp({
     ...definition,
+    handlers,
     onStart: async (ctx) => {
       const buzz = new BuzzIdentities({ db: ctx.db, secrets: ctx.secrets, relayUrls: TEST_RELAY, allowRelayOrigins: [TEST_RELAY, TEST_RELAY_HTTP] });
       await buzz.ensure({ id: WORKSPACE_SENDER, name: "Conformance workspace" });

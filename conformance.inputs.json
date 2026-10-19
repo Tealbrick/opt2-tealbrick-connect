@@ -10,5 +10,8 @@
   "buzz_delete": {
     "channel": "0b7d6c2e-1f3a-4c5b-9d8e-7f6a5b4c3d2e",
     "messageId": "0000000000000000000000000000000000000000000000000000000000000001"
+  },
+  "buzz_schedule_cancel": {
+    "id": "${scheduled}"
   }
 }
