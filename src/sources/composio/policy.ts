@@ -7,7 +7,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { classify, inferFromName, namesMoney, type ToolClass } from "../../effect.ts";
+import { classify, inferFromName, namesMoney, narrowByName, type ToolClass } from "../../effect.ts";
 
 export interface ComposioPolicy {
   schema: 1;
@@ -74,6 +74,11 @@ const READ = { write: false, outward: false, destructive: false } as const;
  * A slug with a real mutating verb (GMAIL_GET_AND_SEND) is never read-led, so the policy patterns still decide it.
  */
 export function classifyComposioTool(slug: string, policy: ComposioPolicy | undefined): ToolClass {
+  // C276a (d): the policy / name decides the effect; the verbs of the slug then narrow the CRUD when that is safe.
+  return narrowByName(slug, composioClass(slug, policy));
+}
+
+function composioClass(slug: string, policy: ComposioPolicy | undefined): ToolClass {
   // Money movement is always `money` (always held), whatever a policy says about the tool.
   if (namesMoney(slug)) return classify({ write: true, outward: true, destructive: false, money: true });
   if (!policy) return inferFromName(slug);

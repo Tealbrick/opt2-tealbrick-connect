@@ -142,12 +142,73 @@ export function inferFromName(name: string): ToolClass {
   return classify({ write: true, outward: true, destructive: false });
 }
 
+// ── C276a: per-method / per-verb CRUD ──
+
+const CREATE_VERBS = new Set(["create", "add", "insert"]);
+const UPDATE_VERBS = new Set(["update", "set", "patch", "edit"]);
+const DELETE_VERBS = new Set(["delete", "remove"]);
+const isKnownVerb = (part: string) =>
+  READ_PARTS.has(part) || DESTRUCTIVE_PARTS.has(part) || OUTWARD_PARTS.has(part) || WRITE_PARTS.has(part) || MONEY_PARTS.has(part);
+const CRUD_ORDER: readonly CrudAction[] = ["create", "update", "delete"];
+
+/**
+ * C276a: a narrower CRUD set for a write class, kept only when it is safe. `read` and `money` classes never change; a
+ * destructive class must keep `delete`; a non-destructive class never needs `delete` (a REMOVE that is not destructive stays as
+ * classify() made it). Effect and hold family never change (guardrail c), so outward writes stay held per policy.
+ */
+export function withCrud(cls: ToolClass, crud: readonly CrudAction[] | null): ToolClass {
+  if (!crud || crud.length === 0 || cls.effect === "read" || cls.effect === "money") return cls;
+  const set = CRUD_ORDER.filter((action) => crud.includes(action));
+  if (set.length === 0) return cls;
+  if (cls.effect === "destructive" ? !set.includes("delete") : set.includes("delete")) return cls;
+  return { ...cls, crud: set };
+}
+
+/**
+ * C276a (d): the CRUD a Composio / MCP tool needs, from the verbs of its name: CREATE/ADD/INSERT → create, UPDATE/SET/PATCH/EDIT
+ * → update, DELETE/REMOVE → delete. Any other verb (SEND, POST, PUBLISH, ...) or no verb at all → null (keep classify()'s
+ * [create, update]). Read verbs and the noun words (draft, email, message, ...) do not count.
+ */
+export function crudFromName(name: string): CrudAction[] | null {
+  const verbs = nameParts(name).filter((part) => !NOUN_PARTS.has(part) && !READ_PARTS.has(part) && (isKnownVerb(part) || CREATE_VERBS.has(part) || DELETE_VERBS.has(part)));
+  if (verbs.length === 0) return null;
+  const crud = new Set<CrudAction>();
+  for (const verb of verbs) {
+    if (CREATE_VERBS.has(verb)) crud.add("create");
+    else if (UPDATE_VERBS.has(verb)) crud.add("update");
+    else if (DELETE_VERBS.has(verb)) crud.add("delete");
+    else return null;
+  }
+  return CRUD_ORDER.filter((action) => crud.has(action));
+}
+
+/** Path words that make a POST an action, not a collection create (C276a guardrail a), besides every known verb. */
+const ACTION_WORDS = new Set([
+  "graphql", "rpc", "jsonrpc", "command", "commands", "action", "actions", "bulk", "toggle", "clone", "retry", "resend", "restore",
+  "reset", "rotate", "login", "logout", "auth", "token", "tokens", "webhook", "hooks", "callback", "callbacks", "test", "ping",
+  "plus", "minus", "increment", "decrement", "start", "pause", "resume", "complete", "confirm",
+]);
+
+/** True when a path segment names an action (any known verb or an ACTION_WORDS word in any naming style). */
+export function isActionWord(segment: string): boolean {
+  return nameParts(segment).some((part) => isKnownVerb(part) || ACTION_WORDS.has(part)) || namesMoney(segment);
+}
+
+/** C276a: the name-based CRUD applied to a class (Composio, MCP). */
+export function narrowByName(name: string, cls: ToolClass): ToolClass {
+  return withCrud(cls, crudFromName(name));
+}
+
 /**
  * MCP tool class. Money words always win. X-03: annotations come from an untrusted server, so they may only RAISE a class:
  * `destructiveHint: true` → destructive; `readOnlyHint: false` → never read. `readOnlyHint: true` is believed only when the
  * name inference also says read, or when the owner marked this tool read in Connect (`ownerRead`, op mcp_tool_read_set).
  */
 export function classifyMcpTool(name: string, annotations: Record<string, unknown> | undefined, ownerRead = false): ToolClass {
+  return narrowByName(name, classifyMcpBase(name, annotations, ownerRead));
+}
+
+function classifyMcpBase(name: string, annotations: Record<string, unknown> | undefined, ownerRead: boolean): ToolClass {
   const a = annotations ?? {};
   if (namesMoney(name)) return classify({ write: true, outward: true, destructive: false, money: true });
   if (a.destructiveHint === true) return classify({ write: true, outward: false, destructive: true });

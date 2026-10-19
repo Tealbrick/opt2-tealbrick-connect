@@ -182,7 +182,7 @@ test("catalog search offers only connected services; resolve returns the class",
   assert.equal(hits[0]?.name, "gmail_send_email");
   assert.equal(hits[0]?.effect, "outward");
   assert.ok(hits[0]?.inputSchema.properties && "connect_account" in (hits[0].inputSchema.properties as object));
-  assert.deepEqual(await dyn.resolve("gmail_delete_message", hookCtx), { tool: "gmail_delete_message", crud: ["update", "delete"], effect: "destructive", holdFamily: "destructive" });
+  assert.deepEqual(await dyn.resolve("gmail_delete_message", hookCtx), { tool: "gmail_delete_message", crud: ["delete"], effect: "destructive", holdFamily: "destructive" });
   assert.equal(await dyn.resolve("nope", hookCtx), null);
   // C107: a send resolves WITH the "outward" family (the READ-UPDATE tier is the consent; not held by default). Never
   // first_contact: resolve sees no recipient and Connect keeps no third-party correspondence history.

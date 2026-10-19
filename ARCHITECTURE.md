@@ -30,6 +30,7 @@ Connect is the one place for outside connectivity (C16 and the PRD). Per connect
 - Destructive, hold `destructive`: `buzz_delete`, `channel_delete`.
 - Person: 8 reads (`services_search`, `accounts_overview`, ...), 14 writes (`account_connect`, `account_app_share`, `catalog_account_connect`, `mcp_account_connect`, `buzz_identities_generate`, `channel_account_connect`, `sender_identity_set`, ...), and `buzz_profile_publish` (outward, hold family `identity`).
 - Dynamic tools resolve per tool to read, write, outward, destructive or money. Unknown verbs classify fail-CLOSED (write or outward; payment is money, always held) (SEC-02). Hold view binding for send tools: account, recipients or channel, subject, first 500 characters as plain text, attachment names and sizes (`src/hold-view.ts`, C201).
+- CRUD per tool (C276a): catalog ops by method — POST on a listed collection `[create]`, PUT/PATCH `[update]`, DELETE `[delete]`; a POST on an item path, with an action word, or on a path with no GET stays `[create, update]`; an op-level `x-tealbrick-crud` wins. Composio/MCP names: CREATE/ADD/INSERT → create, UPDATE/SET/PATCH/EDIT → update, DELETE/REMOVE → delete, anything else `[create, update]`. Read and money never change, destructive keeps delete, effect and hold family never change (`withCrud`, `src/effect.ts`). Stored tool rows are re-made on start when the classifier or catalog version changes (`src/tool-resync.ts`, table `connect_meta`). Snapshot of every catalog op: `test/fixtures/catalog/classes-<version>.json`.
 
 ## Scopes, hooks and companions
 

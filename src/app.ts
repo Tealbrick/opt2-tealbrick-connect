@@ -30,6 +30,7 @@ import { ComposioSource, connectMode } from "./sources/composio/source.ts";
 import { McpError } from "./sources/mcp/client.ts";
 import { OAuthError } from "./sources/mcp/oauth.ts";
 import { McpSource } from "./sources/mcp/source.ts";
+import { resyncToolClasses, toolClassMarker } from "./tool-resync.ts";
 import { ACCOUNT_ARGUMENT, FIRST_CONTACT_SUFFIX, ToolRegistry } from "./tools.ts";
 import { type FetchLike, UpstreamError } from "./util/http.ts";
 import { newId } from "./util/ids.ts";
@@ -1400,6 +1401,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const s = services(ctx);
       s.channels.startAll();
       await tetherBuzz(ctx.db, ctx.log);
+      // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
+      const marker = toolClassMarker(env.manifest.artifacts?.find((a) => a.id === "catalog")?.version);
+      void resyncToolClasses(ctx.db, s, marker, ctx.log).catch((e: unknown) => ctx.log.warn("tool re-sync failed", { code: (e as { code?: string }).code ?? "error" }));
       const tick = async () => {
         s.channels.purge();
         ctx.db.prepare("DELETE FROM connect_data_audit WHERE at < ?").run(Date.now() - 90 * 24 * 60 * 60 * 1000);
