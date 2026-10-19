@@ -18,7 +18,30 @@ export type CatalogAuth = { type: "header"; name: string; prefix?: string } | { 
 
 export const CALL_TIMEOUT_MS = 30_000;
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const FORBIDDEN_HEADERS = new Set(["host", "authorization", "cookie", "content-length", "content-type", "connection", "transfer-encoding", "accept", "proxy-authorization", "te", "upgrade"]);
+const FORBIDDEN_HEADERS = new Set([
+  "host",
+  "authorization",
+  "cookie",
+  "content-length",
+  "content-type",
+  "connection",
+  "transfer-encoding",
+  "accept",
+  "proxy-authorization",
+  "te",
+  "upgrade",
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+  "x-http-method-override",
+  "x-method-override",
+  "origin",
+  "referer",
+  "expect",
+  "keep-alive",
+]);
 
 export class CatalogCallError extends Error {
   readonly code: string;
@@ -39,7 +62,7 @@ export function credentialFields(auth: CatalogAuth): string[] {
 }
 
 /** The value a declared header parameter takes when the caller omits it: schema `const`, else `default` (scalars only). */
-export function headerDefault(p: Pick<CompiledOperation["parameters"][number], "in" | "schema">): string | number | boolean | undefined {
+export function headerDefault(p: { in: string; schema: Record<string, unknown> }): string | number | boolean | undefined {
   if (p.in !== "header") return undefined;
   const value = "const" in p.schema ? p.schema.const : p.schema.default;
   return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : undefined;
@@ -78,7 +101,8 @@ export function buildRequest(input: {
       for (const v of Array.isArray(value) ? value : [value]) url.searchParams.append(p.name, typeof v === "object" ? JSON.stringify(v) : String(v));
     }
     // A declared header the caller omits gets its schema const/default (v1 openapi-http.ts:478); the caller's value wins.
-    const headerValue = p.in === "header" ? (headerArgs[p.name] ?? headerDefault(p)) : undefined;
+    const own = Object.hasOwn(headerArgs, p.name) ? headerArgs[p.name] : undefined;
+    const headerValue = p.in === "header" ? (own ?? headerDefault(p)) : undefined;
     if (p.in === "header" && headerValue !== undefined) {
       if (FORBIDDEN_HEADERS.has(p.name.toLowerCase())) continue;
       if (input.auth.type === "header" && p.name.toLowerCase() === input.auth.name.toLowerCase()) continue;

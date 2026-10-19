@@ -81,6 +81,9 @@ test("CF-PZ-2: Postiz POST /public/v1/posts has its body schema; GET has startDa
 test("merge patch: objects merge, null deletes, arrays and scalars replace", () => {
   assert.deepEqual(applyMergePatch({ a: { b: 1, c: 2 }, d: [1, 2], e: 1 }, { a: { c: null, x: 3 }, d: [9], e: "s" }), { a: { b: 1, x: 3 }, d: [9], e: "s" });
   assert.deepEqual(applyMergePatch({ a: 1 }, { a: { b: null } }), { a: {} });
+  const merged = applyMergePatch({ a: 1 }, JSON.parse('{"__proto__": {"polluted": true}, "b": 2}')) as Record<string, unknown>;
+  assert.deepEqual(merged, { a: 1, b: 2 });
+  assert.equal(Object.getPrototypeOf(merged), Object.prototype);
 });
 
 test("CF-NC-1: Nextcloud OCS ops send OCS-APIRequest: true when the caller omits it; the caller's value wins", () => {
@@ -117,6 +120,9 @@ test("CF-NC-1: defaults never set auth, transport or credential headers; const w
             { name: "Content-Type", in: "header", schema: { type: "string", default: "text/plain" } },
             { name: "X-Mode", in: "header", schema: { type: "string", const: "fixed", default: "other" } },
             { name: "X-Obj", in: "header", schema: { type: "object", default: { a: 1 } } },
+            { name: "X-Null", in: "header", required: true, schema: { type: "string", default: null } },
+            { name: "X-Forwarded-For", in: "header", schema: { type: "string", default: "1.2.3.4" } },
+            { name: "constructor", in: "header", schema: { type: "string" } },
             { name: "X-Plain", in: "header", required: true, schema: { type: "string" } },
             { name: "limit", in: "query", schema: { type: "integer", default: 10 } },
           ],
@@ -127,8 +133,9 @@ test("CF-NC-1: defaults never set auth, transport or credential headers; const w
   const [x] = compile(spec).operations;
   assert.ok(x);
   // A required header without a default stays required for the caller.
-  assert.deepEqual(prop(x.inputSchema, "header")?.required, ["X-Plain"]);
-  const headerAuth = buildRequest({ baseUrl: "https://a.example.com", basePath: "", op: x, args: { header: { "X-Plain": "p" } }, auth: { type: "header", name: "X-Api-Key" }, credentials: { token: "REAL" } });
+  // A required header without a usable (scalar) default stays required for the caller.
+  assert.deepEqual(prop(x.inputSchema, "header")?.required, ["X-Null", "X-Plain"]);
+  const headerAuth = buildRequest({ baseUrl: "https://a.example.com", basePath: "", op: x, args: { header: { "X-Plain": "p", "X-Null": "n" } }, auth: { type: "header", name: "X-Api-Key" }, credentials: { token: "REAL" } });
   const h = headerAuth.init.headers as Record<string, string>;
   assert.equal(h["X-Api-Key"], "REAL");
   assert.equal(h.Authorization, undefined);
@@ -137,6 +144,8 @@ test("CF-NC-1: defaults never set auth, transport or credential headers; const w
   assert.equal(h["X-Mode"], "fixed");
   assert.equal(h["X-Obj"], undefined);
   assert.equal(h["X-Plain"], "p");
+  assert.equal(h["X-Forwarded-For"], undefined);
+  assert.ok(!Object.hasOwn(h, "constructor"), "inherited keys are not header values");
   // Query defaults are not sent (only headers: v1 parameterHasDefault is header-only).
   assert.equal(headerAuth.url.searchParams.get("limit"), null);
   const basic = buildRequest({ baseUrl: "https://a.example.com", basePath: "", op: x, args: {}, auth: { type: "basic" }, credentials: { username: "u", password: "p" } });
@@ -180,6 +189,24 @@ test("Mautic: 140 exposed ops, outward/destructive labels intact, admin and webh
   assert.equal(health?.path, "/api/v2/tags");
   const sent = buildRequest({ baseUrl: "https://mautic.example.com", basePath: m.basePathOverride ?? "", op: health as CompiledOperation, args: {}, auth: m.auth, credentials: { username: "api", password: "pw" } });
   assert.equal(sent.url.toString(), "https://mautic.example.com/api/v2/tags");
+});
+
+test("Chatwoot (Connect override of the v1 entry): admin-class ops are excluded, the overlay routes and labels stay", () => {
+  const cw = app("chatwoot");
+  const ops = compile(cw.spec, cw.labels).operations;
+  const id = (o: CompiledOperation) => `${o.method.toUpperCase()} ${o.path}`;
+  assert.ok(!ops.some((o) => o.path.startsWith("/platform/api/")), "no Platform API");
+  assert.ok(!ops.some((o) => /\/(saml_settings|custom_roles)\b/u.test(o.path)), "no SAML or custom roles");
+  assert.ok(!ops.some((o) => o.path.startsWith("/api/v1/profile") && o.method !== "get"), "no profile/MFA/token writes");
+  assert.ok(!ops.some((o) => o.path.includes("whatsapp_business_management_token")), "no WhatsApp Business token");
+  assert.ok(!ops.some((o) => o.path.includes("/captain/custom_tools") && (o.method === "post" || o.method === "patch")), "no custom-tool writes");
+  // Health and the agent work stay: profile read, conversations, messages (outward, held per policy).
+  assert.equal(ops.find((o) => o.operationId === cw.healthOperation)?.effect, "read");
+  const send = ops.find((o) => id(o) === "POST /api/v1/accounts/{account_id}/conversations/{conversation_id}/messages");
+  assert.equal(send?.effect, "outward");
+  assert.equal(send?.holdFamily, "outward");
+  assert.ok(ops.length > 152, "overlay routes are merged");
+  for (const o of ops.filter((x) => x.method === "delete")) assert.equal(o.effect, "destructive", id(o));
 });
 
 test("no operator host names anywhere in the shipped artifact", () => {

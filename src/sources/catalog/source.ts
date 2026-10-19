@@ -251,6 +251,7 @@ export function applyMergePatch(target: unknown, patch: unknown): unknown {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) return patch;
   const base: Record<string, unknown> = target && typeof target === "object" && !Array.isArray(target) ? { ...(target as Record<string, unknown>) } : {};
   for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+    if (key === "__proto__") continue;
     if (value === null) delete base[key];
     else base[key] = applyMergePatch(base[key], value);
   }
