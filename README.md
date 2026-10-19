@@ -2,7 +2,7 @@
 
 Everything an agent reaches outside the workspace: Composio (Gmail, Calendar and 1,000+ apps), a Tealbrick catalog of self-hosted app connectors, custom remote MCP servers, Buzz (Nostr) identities per agent, and chat channels (Slack, Teams, Telegram, Discord). Built on the Miniapp SDK.
 
-**Status:** stable 0.5.10; `main` is 0.5.11 (dev channel until promoted). Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-connect` (on 2026-10-17 its version tags are `0.5.11`, its earlier dev pre-release `0.5.11-dev.1`, and `sha-` tags; there is no `0.5.10` tag in that registry). The largest of the apps (about 11,000 lines in `src/`).
+**Status:** stable 0.5.11; 0.5.12 (catalog fixes CF-PZ-2, CF-NC-1, Mautic in catalog-0.2.0; SDK 0.1.34) is a fix release cut from 0.5.11. `main` also carries the R3 data ops and R5-5 (next release). Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-connect`. The largest of the apps (about 11,000 lines in `src/`).
 
 - Repository: `Tealbrick/opt2-tealbrick-connect` (GitHub organisation `Tealbrick`)
 - Licence: Apache-2.0 for the app code (`LICENSE`, `NOTICE`); upstream licences are in `THIRD_PARTY_NOTICES.md`. The Tealbrick brand mark and app art are Tealbrick artwork and are not covered by the Apache-2.0 licence.
@@ -95,7 +95,7 @@ App-specific:
 3. The release Action pushes the GHCR image and the kit tarball. `registry-sync` signs the index entry with the image digest and the manifest digest.
 4. Core deploys the newest stable version when the owner installs or updates the app. Core (E3, live since RS-3) switches to the new version only after a health check and rolls back when it fails, restoring the pre-update data snapshot; the gate is "not worse than before" (C219). The full effect needs the app to run SDK 0.1.25, which holds for the dev channel builds today and for stable after their promotion.
 
-The catalog artifact (`catalog-0.1.0`, sha256 pinned in the manifest) is built with `pnpm catalog:build` and attached to a GitHub release.
+The catalog artifact (`catalog-0.2.0`, sha256 pinned in the manifest) is built with `pnpm catalog:build` and attached to a GitHub release. 0.2.0 = the 12 v1 Company Box entries + Mautic (13 entries; Chatwoot replaced by a Connect override that excludes admin-class ops), built with `--from <v1 company-box> --override-from <staged entries> --version 0.2.0 --forbid-file <operator host list>`; the operator host list is kept outside this public repo. The same bytes are in `test/fixtures/catalog/` for the tests.
 
 ## Dependency pins
 

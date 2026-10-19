@@ -57,9 +57,16 @@ export function parseBundle(gz: Uint8Array, pin: string): CatalogApp[] {
   return bundle.entries.map((e) => {
     for (const f of e.files) if (sha256(f.content) !== f.sha256) throw new CatalogError("catalog_file_mismatch", `${e.id}/${f.name} digest mismatch.`);
     const entry = e.entry;
-    const openapi = (entry.openapi ?? {}) as { spec?: string; basePath?: string };
+    const openapi = (entry.openapi ?? {}) as { spec?: string; basePath?: string; overlay?: { file?: string } };
     const specFile = e.files.find((f) => f.name === openapi.spec);
     if (!specFile) throw new CatalogError("catalog_spec_missing", `${e.id}: spec file missing.`);
+    let spec: unknown = JSON.parse(specFile.content);
+    // v1 company-box.ts:391-393: the pinned overlay (RFC 7396 merge patch) supplements what the upstream spec lacks.
+    if (openapi.overlay) {
+      const overlayFile = e.files.find((f) => f.name === openapi.overlay?.file);
+      if (!overlayFile) throw new CatalogError("catalog_overlay_missing", `${e.id}: overlay file missing.`);
+      spec = applyMergePatch(spec, JSON.parse(overlayFile.content));
+    }
     const app = (entry.app ?? {}) as { version?: string };
     return {
       id: e.id,
@@ -75,7 +82,7 @@ export function parseBundle(gz: Uint8Array, pin: string): CatalogApp[] {
         reads: (entry.reads as string[] | undefined) ?? [],
         excluded: (entry.excluded as EntryLabels["excluded"]) ?? [],
       },
-      spec: JSON.parse(specFile.content),
+      spec,
       basePathOverride: typeof openapi.basePath === "string" ? openapi.basePath : undefined,
       healthOperation: typeof entry.healthOperation === "string" ? entry.healthOperation : null,
     };
@@ -237,6 +244,18 @@ export class CatalogSource {
     if (this.#d.accounts.list({ service: account.service, status: "connected" }).length === 0) this.#d.tools.removeService("catalog", account.service);
     return revoked;
   }
+}
+
+/** RFC 7396 JSON merge patch (v1 openapi-adapter.ts:919-929): objects merge, `null` deletes, anything else replaces. */
+export function applyMergePatch(target: unknown, patch: unknown): unknown {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const base: Record<string, unknown> = target && typeof target === "object" && !Array.isArray(target) ? { ...(target as Record<string, unknown>) } : {};
+  for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+    if (key === "__proto__") continue;
+    if (value === null) delete base[key];
+    else base[key] = applyMergePatch(base[key], value);
+  }
+  return base;
 }
 
 /** `cb_<app>_<operation>` (≤ 48 chars, toolName hashes longer ones). */

@@ -70,13 +70,13 @@ Services, Accounts (with "Share with <app> (read only)" per chat account), Buzz,
 
 ## Requirements and runtime hints
 
-A Composio key only if Composio services are used. Buzz relays only if Buzz is used. Public routes (3, unauthenticated by design): `/oauth/composio/callback`, `/oauth/mcp/callback`, `/inbound/teams` (Bot Framework JWT verified, 128 KiB cap). A catalog artifact `catalog-0.1.0` (sha256 pinned in the manifest).
+A Composio key only if Composio services are used. Buzz relays only if Buzz is used. Public routes (3, unauthenticated by design): `/oauth/composio/callback`, `/oauth/mcp/callback`, `/inbound/teams` (Bot Framework JWT verified, 128 KiB cap). A catalog artifact `catalog-0.2.0` (sha256 pinned in the manifest).
 
 Port 8314. 0.5 cpu, 512 MB. Data 2 GB plus backup 5 GB declared as two volumes; Core and the generated Railway recipe merge them into one volume at the data mount (SDK-API 7.3; `TB_BACKUP_DIR=/data/backup`). Needs a non-sleeping container (long-lived outbound sockets). Backup cron `23 3 * * *`, retain 14. `EXPOSE 8314`.
 
 ## Pinned packages
 
-Stable 0.5.10: miniapp-sdk 0.1.24, spec 0.1.35. Main (0.5.11): miniapp-sdk 0.1.25, spec 0.1.39. Both: manifest 0.1.18, conformance 0.1.18, ui 0.2.4. Also `@noble/curves`, `@noble/hashes`, `undici`.
+0.5.12 (fix release on 0.5.11): miniapp-sdk 0.1.34, manifest 0.1.26, spec 0.1.49, conformance 0.1.23, ui 0.2.4. Stable 0.5.11: miniapp-sdk 0.1.25, spec 0.1.39, manifest 0.1.18, conformance 0.1.18. Also `@noble/curves`, `@noble/hashes`, `undici`.
 
 All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25: pre-update snapshot, migration lock, failed mode) is in this app only where the pin above says 0.1.25 (the plain version 0.5.11 is on the dev channel; its qa1 soak is the gate for stable, C221, PROMOTE-STABLE §7). All RS-3 apps pin SDK 0.1.25 (dev channel; stable after the qa1 soak of the plain version). Core restores the snapshot on an automatic rollback (portal-core#1, E3). This Core is live since 2026-10-16 22:37:58Z (Core 29ae2fe).
 

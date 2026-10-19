@@ -2,8 +2,8 @@
  * One HTTP call for one catalog operation (harvest: v1 openapi-http.ts rules, lines 1-23).
  * - Base URL re-checked by the outbound policy on every call (fresh DNS); `redirect: "error"`.
  * - Path parameters are encoded per segment; `.`/`..` and slashes in values are refused, so the final URL keeps
- *   the base origin and path prefix. Only declared query/header parameters are sent; transport headers and the
- *   credential header can never be set by the caller.
+ *   the base origin and path prefix. Only declared query/header parameters are sent; a declared header the caller
+ *   omits gets its schema const/default; transport headers and the credential header are never set from either.
  * - Credentials are attached here only; response text is scrubbed of every credential value; errors carry codes
  *   and statuses, never URLs with credentials or header values.
  */
@@ -18,7 +18,30 @@ export type CatalogAuth = { type: "header"; name: string; prefix?: string } | { 
 
 export const CALL_TIMEOUT_MS = 30_000;
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const FORBIDDEN_HEADERS = new Set(["host", "authorization", "cookie", "content-length", "content-type", "connection", "transfer-encoding", "accept", "proxy-authorization", "te", "upgrade"]);
+const FORBIDDEN_HEADERS = new Set([
+  "host",
+  "authorization",
+  "cookie",
+  "content-length",
+  "content-type",
+  "connection",
+  "transfer-encoding",
+  "accept",
+  "proxy-authorization",
+  "te",
+  "upgrade",
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+  "x-http-method-override",
+  "x-method-override",
+  "origin",
+  "referer",
+  "expect",
+  "keep-alive",
+]);
 
 export class CatalogCallError extends Error {
   readonly code: string;
@@ -36,6 +59,13 @@ export function credentialFields(auth: CatalogAuth): string[] {
   if (auth.type === "basic") return ["username", "password"];
   if (auth.type === "none") return [];
   return ["token"];
+}
+
+/** The value a declared header parameter takes when the caller omits it: schema `const`, else `default` (scalars only). */
+export function headerDefault(p: { in: string; schema: Record<string, unknown> }): string | number | boolean | undefined {
+  if (p.in !== "header") return undefined;
+  const value = "const" in p.schema ? p.schema.const : p.schema.default;
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : undefined;
 }
 
 function segment(value: unknown, name: string): string {
@@ -70,10 +100,13 @@ export function buildRequest(input: {
       const value = queryArgs[p.name];
       for (const v of Array.isArray(value) ? value : [value]) url.searchParams.append(p.name, typeof v === "object" ? JSON.stringify(v) : String(v));
     }
-    if (p.in === "header" && headerArgs[p.name] !== undefined) {
+    // A declared header the caller omits gets its schema const/default (v1 openapi-http.ts:478); the caller's value wins.
+    const own = Object.hasOwn(headerArgs, p.name) ? headerArgs[p.name] : undefined;
+    const headerValue = p.in === "header" ? (own ?? headerDefault(p)) : undefined;
+    if (p.in === "header" && headerValue !== undefined) {
       if (FORBIDDEN_HEADERS.has(p.name.toLowerCase())) continue;
       if (input.auth.type === "header" && p.name.toLowerCase() === input.auth.name.toLowerCase()) continue;
-      const v = String(headerArgs[p.name]);
+      const v = String(headerValue);
       if (/[\r\n]/u.test(v)) throw new CatalogCallError("argument_invalid", `Header ${p.name} contains a line break.`);
       headers[p.name] = v;
     }
