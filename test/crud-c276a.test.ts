@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { AccountStore } from "../src/accounts.ts";
-import { classify, classifyMcpTool, crudFromName, type ToolClass, withCrud } from "../src/effect.ts";
+import { classify, classifyMcpTool, crudFromName, narrowByName, type ToolClass, withCrud } from "../src/effect.ts";
 import { catalogCrud, compile } from "../src/sources/catalog/openapi.ts";
 import { parseBundle } from "../src/sources/catalog/source.ts";
 import { type ComposioPolicy, classifyComposioTool } from "../src/sources/composio/policy.ts";
@@ -73,19 +73,72 @@ test("guardrail (c): read and money never change; destructive keeps delete; a no
 test("guardrail (d): names — CREATE/ADD/INSERT → create, UPDATE/SET/PATCH/EDIT → update, DELETE/REMOVE → delete, SEND/POST/PUBLISH and unknown → [create, update]", () => {
   for (const name of ["GITHUB_CREATE_ISSUE", "TRELLO_ADD_CARD", "SHEETS_INSERT_ROW", "createRecord"]) assert.deepEqual(crudFromName(name), ["create"], name);
   for (const name of ["NOTION_UPDATE_PAGE", "SLACK_SET_TOPIC", "GOOGLECALENDAR_PATCH_EVENT", "edit_file"]) assert.deepEqual(crudFromName(name), ["update"], name);
-  for (const name of ["GMAIL_DELETE_MESSAGE", "removeMember"]) assert.deepEqual(crudFromName(name), ["delete"], name);
+  for (const name of ["NOTION_DELETE_BLOCK", "remove_item", "deleteRow"]) assert.deepEqual(crudFromName(name), ["delete"], name);
   for (const name of ["GMAIL_SEND_EMAIL", "SLACK_POST_MESSAGE", "WORDPRESS_PUBLISH", "do_the_thing", "CREATE_AND_SEND", "TOGGLE_X"]) assert.equal(crudFromName(name), null, name);
-  // Noun words (draft, email, message) and read verbs do not count.
-  assert.deepEqual(crudFromName("GMAIL_CREATE_EMAIL_DRAFT"), ["create"]);
+  // Read verbs do not count.
   assert.deepEqual(crudFromName("GET_OR_CREATE_CONTACT"), ["create"]);
   assert.deepEqual(crudFromName("CREATE_OR_UPDATE_FILE"), ["create", "update"]);
 });
 
+test("review #17: sensitive objects, people-reaching nouns, negated verbs and look-alike letters are never narrowed", () => {
+  for (const name of [
+    "create_message", "add_comment", "create_email", "create_dm", "add_sms", "update_and_sms", "set_and_schedule", "update_and_call",
+    "create_invitation", "create_notification", "create_alert", "ADD_MEMBER", "addCollaborator", "SET_PERMISSIONS", "create_user",
+    "add_role", "create_api_token", "set_password", "create_and_unshare", "set_and_unassign", "update_and_unlink", "create_dеlete",
+    "GMAIL_CREATE_EMAIL_DRAFT", "GMAIL_DELETE_MESSAGE", "import_contacts", "create_webhook",
+  ]) {
+    assert.equal(crudFromName(name), null, name);
+  }
+  // An outward class whose name holds any outward word keeps its set.
+  assert.deepEqual(narrowByName("create_post", OUTWARD), OUTWARD);
+  // Subset rule: a destructive ADD_AND_REMOVE never needs create where [update, delete] did not.
+  assert.deepEqual(narrowByName("ADD_AND_REMOVE_THINGS", DESTRUCTIVE), DESTRUCTIVE);
+  assert.deepEqual(withCrud(DESTRUCTIVE, ["create", "delete"]), DESTRUCTIVE);
+  assert.deepEqual(withCrud(WRITE, ["update"]), { ...WRITE, crud: ["update"] });
+});
+
+test("review #17: catalog paths naming access, identity, secrets or imports, and operationIds with another verb, keep [create, update]", () => {
+  const keep: [string, string, string, boolean][] = [
+    ["post", "/repos/{owner}/{repo}/contents", "repoChangeFiles", true],
+    ["post", "/api/import/subscribers", "importSubscribers", true],
+    ["post", "/api/0/generate-recovery-codes/", "", true],
+    ["post", "/organizers/{o}/bankimportjobs/", "", true],
+    ["post", "/oauth/authorize", "", true],
+    ["post", "/apps/dashboard/api/v3/layout", "updateLayout", true],
+    ["post", "/accounts/{a}/contacts/{id}/labels", "", true],
+    ["post", "/accounts/{a}/conversations/{c}/messages", "", true],
+    ["post", "/organizers/{o}/teams/{t}/invites/", "", true],
+    ["post", "/apps/files_sharing/api/v1/shares", "", true],
+    ["post", "/organizations/{o}/members/", "", true],
+    ["post", "/cloud/groups", "", true],
+    ["post", "/cloud/users/{id}/subadmins", "", true],
+    ["post", "/organizers/{o}/giftcards/", "", true],
+    ["patch", "/rbac/permissions/assigned_by_roles/{uuid}/unassign/", "", false],
+    ["put", "/core/transactional/applications/", "", false],
+    ["put", "/api/profile", "", false],
+    ["patch", "/repos/{o}/{r}/hooks/{id}", "", false],
+    ["put", "/things/{id}", "createOrReplaceThing", false],
+  ];
+  for (const [method, path, operationId, lists] of keep) assert.equal(catalogCrud(method as "post", path, undefined, lists, operationId), null, `${method} ${path}`);
+  assert.deepEqual(catalogCrud("post", "/public/v1/posts", undefined, true, "PublicIntegrationsController_createPost"), ["create"]);
+  assert.deepEqual(catalogCrud("patch", "/events/{event}/", undefined, false, "events_partial_update"), ["update"]);
+});
+
+test("review #17: identity-provider apps (Authentik) keep the full set for every write", () => {
+  const authentik = classes("authentik");
+  for (const [id, cls] of Object.entries(authentik)) {
+    if (cls.effect === "read" || cls.effect === "money") continue;
+    assert.deepEqual(cls.crud, cls.effect === "destructive" ? ["update", "delete"] : ["create", "update"], id);
+  }
+});
+
 test("Composio + MCP: the policy / annotations decide the effect, the name narrows the CRUD only when safe", () => {
   const policy: ComposioPolicy = { schema: 1, toolkit: "gmail", version: "1", destructive: ["GMAIL_DELETE_*"], outward: ["GMAIL_SEND_*"], writes: ["GMAIL_*_LABEL*", "GMAIL_CREATE_*"], reads: [] };
-  assert.deepEqual(classifyComposioTool("GMAIL_DELETE_MESSAGE", policy), { ...DESTRUCTIVE, crud: ["delete"] });
+  assert.deepEqual(classifyComposioTool("GMAIL_DELETE_DRAFT_FOLDER", policy), { ...DESTRUCTIVE, crud: ["delete"] });
+  assert.deepEqual(classifyComposioTool("GMAIL_DELETE_MESSAGE", policy), DESTRUCTIVE);
   assert.deepEqual(classifyComposioTool("GMAIL_SEND_EMAIL", policy), OUTWARD);
-  assert.deepEqual(classifyComposioTool("GMAIL_CREATE_EMAIL_DRAFT", policy), { ...WRITE, crud: ["create"] });
+  assert.deepEqual(classifyComposioTool("GMAIL_CREATE_EMAIL_DRAFT", policy), WRITE);
+  assert.deepEqual(classifyComposioTool("GMAIL_CREATE_FILTER_RULE", policy), { ...WRITE, crud: ["create"] });
   // REMOVE that the policy calls a write (not destructive) keeps [create, update]: never tighter than before by surprise.
   assert.deepEqual(classifyComposioTool("GMAIL_REMOVE_LABEL", policy), WRITE);
   assert.deepEqual(classifyComposioTool("GMAIL_LIST_LABELS", policy), READ);
@@ -113,7 +166,7 @@ test("shipped catalog: a Create grant can create a Postiz post or a Mautic conta
   const postiz = classes("postiz");
   const post = postiz["POST /public/v1/posts"];
   assert.deepEqual([post?.crud, post?.effect, post?.holdFamily], [["create"], "outward", "outward"]);
-  assert.deepEqual(postiz["PUT /public/v1/posts/{id}/status"]?.crud, ["update"]);
+  assert.deepEqual(postiz["PUT /public/v1/posts/{id}/status"]?.crud, ["create", "update"], "status changes keep the full set");
   assert.deepEqual(postiz["DELETE /public/v1/posts/{id}"]?.crud, ["delete"]);
   const mautic = classes("mautic");
   assert.deepEqual(mautic["POST /api/v2/contacts"]?.crud, ["create"]);
@@ -174,4 +227,24 @@ test("re-sync on start: accounts connected before the update get new tool rows o
   assert.deepEqual(calls, [], "same marker: nothing to do");
   await resyncToolClasses(db, sources, toolClassMarker("9.9.9"));
   assert.equal(calls.length, 3, "a new catalog version re-syncs again");
+});
+
+test("re-sync: a catalog app that left the catalog does not block the marker; a policy edit changes the marker", async () => {
+  const db = testDb();
+  const accounts = new AccountStore(db);
+  accounts.create({ service: "gone", source: "catalog", kind: "as_me", label: "gone", ownerAgent: null, externalRef: "https://x.example.com", status: "connected" });
+  const sources = {
+    accounts,
+    catalog: {
+      syncTools: async () => {
+        throw Object.assign(new Error("unknown"), { code: "catalog_app_unknown" });
+      },
+    },
+    composio: { syncTools: async () => 0 },
+    mcp: { syncTools: async () => 0 },
+  };
+  const marker = toolClassMarker("0.2.0", "aaaa");
+  assert.deepEqual((await resyncToolClasses(db, sources, marker)).failed, []);
+  assert.equal(storedMarker(db), marker);
+  assert.notEqual(toolClassMarker("0.2.0", "bbbb"), marker);
 });

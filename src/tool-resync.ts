@@ -19,8 +19,9 @@ export interface ResyncSources {
   mcp: { syncTools(account: Account): Promise<number> };
 }
 
-export function toolClassMarker(catalogVersion: string | undefined): string {
-  return `${TOOL_CLASS_VERSION}|catalog-${catalogVersion ?? "none"}`;
+/** Classifier version + catalog version + a digest of the shipped Composio policy files (a policy edit re-syncs too). */
+export function toolClassMarker(catalogVersion: string | undefined, policyDigest = "none"): string {
+  return `${TOOL_CLASS_VERSION}|catalog-${catalogVersion ?? "none"}|policies-${policyDigest}`;
 }
 
 export function storedMarker(db: Db): string | null {
@@ -45,6 +46,11 @@ export async function resyncToolClasses(db: Db, s: ResyncSources, marker: string
       else await s.mcp.syncTools(account);
       synced.push(key);
     } catch (error) {
+      // A catalog app that left the catalog has no tools to re-make; it must not block the marker forever.
+      if ((error as { code?: string }).code === "catalog_app_unknown") {
+        synced.push(key);
+        continue;
+      }
       failed.push(key);
       log?.warn("tool re-sync failed", { service: key, code: (error as { code?: string }).code ?? "error" });
     }

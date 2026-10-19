@@ -4,6 +4,8 @@
  * Everything here is typed against the frozen contract (`@opt2-tealbrick/spec`).
  */
 
+import { createHash } from "node:crypto";
+
 import { channelSenderId } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, SdkAppDefinition, SdkOpContext, SdkPublicContext } from "@opt2-tealbrick/miniapp-sdk";
 import type { CrudAction, DynamicCatalogEntry, DynamicResolution, DynamicSearchInput, Manifest } from "@opt2-tealbrick/spec/manifest";
@@ -123,6 +125,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     throw new Err(code, message, status, details);
   };
   const policies = loadPolicies();
+  // C276a: a policy edit changes tool classes, so it is part of the re-sync marker.
+  const policyDigest = createHash("sha256")
+    .update(JSON.stringify([...policies.values()].sort((a, b) => (a.toolkit < b.toolkit ? -1 : 1))))
+    .digest("hex")
+    .slice(0, 16);
   const toolkitCache = new ToolkitCache();
   let cache: { db: Db; services: Services } | null = null;
   /** One outbound fetch: injected (tests) or pinned-connect (SEC-09), with exact allowlisted test hosts. */
@@ -1402,7 +1409,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       s.channels.startAll();
       await tetherBuzz(ctx.db, ctx.log);
       // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
-      const marker = toolClassMarker(env.manifest.artifacts?.find((a) => a.id === "catalog")?.version);
+      const marker = toolClassMarker(env.manifest.artifacts?.find((a) => a.id === "catalog")?.version, policyDigest);
       void resyncToolClasses(ctx.db, s, marker, ctx.log).catch((e: unknown) => ctx.log.warn("tool re-sync failed", { code: (e as { code?: string }).code ?? "error" }));
       const tick = async () => {
         s.channels.purge();

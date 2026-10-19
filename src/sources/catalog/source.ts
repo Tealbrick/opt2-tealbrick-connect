@@ -19,6 +19,12 @@ import { type CatalogAuth, callOperation, credentialFields } from "./http.ts";
 import { type CompiledOperation, compile, type EntryLabels } from "./openapi.ts";
 
 export const CATALOG_FORMAT = "tealbrick.catalog/1";
+/**
+ * C276a review #17: catalog apps whose every write keeps the full [create, update] (no per-method narrowing). Authentik is the
+ * identity provider: users, groups, roles, flows, stages, sources, providers and outposts all change who can sign in. An entry
+ * can also set `fullCrud: true` itself.
+ */
+export const FULL_CRUD_APPS: ReadonlySet<string> = new Set(["authentik"]);
 const sha256 = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
 
 export interface CatalogApp {
@@ -81,6 +87,7 @@ export function parseBundle(gz: Uint8Array, pin: string): CatalogApp[] {
         destructive: (entry.destructive as string[] | undefined) ?? [],
         reads: (entry.reads as string[] | undefined) ?? [],
         excluded: (entry.excluded as EntryLabels["excluded"]) ?? [],
+        fullCrud: entry.fullCrud === true || FULL_CRUD_APPS.has(e.id),
       },
       spec,
       basePathOverride: typeof openapi.basePath === "string" ? openapi.basePath : undefined,
