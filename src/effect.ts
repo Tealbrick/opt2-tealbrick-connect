@@ -293,7 +293,16 @@ const SEND_PARTS = new Set(["send", "sends", "reply", "replies", "forward", "for
 /** True for an `outward` dynamic tool that sends to people: first contact applies (X-02, C107). */
 export function isSendTool(tool: { name: string; upstream?: string; effect: Effect }): boolean {
   if (tool.effect !== "outward") return false;
-  return nameParts(tool.upstream ?? tool.name).some((part) => SEND_PARTS.has(part));
+  return nameParts(tool.upstream ?? tool.name).some((part) => SEND_PARTS.has(part)) || isInviteTool(tool);
+}
+
+/**
+ * CF-GC-1 (Coordinator 2026-10-20): an outward tool that names an invite object (event, meeting, appointment, booking,
+ * calendar: GOOGLECALENDAR_CREATE_EVENT, create_meeting) invites its attendees, so it is a send tool for first contact: a new
+ * external attendee is held like a new Gmail recipient. Unlike a mail, an invite with NO attendees reaches nobody and runs.
+ */
+export function isInviteTool(tool: { name: string; upstream?: string; effect: Effect }): boolean {
+  return tool.effect === "outward" && namesInviteObject(tool.upstream ?? tool.name);
 }
 
 /**

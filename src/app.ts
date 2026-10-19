@@ -21,7 +21,7 @@ import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/ser
 import { DATA_OPS_UNAVAILABLE_CODE, DATA_OPS_UNAVAILABLE_MESSAGE, DATA_OPS_VERIFIED_PRODUCT_SUPPORTED, verifiedAppProduct } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, isSendTool, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, isInviteTool, isSendTool, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -435,7 +435,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const caller = ctx.caller.id;
           const accountId = account.id;
           const unknown = recipients.filter((r) => !ctx.db.prepare("SELECT 1 FROM connect_tool_contacts WHERE caller = ? AND account = ? AND address = ?").get(caller, accountId, r));
-          if (recipients.length === 0 || unknown.length > 0) {
+          // CF-GC-1: an invite tool with no attendees invites nobody; every other send with no visible recipient fails closed.
+          if ((recipients.length === 0 && !isInviteTool(row)) || unknown.length > 0) {
             const firstName = `${row.name}${FIRST_CONTACT_SUFFIX}`;
             const who = recipients.length === 0 ? "Connect cannot see the recipients of this call" : `${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? ` and ${unknown.length - 5} more` : ""} ${unknown.length === 1 ? "is" : "are"} new to you on ${account.label}`;
             fail("first_contact_required", `${who}. Call the tool ${firstName} with the same arguments; the owner approves this first contact once. Later messages to known people use ${row.name}.`, 409, {
