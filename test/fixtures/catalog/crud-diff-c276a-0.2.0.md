@@ -3,12 +3,12 @@
 | change | ops |
 |---|---|
 | destructive: update+delete -> delete | 298 |
-| outward: create+update -> create | 16 |
-| outward: create+update -> update | 15 |
+| outward: create+update -> create | 14 |
+| outward: create+update -> update | 14 |
 | write: create+update -> create | 75 |
 | write: create+update -> update | 69 |
 
-Changed ops: 473 of 3236
+Changed ops: 470 of 3236
 
 | app | op | effect | old crud | new crud |
 |---|---|---|---|---|
@@ -196,7 +196,6 @@ Changed ops: 473 of 3236
 | forgejo | DELETE /repos/{owner}/{repo}/pulls/{index}/requested_reviewers | destructive | update+delete | delete |
 | forgejo | DELETE /repos/{owner}/{repo}/pulls/{index}/reviews/{id} | destructive | update+delete | delete |
 | forgejo | DELETE /repos/{owner}/{repo}/pulls/{index}/reviews/{id}/comments/{comment} | destructive | update+delete | delete |
-| forgejo | POST /repos/{owner}/{repo}/push_mirrors | outward | create+update | create |
 | forgejo | DELETE /repos/{owner}/{repo}/push_mirrors/{name} | destructive | update+delete | delete |
 | forgejo | DELETE /repos/{owner}/{repo}/releases/tags/{tag} | destructive | update+delete | delete |
 | forgejo | DELETE /repos/{owner}/{repo}/releases/{id} | destructive | update+delete | delete |
@@ -447,8 +446,6 @@ Changed ops: 473 of 3236
 | pretix | DELETE /api/v1/organizers/{organizer}/events/{event}/quotas/{id}/ | destructive | update+delete | delete |
 | pretix | DELETE /api/v1/organizers/{organizer}/events/{event}/scheduled_exports/{id}/ | destructive | update+delete | delete |
 | pretix | PATCH /api/v1/organizers/{organizer}/events/{event}/seats/{id}/ | write | create+update | update |
-| pretix | POST /api/v1/organizers/{organizer}/events/{event}/sendmail_rules/ | outward | create+update | create |
-| pretix | PATCH /api/v1/organizers/{organizer}/events/{event}/sendmail_rules/{id}/ | outward | create+update | update |
 | pretix | DELETE /api/v1/organizers/{organizer}/events/{event}/sendmail_rules/{id}/ | destructive | update+delete | delete |
 | pretix | POST /api/v1/organizers/{organizer}/events/{event}/subevents/ | write | create+update | create |
 | pretix | PATCH /api/v1/organizers/{organizer}/events/{event}/subevents/{id}/ | write | create+update | update |

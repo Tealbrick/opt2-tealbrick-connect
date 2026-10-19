@@ -86,6 +86,7 @@ test("review #17: sensitive objects, people-reaching nouns, negated verbs and lo
     "create_invitation", "create_notification", "create_alert", "ADD_MEMBER", "addCollaborator", "SET_PERMISSIONS", "create_user",
     "add_role", "create_api_token", "set_password", "create_and_unshare", "set_and_unassign", "update_and_unlink", "create_dеlete",
     "GMAIL_CREATE_EMAIL_DRAFT", "GMAIL_DELETE_MESSAGE", "import_contacts", "create_webhook",
+    "add_attendee", "add_recipient", "create_deployment",
   ]) {
     assert.equal(crudFromName(name), null, name);
   }
@@ -113,6 +114,9 @@ test("review #17: catalog paths naming access, identity, secrets or imports, and
     ["post", "/cloud/groups", "", true],
     ["post", "/cloud/users/{id}/subadmins", "", true],
     ["post", "/organizers/{o}/giftcards/", "", true],
+    ["post", "/repos/{o}/{r}/push_mirrors", "", true],
+    ["post", "/events/{e}/sendmail_rules/", "", true],
+    ["patch", "/events/{e}/sendmail_rules/{id}/", "", false],
     ["patch", "/rbac/permissions/assigned_by_roles/{uuid}/unassign/", "", false],
     ["put", "/core/transactional/applications/", "", false],
     ["put", "/api/profile", "", false],

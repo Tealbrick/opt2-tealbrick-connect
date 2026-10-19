@@ -163,9 +163,10 @@ const SENSITIVE_WORDS = new Set([
   "label", "contents", "generate", "change", "replace", "apply", "execute", "run", "trigger", "sync", "upsert", "overwrite", "merge",
   "protection", "team", "org", "organization", "device", "giftcard", "voucher", "order", "cart", "agent", "conversation",
   "campaign", "automation", "inbox", "social", "profile", "setting", "webhook", "hook", "integration", "variable",
+  "mirror", "attendee", "recipient", "deployment", "mail",
 ]);
 /** Long stems that also match inside one word ("bankimportjobs", "passwordreset"). */
-const SENSITIVE_STEMS = ["import", "password", "permission", "secret", "token", "invit", "credential", "recovery", "membership", "giftcard", "voucher"] as const;
+const SENSITIVE_STEMS = ["import", "password", "permission", "secret", "token", "invit", "credential", "recovery", "membership", "giftcard", "voucher", "sendmail"] as const;
 /** Negating prefixes: un/de/dis/re + a known verb (unassign, unshare, deactivate, disconnect, reassign) is never a narrow write. */
 const NEGATION = /^(?:un|de|dis|re)(.+)$/u;
 
