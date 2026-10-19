@@ -189,6 +189,14 @@ export function keepsFullCrud(text: string): boolean {
   });
 }
 
+/**
+ * Coordinator 2026-10-20 (PR #17): calendar / event / meeting / appointment / booking TOOLS (Composio, MCP) invite attendees but
+ * are not send tools (isSendTool), so no first-contact hold fires for a new external attendee. They keep [create, update].
+ * Names only: catalog paths such as pretix `/events/` are ticketed events, not invitations.
+ */
+const INVITE_OBJECT_WORDS = new Set(["event", "meeting", "appointment", "booking", "calendar"]);
+const namesInviteObject = (name: string) => nameParts(name).some((part) => INVITE_OBJECT_WORDS.has(singular(part)) || part.includes("calendar"));
+
 /** Only plain ASCII names are narrowed: a look-alike letter (Cyrillic "е" in "dеlete") must not hide a verb. */
 const plainName = (name: string) => /^[\x20-\x7e]*$/u.test(name) && name.normalize("NFKC") === name;
 
@@ -213,7 +221,7 @@ export function withCrud(cls: ToolClass, crud: readonly CrudAction[] | null): To
  * is not plain ASCII, or that names a sensitive object or a negated verb (keepsFullCrud), is never narrowed.
  */
 export function crudFromName(name: string): CrudAction[] | null {
-  if (!plainName(name) || keepsFullCrud(name)) return null;
+  if (!plainName(name) || keepsFullCrud(name) || namesInviteObject(name)) return null;
   const verbs = nameParts(name).filter((part) => !NOUN_PARTS.has(part) && !READ_PARTS.has(part) && (isKnownVerb(part) || CREATE_VERBS.has(part) || DELETE_VERBS.has(part)));
   if (verbs.length === 0) return null;
   const crud = new Set<CrudAction>();

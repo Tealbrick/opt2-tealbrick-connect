@@ -8,10 +8,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { AccountStore } from "../src/accounts.ts";
-import { classify, classifyMcpTool, crudFromName, narrowByName, type ToolClass, withCrud } from "../src/effect.ts";
+import { classify, classifyMcpTool, crudFromName, isSendTool, narrowByName, type ToolClass, withCrud } from "../src/effect.ts";
 import { catalogCrud, compile } from "../src/sources/catalog/openapi.ts";
 import { parseBundle } from "../src/sources/catalog/source.ts";
-import { type ComposioPolicy, classifyComposioTool } from "../src/sources/composio/policy.ts";
+import { type ComposioPolicy, classifyComposioTool, loadPolicies } from "../src/sources/composio/policy.ts";
 import { resyncToolClasses, storedMarker, toolClassMarker } from "../src/tool-resync.ts";
 import { root, testDb } from "./helpers.ts";
 
@@ -72,7 +72,7 @@ test("guardrail (c): read and money never change; destructive keeps delete; a no
 
 test("guardrail (d): names — CREATE/ADD/INSERT → create, UPDATE/SET/PATCH/EDIT → update, DELETE/REMOVE → delete, SEND/POST/PUBLISH and unknown → [create, update]", () => {
   for (const name of ["GITHUB_CREATE_ISSUE", "TRELLO_ADD_CARD", "SHEETS_INSERT_ROW", "createRecord"]) assert.deepEqual(crudFromName(name), ["create"], name);
-  for (const name of ["NOTION_UPDATE_PAGE", "SLACK_SET_TOPIC", "GOOGLECALENDAR_PATCH_EVENT", "edit_file"]) assert.deepEqual(crudFromName(name), ["update"], name);
+  for (const name of ["NOTION_UPDATE_PAGE", "SLACK_SET_TOPIC", "NOTION_PATCH_BLOCK", "edit_file"]) assert.deepEqual(crudFromName(name), ["update"], name);
   for (const name of ["NOTION_DELETE_BLOCK", "remove_item", "deleteRow"]) assert.deepEqual(crudFromName(name), ["delete"], name);
   for (const name of ["GMAIL_SEND_EMAIL", "SLACK_POST_MESSAGE", "WORDPRESS_PUBLISH", "do_the_thing", "CREATE_AND_SEND", "TOGGLE_X"]) assert.equal(crudFromName(name), null, name);
   // Read verbs do not count.
@@ -87,6 +87,8 @@ test("review #17: sensitive objects, people-reaching nouns, negated verbs and lo
     "add_role", "create_api_token", "set_password", "create_and_unshare", "set_and_unassign", "update_and_unlink", "create_dеlete",
     "GMAIL_CREATE_EMAIL_DRAFT", "GMAIL_DELETE_MESSAGE", "import_contacts", "create_webhook",
     "add_attendee", "add_recipient", "create_deployment",
+    "GOOGLECALENDAR_CREATE_EVENT", "GOOGLECALENDAR_UPDATE_EVENT", "GOOGLECALENDAR_PATCH_EVENT", "GOOGLECALENDAR_QUICK_ADD",
+    "create_meeting", "book_appointment", "createBooking",
   ]) {
     assert.equal(crudFromName(name), null, name);
   }
@@ -251,4 +253,14 @@ test("re-sync: a catalog app that left the catalog does not block the marker; a 
   assert.deepEqual((await resyncToolClasses(db, sources, marker)).failed, []);
   assert.equal(storedMarker(db), marker);
   assert.notEqual(toolClassMarker("0.2.0", "bbbb"), marker);
+});
+
+test("Coordinator 2026-10-20: calendar event tools are not send tools (no first-contact hold), so they keep [create, update]", () => {
+  const policies = loadPolicies(join(root, "policies", "composio"));
+  for (const slug of ["GOOGLECALENDAR_CREATE_EVENT", "GOOGLECALENDAR_UPDATE_EVENT", "GOOGLECALENDAR_PATCH_EVENT", "GOOGLECALENDAR_QUICK_ADD"]) {
+    const cls = classifyComposioTool(slug, policies.get("googlecalendar"));
+    assert.equal(cls.effect, "outward", slug);
+    assert.equal(isSendTool({ name: slug.toLowerCase(), upstream: slug, effect: cls.effect }), false, `${slug}: no first-contact check`);
+    assert.deepEqual(cls.crud, ["create", "update"], slug);
+  }
 });
