@@ -255,12 +255,12 @@ test("re-sync: a catalog app that left the catalog does not block the marker; a 
   assert.notEqual(toolClassMarker("0.2.0", "bbbb"), marker);
 });
 
-test("Coordinator 2026-10-20: calendar event tools are not send tools (no first-contact hold), so they keep [create, update]", () => {
+test("Coordinator 2026-10-20: calendar event tools keep [create, update]; since CF-GC-1 they are send tools (first contact)", () => {
   const policies = loadPolicies(join(root, "policies", "composio"));
   for (const slug of ["GOOGLECALENDAR_CREATE_EVENT", "GOOGLECALENDAR_UPDATE_EVENT", "GOOGLECALENDAR_PATCH_EVENT", "GOOGLECALENDAR_QUICK_ADD"]) {
     const cls = classifyComposioTool(slug, policies.get("googlecalendar"));
     assert.equal(cls.effect, "outward", slug);
-    assert.equal(isSendTool({ name: slug.toLowerCase(), upstream: slug, effect: cls.effect }), false, `${slug}: no first-contact check`);
+    assert.equal(isSendTool({ name: slug.toLowerCase(), upstream: slug, effect: cls.effect }), true, `${slug}: first-contact check (CF-GC-1)`);
     assert.deepEqual(cls.crud, ["create", "update"], slug);
   }
 });
