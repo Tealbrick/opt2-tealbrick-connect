@@ -63,7 +63,7 @@ Port 8314. 0.5 cpu, 512 MB. Data 2 GB plus backup 5 GB declared as two volumes; 
 
 ## Pinned packages
 
-Stable 0.5.10: miniapp-sdk 0.1.24, spec 0.1.35. Main (0.5.11): miniapp-sdk 0.1.25, spec 0.1.39. Both: manifest 0.1.18, conformance 0.1.18, ui 0.2.4. Also `@noble/curves`, `@noble/hashes`, `undici`.
+0.5.12 (fix release on 0.5.11): miniapp-sdk 0.1.34, manifest 0.1.26, spec 0.1.49, conformance 0.1.23, ui 0.2.4. Stable 0.5.11: miniapp-sdk 0.1.25, spec 0.1.39, manifest 0.1.18, conformance 0.1.18. Also `@noble/curves`, `@noble/hashes`, `undici`.
 
 All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25: pre-update snapshot, migration lock, failed mode) is in this app only where the pin above says 0.1.25 (dev channel, RS-3 candidates). The other apps re-pin in RS-3 (dev channel first, stable after the qa1 soak). Core main (portal-core#1, E3) restores the snapshot on an automatic rollback, but that Core is not live yet (it goes live with RS-3, per the portal-core README). Until then Core can roll back an update only as an image (no data restore).
 
