@@ -113,7 +113,7 @@
     {
       "id": "accounts_list",
       "title": "List my connected accounts",
-      "description": "List the connected accounts you may use, with your access level for each (empty until the owner gives you access to an account).",
+      "description": "List the connected accounts you may use, with your access level for each (empty until the owner gives you access to an account). `hints` says why tools cannot be used: no account assigned, tools hidden by your grant (need: create, update), or tools above your account access.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -166,6 +166,15 @@
                 }
               }
             }
+          },
+          "hints": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "description": "Why some tools cannot be used: a connected service with no account assigned to you, tools hidden by your grant, or tools above your account access. Counts and CRUD words only."
           }
         }
       },

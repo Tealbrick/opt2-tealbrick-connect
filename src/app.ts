@@ -385,6 +385,44 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       ? `The workspace sender has not written to this person before. Call ${op} once (the owner approves first contact); later messages use the normal op.`
       : `You have not written to this person before. Use ${op}; the owner approves first contact.`;
 
+  /**
+   * CF-PZ-1 / CF-PZ-4 + Coordinator 2026-10-20: tell the agent WHY tools it sees (or does not see) cannot be used. Tool search
+   * runs without a caller, so the reasons are given here: (1) a connected service with no account assigned to this caller;
+   * (2) tools the bridge hides because the Portal grant lacks their CRUD; (3) tools above the account access the owner gave.
+   * Counts and CRUD words only, never tool arguments.
+   */
+  const accessHints = (s: Services, only: string | undefined, allowedBy: Map<string, Set<CrudAction>>, grantCrud: readonly CrudAction[] | null, callerType: string): string[] => {
+    if (callerType !== "agent") return [];
+    const hints: string[] = [];
+    const need = (tools: readonly { crud: readonly CrudAction[] }[], has: (a: CrudAction) => boolean) =>
+      (["create", "update", "delete"] as const).filter((a) => tools.some((t) => t.crud.includes(a) && !has(a)));
+    for (const service of s.accounts.connectedServices()) {
+      if (only && service !== only) continue;
+      const tools = s.tools.forService(service);
+      if (tools.length === 0) continue;
+      const allowed = allowedBy.get(service);
+      if (!allowed) {
+        hints.push(`No ${service} account is assigned to you: ask the owner to assign one in Connect > Accounts.`);
+        continue;
+      }
+      if (grantCrud) {
+        const hidden = tools.filter((t) => !t.crud.every((a) => grantCrud.includes(a)));
+        if (hidden.length > 0) {
+          hints.push(
+            `${hidden.length} ${service} tool${hidden.length === 1 ? " is" : "s are"} hidden by your grant (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}): ask the owner to raise your Connect grant.`,
+          );
+        }
+      }
+      const above = tools.filter((t) => !t.crud.every((a) => allowed.has(a)) && (!grantCrud || t.crud.every((a) => grantCrud.includes(a))));
+      if (above.length > 0) {
+        hints.push(
+          `${above.length} ${service} tool${above.length === 1 ? " needs" : "s need"} more account access than you have (need: ${need(above, (a) => allowed.has(a)).join(", ")}): ask the owner to raise your access in Connect > Accounts.`,
+        );
+      }
+    }
+    return hints.slice(0, 20);
+  };
+
   /** The ONE account choice of a dynamic tool call (the call and its hold view use the same account). */
   const pickAccount = async (ctx: OpContext, s: Services, row: { service: string; crud: readonly CrudAction[] }, selector: unknown): Promise<Account> => {
     const usable = await usableAccounts(ctx, s, row.service, row.crud);
@@ -698,12 +736,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         .list({ status: "connected", ...(service ? { service } : {}) })
         .filter((a) => readable.has(a.id) && (a.kind === "as_me" || a.ownerAgent === ctx.caller.id));
       const out = [];
+      const allowedBy = new Map<string, Set<CrudAction>>();
       for (const a of accounts) {
+        const canCreate = await ctx.scope.can(PRODUCT_SCOPE, a.id, "create");
         const canUpdate = await ctx.scope.can(PRODUCT_SCOPE, a.id, "update");
         const canDelete = await ctx.scope.can(PRODUCT_SCOPE, a.id, "delete");
         out.push({ id: a.id, label: a.label, service: a.service, kind: a.kind, access: canDelete ? "read_update_delete" : canUpdate ? "read_update" : "read" });
+        const best = allowedBy.get(a.service) ?? new Set<CrudAction>(["read"]);
+        for (const [action, can] of [["create", canCreate], ["update", canUpdate], ["delete", canDelete]] as const) if (can) best.add(action);
+        allowedBy.set(a.service, best);
       }
-      return { accounts: out };
+      return { accounts: out, hints: accessHints(s, service, allowedBy, ctx.grant?.claims.crud ?? null, ctx.caller.type) };
       },
     },
     async buzz_identity(_input, ctx) {

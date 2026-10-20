@@ -128,6 +128,11 @@ export class ToolRegistry {
     });
   }
 
+  /** Every tool of one service across sources (CF-PZ-1 hints: which tools a caller cannot use and why). */
+  forService(service: string): ToolRow[] {
+    return this.#db.prepare("SELECT * FROM connect_tools WHERE service = ? ORDER BY name").all(service).map(fromRow);
+  }
+
   /** Every tool of one (source, service), by name (owner views; X-03). */
   listService(source: ToolSource, service: string): ToolRow[] {
     return this.#db.prepare("SELECT * FROM connect_tools WHERE source = ? AND service = ? ORDER BY name").all(source, service).map(fromRow);
