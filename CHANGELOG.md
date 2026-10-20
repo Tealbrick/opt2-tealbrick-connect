@@ -8,6 +8,8 @@ Versions follow `package.json` and `tealbrick.manifest.json` (product id `connec
 - New: **Frappe CRM and Helpdesk** (`frappe-crm`, 65 ops: read 30, write 21, outward 4 = CRM email, ticket reply, ticket create/update that can mail the customer; destructive 10 = deletes, bulk delete, ticket merge). Token auth `token <key>:<secret>` for a dedicated API user with CRM/Helpdesk roles only. Staged by the Agents lane (provenance in coordination/leads/connect/catalog-staging/frappe-crm).
 - New: **Umami** (`umami`, 34 ops, all read: stats, metrics, events, sessions, report queries). No collection, login, admin, user/team or `/api/me` (it echoes the token). Auth: a long-lived read-only login token of a dedicated "View only" user (Umami 2.19 has no API keys).
 - The 13 existing entries are unchanged (same tool classes, snapshot `test/fixtures/catalog/classes-0.3.0.json`).
+- **C276c (customer email = a send):** an entry's `firstContact` puts its email/message ops through first contact with the recipients from the input: Frappe `crm_send_email` (recipients/cc/bcc), `hd_reply_to_ticket` (to/cc/bcc), `hd_ticket_create` (raised_by; without it the call is held). `hd_ticket_update` can mail the stored customer, which the input does not name: every call is held as a first contact. Migration 0015 (`connect_tools.send_recipients`); tool classes re-sync on start (`c276c-1`).
+- The connect form shows the entry's `credentialHint` (Umami: "a dedicated View-only user"; Frappe: "a dedicated API user with CRM and Helpdesk roles only").
 
 ## 0.6.0 - 2026-10-20 (release 2)
 

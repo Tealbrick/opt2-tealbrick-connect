@@ -40,6 +40,25 @@ export interface CatalogApp {
   basePathOverride: string | undefined;
   /** operationId the app answers cheaply when the account works (entry `healthOperation`). */
   healthOperation: string | null;
+  /** shown under the credential field when the owner connects an account (entry `credentialHint`, ≤ 300 chars) */
+  credentialHint: string;
+}
+
+/** C276c: entry `firstContact` — [{operation, recipients: ["body.<field>" | "query.<field>" | "path.<field>"]}]; invalid → refused. */
+function parseFirstContact(raw: unknown, id: string): NonNullable<EntryLabels["firstContact"]> {
+  if (raw === undefined) return [];
+  const ok =
+    Array.isArray(raw) &&
+    raw.every(
+      (f) =>
+        f &&
+        typeof f === "object" &&
+        typeof (f as { operation?: unknown }).operation === "string" &&
+        Array.isArray((f as { recipients?: unknown }).recipients) &&
+        ((f as { recipients: unknown[] }).recipients).every((p) => typeof p === "string" && /^(body|query|path)\.[A-Za-z0-9_-]{1,64}$/u.test(p)),
+    );
+  if (!ok) throw new CatalogError("catalog_entry_invalid", `${id}: firstContact is invalid.`);
+  return raw as NonNullable<EntryLabels["firstContact"]>;
 }
 
 export class CatalogError extends Error {
@@ -88,7 +107,9 @@ export function parseBundle(gz: Uint8Array, pin: string): CatalogApp[] {
         reads: (entry.reads as string[] | undefined) ?? [],
         excluded: (entry.excluded as EntryLabels["excluded"]) ?? [],
         fullCrud: entry.fullCrud === true || FULL_CRUD_APPS.has(e.id),
+        firstContact: parseFirstContact(entry.firstContact, e.id),
       },
+      credentialHint: typeof entry.credentialHint === "string" ? entry.credentialHint.slice(0, 300) : "",
       spec,
       basePathOverride: typeof openapi.basePath === "string" ? openapi.basePath : undefined,
       healthOperation: typeof entry.healthOperation === "string" ? entry.healthOperation : null,
@@ -149,7 +170,7 @@ export class CatalogSource {
     return c;
   }
 
-  async listApps(): Promise<{ service: string; name: string; description: string; category: string; version: string; fields: string[]; baseUrlExample: string }[]> {
+  async listApps(): Promise<{ service: string; name: string; description: string; category: string; version: string; fields: string[]; baseUrlExample: string; credentialHint?: string }[]> {
     return [...(await this.apps()).values()].map((a) => ({
       service: a.id,
       name: a.displayName,
@@ -158,6 +179,7 @@ export class CatalogSource {
       version: a.version,
       fields: credentialFields(a.auth),
       baseUrlExample: a.baseUrlExample,
+      ...(a.credentialHint ? { credentialHint: a.credentialHint } : {}),
     }));
   }
 
@@ -200,6 +222,7 @@ export class CatalogSource {
         crud: op.crud,
         effect: op.effect,
         ...(op.holdFamily ? { holdFamily: op.holdFamily } : {}),
+        ...(op.sendRecipients ? { sendRecipients: op.sendRecipients } : {}),
       })),
     );
   }

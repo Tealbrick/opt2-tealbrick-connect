@@ -21,7 +21,7 @@ import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/ser
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, isInviteTool, isSendTool, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, isInviteTool, isSendTool, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -462,7 +462,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         if (firstContact && !send) fail("tool_unknown", `Unknown tool ${tool}. Only send tools have a first-contact form.`, 404);
         const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
         const account = await pickAccount(ctx, s, row, selector);
-        const recipients = send ? recipientsOf(upstreamArgs) : [];
+        // C276c: a catalog send names where its recipients are; other send tools use the top-level recipient arguments (X-02).
+        const recipients = !send ? [] : row.sendRecipients !== undefined ? recipientsAt(upstreamArgs, row.sendRecipients) : recipientsOf(upstreamArgs);
         if (send && !firstContact) {
           const caller = ctx.caller.id;
           const accountId = account.id;
@@ -1102,7 +1103,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           });
         const catalog = apps
           .filter((a) => matches(a.service, a.name))
-          .map((a) => ({ service: a.service, name: a.name, description: a.description, logo: null, source: "catalog", connectMode: "api_key", fields: a.fields, baseUrlExample: a.baseUrlExample }));
+          .map((a) => ({
+            service: a.service,
+            name: a.name,
+            description: a.description,
+            logo: null,
+            source: "catalog",
+            connectMode: "api_key",
+            fields: a.fields,
+            baseUrlExample: a.baseUrlExample,
+            ...(a.credentialHint ? { credentialHint: a.credentialHint } : {}),
+          }));
         if (!(await ctx.getKey(COMPOSIO_KEY))) return { composioKey: false, catalogAvailable, services: catalog };
         const toolkits = await toolkitCache.get(() => composioClient(ctx.getKey));
         const hits = toolkits

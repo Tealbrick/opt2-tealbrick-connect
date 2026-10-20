@@ -20,6 +20,8 @@ export interface ServiceHit {
   /** Catalog entries only: credential field names (["token"] or ["username", "password"]) and an address example. */
   fields?: string[];
   baseUrlExample?: string;
+  /** Catalog entries only: what credential the owner should use (e.g. "a dedicated View-only user"). */
+  credentialHint?: string;
 }
 
 export interface Account {

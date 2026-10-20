@@ -35,6 +35,8 @@ export interface ToolRow extends ToolClass {
   inputSchema: JsonSchemaObject;
   /** X-03: MCP only — the server claims read-only, Connect classes it higher (owner may confirm it with mcp_tool_read_set) */
   readClaim?: boolean;
+  /** C276c: catalog send tool — where its recipients are in the input ([] = not determinable: every call is a first contact) */
+  sendRecipients?: string[];
 }
 
 /** DynamicCatalogEntry.name from an upstream slug: lower snake case, ≤ 48 chars (hash suffix when shortened). */
@@ -85,6 +87,7 @@ function fromRow(row: Record<string, unknown>): ToolRow {
     effect: String(row.effect) as Effect,
     ...(row.hold_family ? { holdFamily: String(row.hold_family) as HoldFamily } : {}),
     ...(Number(row.read_claim ?? 0) === 1 ? { readClaim: true } : {}),
+    ...(typeof row.send_recipients === "string" ? { sendRecipients: JSON.parse(row.send_recipients) as string[] } : {}),
   };
 }
 
@@ -112,16 +115,18 @@ export class ToolRegistry {
     return this.#db.transaction(() => {
       this.#db.prepare("DELETE FROM connect_tools WHERE source = ? AND service = ?").run(source, service);
       const insert = this.#db.prepare(
-        `INSERT INTO connect_tools (name, source, service, upstream, title, description, input_schema, crud, effect, hold_family, read_claim, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO connect_tools (name, source, service, upstream, title, description, input_schema, crud, effect, hold_family, read_claim, send_recipients, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (name) DO UPDATE SET source = excluded.source, service = excluded.service, upstream = excluded.upstream,
            title = excluded.title, description = excluded.description, input_schema = excluded.input_schema, crud = excluded.crud,
-           effect = excluded.effect, hold_family = excluded.hold_family, read_claim = excluded.read_claim, updated_at = excluded.updated_at`,
+           effect = excluded.effect, hold_family = excluded.hold_family, read_claim = excluded.read_claim, send_recipients = excluded.send_recipients,
+           updated_at = excluded.updated_at`,
       );
       for (const tool of tools) {
         insert.run(
           tool.name, source, service, tool.upstream, tool.title, tool.description, JSON.stringify(tool.inputSchema),
-          JSON.stringify(tool.crud), tool.effect, tool.holdFamily ?? null, tool.readClaim ? 1 : 0, now,
+          JSON.stringify(tool.crud), tool.effect, tool.holdFamily ?? null, tool.readClaim ? 1 : 0,
+          tool.sendRecipients ? JSON.stringify(tool.sendRecipients) : null, now,
         );
       }
       return tools.length;

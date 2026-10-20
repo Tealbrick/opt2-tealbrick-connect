@@ -31,6 +31,8 @@ export interface CompiledOperation extends ToolClass {
   parameters: Parameter[];
   body: { contentType: "application/json" | "application/x-www-form-urlencoded"; required: boolean; schema: Record<string, unknown> } | null;
   inputSchema: JsonSchemaObject;
+  /** C276c: set for an outward op the entry labels as a send (see EntryLabels.firstContact) */
+  sendRecipients?: string[];
 }
 
 export interface EntryLabels {
@@ -40,6 +42,11 @@ export interface EntryLabels {
   excluded?: { operation: string; reason: string }[];
   /** C276a review #17: every write keeps the full [create, update] (identity providers and other admin-only apps). */
   fullCrud?: boolean;
+  /**
+   * C276c: outward ops that email or message people, with where the recipients are in the input ("body.to", ...). [] = the
+   * recipient comes from stored data (e.g. the ticket's customer): every call is a first contact (held).
+   */
+  firstContact?: { operation: string; recipients: string[] }[];
 }
 
 type Rec = Record<string, unknown>;
@@ -241,6 +248,7 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
       const readByLabel = method === "post" && (labels.reads ?? []).some((pattern) => patternMatches(pattern, subject));
       const destructive = method === "delete" || (labels.destructive ?? []).some((pattern) => patternMatches(pattern, subject));
       const outward = (labels.outward ?? []).some((pattern) => patternMatches(pattern, subject));
+      const sends = (labels.firstContact ?? []).find((f) => patternMatches(f.operation, subject));
       // Money movement on a non-read method is always `money` (always held, SEC-02).
       const money = !readMethod && namesMoney(`${operationId} ${path}`);
       const cls = withCrud(classify({ write: !readMethod && !readByLabel, outward, destructive, money }), labels.fullCrud ? null : catalogCrud(method, path, op["x-tealbrick-crud"], rec(pathItem.get) !== undefined, operationId));
@@ -277,6 +285,7 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
         body,
         inputSchema: { type: "object", additionalProperties: false, properties, ...(required.length ? { required } : {}) },
         ...cls,
+        ...(sends && cls.effect === "outward" ? { sendRecipients: sends.recipients } : {}),
       });
     }
   }

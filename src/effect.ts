@@ -291,8 +291,10 @@ export function mcpReadClaimUnverified(name: string, annotations: Record<string,
 const SEND_PARTS = new Set(["send", "sends", "reply", "replies", "forward", "forwards", "dm", "sms", "mms", "invite", "invites", "share", "shares", "notify", "broadcast", "tweet"]);
 
 /** True for an `outward` dynamic tool that sends to people: first contact applies (X-02, C107). */
-export function isSendTool(tool: { name: string; upstream?: string; effect: Effect }): boolean {
+export function isSendTool(tool: { name: string; upstream?: string; effect: Effect; sendRecipients?: readonly string[] }): boolean {
   if (tool.effect !== "outward") return false;
+  // C276c: a catalog entry labels a send explicitly (`firstContact`), with where its recipients are.
+  if (tool.sendRecipients !== undefined) return true;
   return nameParts(tool.upstream ?? tool.name).some((part) => SEND_PARTS.has(part)) || isInviteTool(tool);
 }
 
@@ -350,6 +352,20 @@ function collect(value: unknown, out: Set<string>, depth: number): void {
  * The recipients a send tool names in its arguments (X-02). Only the top-level recipient argument names count; a send tool
  * with none (GMAIL_SEND_DRAFT draft_id, a reply that names no address) gives [] and is treated as first contact (fail closed).
  */
+/**
+ * C276c: the recipients at the input pointers a catalog entry names ("body.recipients", "body.to", "query.email"); [] when the
+ * pointers are empty or name nothing (the call is then a first contact, fail closed).
+ */
+export function recipientsAt(args: Record<string, unknown>, pointers: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const pointer of pointers) {
+    const [group, key] = pointer.split(".");
+    const container = group ? args[group] : undefined;
+    if (key && container && typeof container === "object" && !Array.isArray(container)) collect((container as Record<string, unknown>)[key], out, 0);
+  }
+  return [...out].sort().slice(0, MAX_RECIPIENTS + 1);
+}
+
 export function recipientsOf(args: Record<string, unknown>): string[] {
   const out = new Set<string>();
   for (const [key, value] of Object.entries(args)) {
