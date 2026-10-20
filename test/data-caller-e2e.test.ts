@@ -271,14 +271,17 @@ test("a grant whose prd differs from the slice product of the same instance is r
   shares.set(account, "observer", "none");
 });
 
-test("an app the slice does not list yet is identified by the grant prd (GRANT-PRD), and only by it", async () => {
+test("an app the slice does not list yet is identified by the grant prd (GRANT-PRD), but a bound share serves it only once it is listed (C240 B)", async () => {
   // C240: a share bound to ANOTHER instance of the same product serves nothing to this one (same refusal as no share)
   shares.set(account, "knowledge", "shared", true, w.liar);
   assert.equal(code(await call(w.stranger, "data_catalog", inputOf("data_catalog"), "knowledge")), "not_found");
+  // C240 option B with the real SDK (ctx.caller.listed, sdk >= 0.1.32): the slice does not list this instance yet, so a
+  // share bound to it is refused share_instance_gone (retryable: the slice lag after a new install), never served.
   shares.set(account, "knowledge", "shared", true, w.stranger);
-  const served = await call(w.stranger, "data_catalog", inputOf("data_catalog"), "knowledge");
-  assert.equal(served.status, 200, JSON.stringify(served.body));
-  assert.equal(served.body.output.account, account);
+  const gone = await call(w.stranger, "data_catalog", inputOf("data_catalog"), "knowledge");
+  assert.deepEqual([gone.status, code(gone)], [403, "share_instance_gone"], JSON.stringify(gone.body));
+  assert.equal(gone.body.output, undefined);
+  assert.deepEqual(gone.body.error.details, { retryable: true, retryAfterMs: 30000 });
   // a prd with no share sees nothing; without a prd the caller is unverified again
   assert.equal(code(await call(w.stranger, "data_catalog", inputOf("data_catalog"), "observer")), "not_found");
   assert.equal(code(await call(w.stranger, "data_catalog", inputOf("data_catalog"))), "caller_unverified");

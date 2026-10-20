@@ -164,7 +164,14 @@ export function testCtx(input: {
     statusChanged() {},
     ownerLink: () => null,
     companionTargets: () => [],
-    ...(input.person && input.companionCallers ? { companionCallers: () => (input.companionCallers ?? []).map((c) => Object.freeze({ ...c })) } : {}),
+    ...(input.person && input.companionCallers
+      ? {
+          companionCallers: () =>
+            (input.companionCallers ?? []).map((c) =>
+              Object.freeze({ product: c.product, ins: c.ins as `ins_${string}`, name: c.name, ...(c.provider !== undefined ? { provider: c.provider } : {}) }),
+            ),
+        }
+      : {}),
     appsPolicy: () => null,
     agentScopeRequest: () => null,
     ownerLinkFor: () => null,
