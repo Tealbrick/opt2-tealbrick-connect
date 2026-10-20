@@ -495,6 +495,7 @@ function CatalogFlow(props: { service: ServiceHit; onClose(): void; onOpenAccoun
                   />
                 </Field>
               ))}
+              {service.credentialHint ? <p className="tb-hint">{service.credentialHint}</p> : null}
               <p className="tb-hint">The key stays in Connect. Connect never shows it again.</p>
               {step === 1 ? failure : null}
             </>

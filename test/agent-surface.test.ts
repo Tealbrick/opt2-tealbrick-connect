@@ -48,12 +48,19 @@ test("CF-PZ-1/CF-PZ-4: accounts_list says why tools cannot be used: no account a
   ]);
   // Henry's case before the fix: Read grant, full account access → 3 write tools hidden by the grant.
   const readGrant = await hints({ [postiz.id]: "read_update_delete" }, ["read"]);
-  assert.ok(readGrant.includes("3 postiz tools need more than your Portal grant allows (need: create, update, delete). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant."), readGrant.join(" | "));
+  assert.ok(readGrant.includes("3 postiz tools need more than your Portal grant allows (need: create, update, delete): ask the owner to raise your Connect grant. An access setting in Connect takes effect only after a future bridge update."), readGrant.join(" | "));
   assert.ok(readGrant.includes("No mautic account is assigned to you: ask the owner to assign one in Connect > Accounts."));
   // Grant Read + Create, account Read: the create tool is visible but above the account access; update/delete hidden.
   const mixed = await hints({ [postiz.id]: "read" }, ["read", "create"]);
-  assert.ok(mixed.includes("2 postiz tools need more than your Portal grant allows (need: update, delete). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant."), mixed.join(" | "));
+  assert.ok(mixed.includes("2 postiz tools need more than your Portal grant allows (need: update, delete): ask the owner to raise your Connect grant. An access setting in Connect takes effect only after a future bridge update."), mixed.join(" | "));
   assert.ok(mixed.includes("1 postiz tool needs more account access than you have (need: create): ask the owner to raise your access in Connect > Accounts."), mixed.join(" | "));
+  // QA-CON060-1: with a bridge that admits owner rows (C283 A1 bridge side), the hint names the Connect setting.
+  const app2 = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), bridgeOwnerRows: true });
+  const withBridge = ((await handlerOf(app2, "accounts_list")({}, testCtx({ db, access: { [postiz.id]: "read_update_delete" }, grantCrud: ["read"] }))) as { hints: string[] }).hints;
+  assert.ok(
+    withBridge.includes("3 postiz tools need more than your Portal grant allows (need: create, update, delete). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant."),
+    withBridge.join(" | "),
+  );
   // Everything allowed: no postiz hint.
   assert.ok(!(await hints({ [postiz.id]: "read_update_delete" }, ["read", "create", "update", "delete"])).some((h) => h.includes("postiz")));
 });

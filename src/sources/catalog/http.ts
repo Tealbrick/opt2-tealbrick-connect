@@ -74,7 +74,36 @@ function segment(value: unknown, name: string): string {
   }
   const text = String(value);
   if (!text || text === "." || text === ".." || /[/\\]/u.test(text)) throw new CatalogCallError("argument_invalid", `Path parameter ${name} is not a single segment.`);
-  return encodeURIComponent(text);
+  return encodeOrRefuse(text, name);
+}
+
+/** encodeURIComponent, with a lone surrogate refused as argument_invalid instead of a URIError. */
+function encodeOrRefuse(text: string, name: string): string {
+  try {
+    return encodeURIComponent(text);
+  } catch {
+    throw new CatalogCallError("argument_invalid", `Path parameter ${name} is not valid text.`);
+  }
+}
+
+/**
+ * CF-NC-2: a multi-segment path value (a file path below a WebDAV root: "Documents/Q3 report/notes.md"). Split on "/", every
+ * segment checked like a single one and percent-encoded on its own, joined with "/". Refused: a leading "/", empty, "." and
+ * ".." segments (also percent-encoded dots), backslashes. One trailing "/" (a folder) is dropped. A "%2F" typed inside a name
+ * stays part of that name ("%252F"), so it never becomes a separator.
+ */
+function segments(value: unknown, name: string): string {
+  if (value === undefined || value === null || (typeof value !== "string" && typeof value !== "number")) {
+    throw new CatalogCallError("argument_invalid", `Path parameter ${name} is missing or not a string.`);
+  }
+  const text = String(value);
+  if (!text || text.startsWith("/") || text.includes("\\")) throw new CatalogCallError("argument_invalid", `Path parameter ${name} must be a relative path without backslashes.`);
+  const parts = (text.endsWith("/") ? text.slice(0, -1) : text).split("/");
+  for (const part of parts) {
+    const dots = part.replace(/%2e/giu, ".");
+    if (!part || dots === "." || dots === "..") throw new CatalogCallError("argument_invalid", `Path parameter ${name} has an empty, "." or ".." segment.`);
+  }
+  return parts.map((part) => encodeOrRefuse(part, name)).join("/");
 }
 
 export function buildRequest(input: {
@@ -91,7 +120,8 @@ export function buildRequest(input: {
   const pathArgs = groups("path");
   const queryArgs = groups("query");
   const headerArgs = groups("header");
-  const path = input.op.path.replace(/\{([^}]+)\}/gu, (_m, name: string) => segment(pathArgs[name], name));
+  const multi = new Set(input.op.parameters.filter((p) => p.in === "path" && p.multiSegment).map((p) => p.name));
+  const path = input.op.path.replace(/\{([^}]+)\}/gu, (_m, name: string) => (multi.has(name) ? segments(pathArgs[name], name) : segment(pathArgs[name], name)));
   const url = new URL(base.origin);
   url.pathname = `${prefix}${path}`;
   const headers: Record<string, string> = { accept: "application/json" };
@@ -119,6 +149,8 @@ export function buildRequest(input: {
     if (!token) throw new CatalogCallError("credentials_missing", "The account has no API token.");
     headers[input.auth.name] = `${input.auth.prefix ?? ""}${token}`;
     secrets.push(token);
+    // Review #19 S4: a "key:secret" token (Frappe) is also scrubbed when an upstream echoes only one half.
+    for (const half of token.split(":")) if (half.length >= 8 && half !== token) secrets.push(half);
   } else if (input.auth.type === "basic") {
     const { username = "", password = "" } = input.credentials;
     if (!username || !password) throw new CatalogCallError("credentials_missing", "The account has no username/password.");
@@ -146,6 +178,15 @@ export function buildRequest(input: {
     throw new CatalogCallError("argument_invalid", "This operation needs a body.");
   }
   return { url, init: { method: input.op.method.toUpperCase(), headers, body, redirect: "error" }, secrets };
+}
+
+/** QA INFO (0.6.0): an HTML error page reaches the agent only as its <title>; other text loses its tags and extra space. */
+export function plainError(text: string): string {
+  if (/<\s*(?:!doctype|html|head|body)\b/iu.test(text)) {
+    const title = /<title[^>]{0,100}>([^<]{0,200})<\/title>/iu.exec(text.slice(0, 20_000))?.[1]?.trim();
+    return title ? `HTML page "${title}"` : "HTML page";
+  }
+  return text.slice(0, 20_000).replace(/<[^>]{0,500}>/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 export async function callOperation(input: Parameters<typeof buildRequest>[0] & { fetchImpl?: FetchLike; lookup?: Lookup; allowOrigins?: readonly string[] }): Promise<{ status: number; data: unknown }> {
@@ -183,6 +224,9 @@ export async function callOperation(input: Parameters<typeof buildRequest>[0] & 
       data = text.slice(0, 4096);
     }
   } else data = text.slice(0, 64 * 1024);
-  if (!response.ok) throw new CatalogCallError(response.status === 401 || response.status === 403 ? "upstream_unauthorized" : "upstream_error", `Upstream answered ${response.status}: ${String(typeof data === "string" ? data : JSON.stringify(data)).slice(0, 500)}`, response.status);
+  if (!response.ok) {
+    const detail = typeof data === "string" ? plainError(data) : JSON.stringify(data);
+    throw new CatalogCallError(response.status === 401 || response.status === 403 ? "upstream_unauthorized" : "upstream_error", `Upstream answered ${response.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`, response.status);
+  }
   return { status: response.status, data };
 }

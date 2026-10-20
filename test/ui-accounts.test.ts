@@ -47,6 +47,7 @@ const stub: {
   agentRows?: Record<string, unknown>[];
   scopeSets: Record<string, unknown>[];
   offerChanged?: boolean;
+  ownerRowsEffective?: boolean;
 } = {
   shares: [],
   entries: [],
@@ -66,7 +67,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const path = url.pathname.replace("/a/connect/tb/v1/", "");
   if (path === "session") return json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: [] });
   const op = /^ops\/(.+)$/.exec(path)?.[1];
-  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: [account()], dataApps: stub.dataApps, callersKnown: stub.callersKnown } });
+  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: [account()], dataApps: stub.dataApps, callersKnown: stub.callersKnown, ...(stub.ownerRowsEffective ? { ownerRowsEffective: true } : {}) } });
   if (op === "account_app_share") {
     const body = JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> };
     stub.sent.push(body.input ?? (body as Record<string, unknown>));
@@ -355,6 +356,7 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
     stub.agentRows = rows;
     stub.scopeSets = [];
     stub.offerChanged = false;
+    stub.ownerRowsEffective = true;
   };
 
   it("names levels by their CRUD set, never a bare Update", async () => {
@@ -382,6 +384,23 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
     await click(buttons(p.host, /^Accept create$/u)[0]);
     assert.match(text(p.host), /Front desk: The offer changed\. Check the new offer, then accept again\./u);
     await p.unmount();
+  });
+
+  it("QA-CON060-1: while the bridge does not admit owner rows, the page says the setting is saved and takes effect after the bridge update", async () => {
+    reset([
+      { type: "account", instanceId: "cna_1", access: "read_update", authority: "owner" },
+    ]);
+    stub.ownerRowsEffective = false;
+    const p = await mount(h(mod.Accounts));
+    assert.match(text(p.host), /Your setting is saved\. It takes effect after a future bridge update; until then the Portal grant still limits Front desk\./u);
+    assert.match(text(p.host), /Above the Portal grant it takes effect after a future bridge update/u);
+    assert.doesNotMatch(text(p.host), /Set in Connect: Front desk can/u);
+    await p.unmount();
+    reset([{ type: "account", instanceId: "cna_1", access: "read", authority: "bounded" }]);
+    stub.ownerRowsEffective = false;
+    const b = await mount(h(mod.Accounts));
+    assert.match(text(b.host), /If you use this access, Connect saves it as Front desk's own access \(read\); above the Portal grant it takes effect after a future bridge update\./u);
+    await b.unmount();
   });
 
   it("a bounded row becomes the owner's own only on 'Use this access' (same level, no acceptOffer)", async () => {

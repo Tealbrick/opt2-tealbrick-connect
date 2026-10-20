@@ -291,8 +291,10 @@ export function mcpReadClaimUnverified(name: string, annotations: Record<string,
 const SEND_PARTS = new Set(["send", "sends", "reply", "replies", "forward", "forwards", "dm", "sms", "mms", "invite", "invites", "share", "shares", "notify", "broadcast", "tweet"]);
 
 /** True for an `outward` dynamic tool that sends to people: first contact applies (X-02, C107). */
-export function isSendTool(tool: { name: string; upstream?: string; effect: Effect }): boolean {
+export function isSendTool(tool: { name: string; upstream?: string; effect: Effect; sendRecipients?: readonly string[] }): boolean {
   if (tool.effect !== "outward") return false;
+  // C276c: a catalog entry labels a send explicitly (`firstContact`), with where its recipients are.
+  if (tool.sendRecipients !== undefined) return true;
   return nameParts(tool.upstream ?? tool.name).some((part) => SEND_PARTS.has(part)) || isInviteTool(tool);
 }
 
@@ -321,6 +323,10 @@ const SELF_VALUES = new Set(["me", "self"]);
 const MAX_RECIPIENTS = 100;
 
 /** One address in a stable form: `Name <a@b.c>` → `a@b.c`; lower case; trimmed. */
+/** Never a real address (spaces): a recipient value Connect cannot read, so no contact book holds it. */
+export const UNREADABLE_RECIPIENT = "(unreadable recipient value)";
+const EMAIL_TOKEN = /[^\s<>"',;()[\]]{1,200}@[^\s<>"',;()[\]]{1,200}/gu;
+
 function normaliseAddress(raw: string): string | null {
   const angle = /<([^<>]+)>/u.exec(raw);
   const v = (angle?.[1] ?? raw).trim().toLowerCase();
@@ -331,8 +337,22 @@ function collect(value: unknown, out: Set<string>, depth: number): void {
   if (out.size > MAX_RECIPIENTS || depth > 4 || value === null || value === undefined) return;
   if (typeof value === "string") {
     for (const piece of value.split(/[,;\n]+/u)) {
-      const a = normaliseAddress(piece);
-      if (a) out.add(a);
+      // Review #19 S2-1: '"<known@x>" <new@y>' must not hide new@y behind a display name. Every email-like token of the piece
+      // counts (over-holding is safe); a piece with none (a phone number, a channel id) is taken as one value.
+      // Review #19 re-check: no truncation (padding must not hide an address); a piece too long to be a real address list adds a
+      // marker no contact book holds, so the call is always a first contact.
+      if (piece.length > 2000) out.add(UNREADABLE_RECIPIENT);
+      if (piece.length > 20_000) continue; // held anyway; do not scan huge values
+      const emails = piece.match(EMAIL_TOKEN) ?? [];
+      if (emails.length > 0) {
+        for (const e of emails) {
+          const a = normaliseAddress(e);
+          if (a) out.add(a);
+        }
+      } else {
+        const a = normaliseAddress(piece);
+        if (a) out.add(a);
+      }
     }
   } else if (typeof value === "number") {
     out.add(String(value));
@@ -350,6 +370,27 @@ function collect(value: unknown, out: Set<string>, depth: number): void {
  * The recipients a send tool names in its arguments (X-02). Only the top-level recipient argument names count; a send tool
  * with none (GMAIL_SEND_DRAFT draft_id, a reply that names no address) gives [] and is treated as first contact (fail closed).
  */
+/**
+ * C276c: the recipients at the input pointers a catalog entry names ("body.recipients", "body.to", "query.email"); [] when the
+ * pointers are empty or name nothing (the call is then a first contact, fail closed).
+ */
+export function recipientsAt(args: Record<string, unknown>, pointers: readonly string[]): string[] {
+  const out = new Set<string>();
+  // Review #19 S3-1: the FIRST pointer is the primary recipient (to, recipients, raised_by). When it names nobody the app may
+  // fall back to a stored address, so the call is treated as having unknown recipients ([] = first contact, held).
+  const primary = new Set<string>();
+  if (pointers[0]) collectAt(args, pointers[0], primary);
+  if (primary.size === 0) return [];
+  for (const pointer of pointers) collectAt(args, pointer, out);
+  return [...out].sort().slice(0, MAX_RECIPIENTS + 1);
+}
+
+function collectAt(args: Record<string, unknown>, pointer: string, out: Set<string>): void {
+  const [group, key] = pointer.split(".");
+  const container = group ? args[group] : undefined;
+  if (key && container && typeof container === "object" && !Array.isArray(container)) collect((container as Record<string, unknown>)[key], out, 0);
+}
+
 export function recipientsOf(args: Record<string, unknown>): string[] {
   const out = new Set<string>();
   for (const [key, value] of Object.entries(args)) {

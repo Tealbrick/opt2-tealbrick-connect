@@ -21,7 +21,7 @@ import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/ser
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, isInviteTool, isSendTool, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, isInviteTool, isSendTool, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -75,6 +75,13 @@ export interface ConnectEnv {
   dataDir?: string;
   /** Exact origins allowed for catalog/MCP base URLs without the public-address check (tests). */
   catalogAllowOrigins?: readonly string[];
+  /**
+   * QA-CON060-1 / C292a: true when the workspace bridge admits owner rows above the Portal grant (C283 A1 bridge side). It is
+   * set ONLY from the bridge capability "owner_rows" (ctx.bridgeCaps, miniapp-sdk 0.1.37 + Core C292), never from a version
+   * number; until then it is false unless a test sets it, and the UI and the hints say an owner setting takes effect only
+   * after a future bridge update (no version promised).
+   */
+  bridgeOwnerRows?: boolean;
   allowRelayOrigins?: readonly string[];
   /** Tests: injected chat providers and channel network (production: channelProviders() + pinned fetch + WebSocket). */
   channelProviders?: Map<ChannelServiceId, ChannelProvider>;
@@ -409,7 +416,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const hidden = tools.filter((t) => !t.crud.every((a) => grantCrud.includes(a)));
         if (hidden.length > 0) {
           hints.push(
-            `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant.`,
+            env.bridgeOwnerRows === true
+              ? `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant.`
+              : `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}): ask the owner to raise your Connect grant. An access setting in Connect takes effect only after a future bridge update.`,
           );
         }
       }
@@ -421,6 +430,12 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       }
     }
     return hints.slice(0, 20);
+  };
+
+  /** Catalog arguments are grouped by location; the hold view reads them as one flat object (body wins over query and path). */
+  const flattenGroups = (args: Record<string, unknown>): Record<string, unknown> => {
+    const pick = (k: string) => (args[k] && typeof args[k] === "object" && !Array.isArray(args[k]) ? (args[k] as Record<string, unknown>) : {});
+    return { ...pick("path"), ...pick("query"), ...pick("body") };
   };
 
   /** The ONE account choice of a dynamic tool call (the call and its hold view use the same account). */
@@ -462,7 +477,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         if (firstContact && !send) fail("tool_unknown", `Unknown tool ${tool}. Only send tools have a first-contact form.`, 404);
         const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
         const account = await pickAccount(ctx, s, row, selector);
-        const recipients = send ? recipientsOf(upstreamArgs) : [];
+        // C276c: a catalog send names where its recipients are; other send tools use the top-level recipient arguments (X-02).
+        const recipients = !send ? [] : row.sendRecipients !== undefined ? recipientsAt(upstreamArgs, row.sendRecipients) : recipientsOf(upstreamArgs);
         if (send && !firstContact) {
           const caller = ctx.caller.id;
           const accountId = account.id;
@@ -503,8 +519,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
       const account = await pickAccount(ctx, s, row, selector);
       const heading = `${row.title} (${row.service})${firstContact ? ", first contact" : ""}`;
-      let mail = mailFromArgs(upstreamArgs);
+      // Review #19 S2-2: catalog arguments are grouped ({path, query, body}); the owner must see the recipient, subject and text.
+      const flat = row.source === "catalog" ? flattenGroups(upstreamArgs) : upstreamArgs;
+      let mail = mailFromArgs(flat);
       const notes: string[] = [];
+      if (row.sendRecipients !== undefined) {
+        const shown = new Set([...mail.to, ...mail.cc, ...mail.bcc]);
+        for (const r of recipientsAt(upstreamArgs, row.sendRecipients)) if (!shown.has(r)) mail.to.push(r);
+        if (row.sendRecipients.length === 0 || recipientsAt(upstreamArgs, row.sendRecipients).length === 0) {
+          notes.push("Connect cannot see who receives this: the app may email the person stored on the record (for example the ticket's customer).");
+        }
+      }
       const read = row.source === "composio" ? gmailContentRead(row.upstream, upstreamArgs) : null;
       if (read) {
         const data = await s.composio.execute(account, read.slug, read.args, workspace(ctx));
@@ -1102,7 +1127,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           });
         const catalog = apps
           .filter((a) => matches(a.service, a.name))
-          .map((a) => ({ service: a.service, name: a.name, description: a.description, logo: null, source: "catalog", connectMode: "api_key", fields: a.fields, baseUrlExample: a.baseUrlExample }));
+          .map((a) => ({
+            service: a.service,
+            name: a.name,
+            description: a.description,
+            logo: null,
+            source: "catalog",
+            connectMode: "api_key",
+            fields: a.fields,
+            baseUrlExample: a.baseUrlExample,
+            ...(a.credentialHint ? { credentialHint: a.credentialHint } : {}),
+          }));
         if (!(await ctx.getKey(COMPOSIO_KEY))) return { composioKey: false, catalogAvailable, services: catalog };
         const toolkits = await toolkitCache.get(() => composioClient(ctx.getKey));
         const hits = toolkits
@@ -1120,7 +1155,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const { callers, dataApps } = dataTargets(ctx);
       const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a)));
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
-      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx) } as unknown as Json;
+      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {

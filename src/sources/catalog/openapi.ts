@@ -21,6 +21,8 @@ export interface Parameter {
   in: "path" | "query" | "header";
   required: boolean;
   schema: Record<string, unknown>;
+  /** CF-NC-2: a path param that may span "/" (OpenAPI `allowReserved: true` or the v1 overlay flag `x-multi-segment: true`) */
+  multiSegment?: boolean;
 }
 
 export interface CompiledOperation extends ToolClass {
@@ -31,6 +33,8 @@ export interface CompiledOperation extends ToolClass {
   parameters: Parameter[];
   body: { contentType: "application/json" | "application/x-www-form-urlencoded"; required: boolean; schema: Record<string, unknown> } | null;
   inputSchema: JsonSchemaObject;
+  /** C276c: set for an outward op the entry labels as a send (see EntryLabels.firstContact) */
+  sendRecipients?: string[];
 }
 
 export interface EntryLabels {
@@ -40,6 +44,11 @@ export interface EntryLabels {
   excluded?: { operation: string; reason: string }[];
   /** C276a review #17: every write keeps the full [create, update] (identity providers and other admin-only apps). */
   fullCrud?: boolean;
+  /**
+   * C276c: outward ops that email or message people, with where the recipients are in the input ("body.to", ...). [] = the
+   * recipient comes from stored data (e.g. the ticket's customer): every call is a first contact (held).
+   */
+  firstContact?: { operation: string; recipients: string[] }[];
 }
 
 type Rec = Record<string, unknown>;
@@ -185,6 +194,7 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
   }
   basePath = basePath.replace(/\/+$/u, "");
   const operations: CompiledOperation[] = [];
+  const usedSends = new Set<string>();
   for (const [path, item] of Object.entries(rec(doc.paths) ?? {})) {
     const pathItem = rec(item) ?? {};
     for (const method of METHODS) {
@@ -212,7 +222,8 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
           const schema = inline(doc, swagger ? swaggerParamSchema(p) : (p.schema ?? {})) ?? {};
           // A header with a const/default is filled in at call time (http.ts headerDefault), so the agent may omit it.
           const filled = location === "header" && headerDefault({ in: location, schema }) !== undefined;
-          parameters.push({ name: String(p.name), in: location, required: location === "path" || (p.required === true && !filled), schema });
+          const multiSegment = location === "path" && (p.allowReserved === true || p["x-multi-segment"] === true);
+          parameters.push({ name: String(p.name), in: location, required: location === "path" || (p.required === true && !filled), schema, ...(multiSegment ? { multiSegment: true } : {}) });
         } else if (location === "body") {
           body = { contentType: "application/json", required: p.required === true, schema: inline(doc, p.schema ?? {}) ?? OPEN };
         } else if (location === "formData") {
@@ -241,6 +252,8 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
       const readByLabel = method === "post" && (labels.reads ?? []).some((pattern) => patternMatches(pattern, subject));
       const destructive = method === "delete" || (labels.destructive ?? []).some((pattern) => patternMatches(pattern, subject));
       const outward = (labels.outward ?? []).some((pattern) => patternMatches(pattern, subject));
+      const sends = (labels.firstContact ?? []).find((f) => patternMatches(f.operation, subject));
+      if (sends) usedSends.add(sends.operation);
       // Money movement on a non-read method is always `money` (always held, SEC-02).
       const money = !readMethod && namesMoney(`${operationId} ${path}`);
       const cls = withCrud(classify({ write: !readMethod && !readByLabel, outward, destructive, money }), labels.fullCrud ? null : catalogCrud(method, path, op["x-tealbrick-crud"], rec(pathItem.get) !== undefined, operationId));
@@ -277,8 +290,16 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
         body,
         inputSchema: { type: "object", additionalProperties: false, properties, ...(required.length ? { required } : {}) },
         ...cls,
+        ...(sends ? { sendRecipients: sends.recipients } : {}),
       });
     }
+  }
+  // Review #19 S3-3: a firstContact label must name an exposed OUTWARD op; a typo or a wrong label would leave a send unheld.
+  for (const f of labels.firstContact ?? []) {
+    if (!usedSends.has(f.operation)) throw new Error(`catalog_entry_invalid: firstContact ${f.operation} names no exposed operation`);
+  }
+  for (const op of operations) {
+    if (op.sendRecipients !== undefined && op.effect !== "outward") throw new Error(`catalog_entry_invalid: firstContact ${op.operationId} is ${op.effect}, not outward`);
   }
   return { basePath, operations };
 }

@@ -62,8 +62,8 @@ test("build refuses a spec that does not match its pin, and personal hosts insid
 
 const V1 = join(import.meta.dirname, "..", "..", "_v1", "marketplace", "program", "catalog", "company-box");
 const STAGED = join(import.meta.dirname, "..", "..", "coordination", "leads", "connect", "catalog-staging");
-/** The staged entries in catalog-0.2.0 (Connect's Chatwoot override and Mautic). */
-const PINNED_STAGED = ["chatwoot", "mautic"] as const;
+/** The staged entries in the pinned catalog (Connect's Chatwoot override, Mautic; Frappe CRM + Umami since 0.3.0). */
+const PINNED_STAGED = ["chatwoot", "frappe-crm", "mautic", "umami"] as const;
 const FORBID = join(import.meta.dirname, "..", "..", "coordination", "leads", "connect", "catalog-forbid.txt");
 test("v1 Company Box + staged overrides build into the pinned artifact (local only)", { skip: !existsSync(V1) || !existsSync(STAGED) }, () => {
   const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "..", "tealbrick.manifest.json"), "utf8"));
@@ -75,7 +75,7 @@ test("v1 Company Box + staged overrides build into the pinned artifact (local on
   for (const id of PINNED_STAGED) symlinkSync(join(STAGED, id), join(staged, id));
   try {
     const bundle = buildBundle([V1], pinned.version, { overrideFrom: [staged] });
-    assert.equal(bundle.entries.length, 13);
+    assert.equal(bundle.entries.length, 15);
     assert.deepEqual(bundle.replaced, ["chatwoot"]);
     assert.equal(writeBundle(bundle, dir).sha256, pinned.sha256);
   } finally {
