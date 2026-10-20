@@ -392,14 +392,14 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
     ]);
     stub.ownerRowsEffective = false;
     const p = await mount(h(mod.Accounts));
-    assert.match(text(p.host), /Your setting is saved\. It takes effect after the bridge update to 0\.2\.4; until then the Portal grant still limits Front desk\./u);
-    assert.match(text(p.host), /Above the Portal grant it takes effect after the bridge update to 0\.2\.4/u);
+    assert.match(text(p.host), /Your setting is saved\. It takes effect after a future bridge update; until then the Portal grant still limits Front desk\./u);
+    assert.match(text(p.host), /Above the Portal grant it takes effect after a future bridge update/u);
     assert.doesNotMatch(text(p.host), /Set in Connect: Front desk can/u);
     await p.unmount();
     reset([{ type: "account", instanceId: "cna_1", access: "read", authority: "bounded" }]);
     stub.ownerRowsEffective = false;
     const b = await mount(h(mod.Accounts));
-    assert.match(text(b.host), /If you use this access, Connect saves it as Front desk's own access \(read\); above the Portal grant it takes effect after the bridge update to 0\.2\.4\./u);
+    assert.match(text(b.host), /If you use this access, Connect saves it as Front desk's own access \(read\); above the Portal grant it takes effect after a future bridge update\./u);
     await b.unmount();
   });
 

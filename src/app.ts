@@ -76,9 +76,10 @@ export interface ConnectEnv {
   /** Exact origins allowed for catalog/MCP base URLs without the public-address check (tests). */
   catalogAllowOrigins?: readonly string[];
   /**
-   * QA-CON060-1: true when the workspace bridge admits owner rows above the Portal grant (C283 A1 bridge side: bridge 0.2.4 /
-   * 0.1.33+). The app cannot read the bridge version or capability yet (contracts request), so this is false unless set
-   * (tests); the UI and the hints then say an owner setting takes effect only after the bridge update.
+   * QA-CON060-1 / C292a: true when the workspace bridge admits owner rows above the Portal grant (C283 A1 bridge side). It is
+   * set ONLY from the bridge capability "owner_rows" (ctx.bridgeCaps, miniapp-sdk 0.1.37 + Core C292), never from a version
+   * number; until then it is false unless a test sets it, and the UI and the hints say an owner setting takes effect only
+   * after a future bridge update (no version promised).
    */
   bridgeOwnerRows?: boolean;
   allowRelayOrigins?: readonly string[];
@@ -417,7 +418,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           hints.push(
             env.bridgeOwnerRows === true
               ? `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant.`
-              : `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}): ask the owner to raise your Connect grant. An access setting in Connect takes effect only after the bridge update.`,
+              : `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}): ask the owner to raise your Connect grant. An access setting in Connect takes effect only after a future bridge update.`,
           );
         }
       }

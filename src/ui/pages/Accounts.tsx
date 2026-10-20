@@ -387,7 +387,7 @@ function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }:
       <p className="tb-soft access-note">
         {ownerRowsEffective
           ? "A level you choose here is the agent's own access to this account, also where its Portal grant allows less."
-          : "A level you choose here is saved as the agent's own access. Above the Portal grant it takes effect after the bridge update to 0.2.4; until then the Portal grant still limits the agent."}
+          : "A level you choose here is saved as the agent's own access. Above the Portal grant it takes effect after a future bridge update; until then the Portal grant still limits the agent."}
       </p>
       {error ? <Notice tone="error">{error}</Notice> : null}
       {agents.map((agent) => {
@@ -420,7 +420,7 @@ function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }:
                 <span className="access-note">
                   {ownerRowsEffective
                     ? `${agent.name}'s Portal grant may allow less than this level. If you use this access, ${agent.name} can ${LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.`
-                    : `${agent.name}'s Portal grant may allow less than this level. If you use this access, Connect saves it as ${agent.name}'s own access (${LEVEL_CRUD[row.level]}); above the Portal grant it takes effect after the bridge update to 0.2.4.`}
+                    : `${agent.name}'s Portal grant may allow less than this level. If you use this access, Connect saves it as ${agent.name}'s own access (${LEVEL_CRUD[row.level]}); above the Portal grant it takes effect after a future bridge update.`}
                 </span>
                 <Button size="sm" variant="secondary" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesSet(agent.id, account.id, row.level))}>
                   Use this access
@@ -430,7 +430,7 @@ function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }:
               <span className="tb-soft access-note">
                 {ownerRowsEffective
                   ? `Set in Connect: ${agent.name} can ${LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.`
-                  : `Your setting is saved. It takes effect after the bridge update to 0.2.4; until then the Portal grant still limits ${agent.name}.`}
+                  : `Your setting is saved. It takes effect after a future bridge update; until then the Portal grant still limits ${agent.name}.`}
               </span>
             ) : null}
           </div>
