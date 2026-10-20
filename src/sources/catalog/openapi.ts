@@ -194,6 +194,7 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
   }
   basePath = basePath.replace(/\/+$/u, "");
   const operations: CompiledOperation[] = [];
+  const usedSends = new Set<string>();
   for (const [path, item] of Object.entries(rec(doc.paths) ?? {})) {
     const pathItem = rec(item) ?? {};
     for (const method of METHODS) {
@@ -252,6 +253,7 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
       const destructive = method === "delete" || (labels.destructive ?? []).some((pattern) => patternMatches(pattern, subject));
       const outward = (labels.outward ?? []).some((pattern) => patternMatches(pattern, subject));
       const sends = (labels.firstContact ?? []).find((f) => patternMatches(f.operation, subject));
+      if (sends) usedSends.add(sends.operation);
       // Money movement on a non-read method is always `money` (always held, SEC-02).
       const money = !readMethod && namesMoney(`${operationId} ${path}`);
       const cls = withCrud(classify({ write: !readMethod && !readByLabel, outward, destructive, money }), labels.fullCrud ? null : catalogCrud(method, path, op["x-tealbrick-crud"], rec(pathItem.get) !== undefined, operationId));
@@ -288,9 +290,16 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
         body,
         inputSchema: { type: "object", additionalProperties: false, properties, ...(required.length ? { required } : {}) },
         ...cls,
-        ...(sends && cls.effect === "outward" ? { sendRecipients: sends.recipients } : {}),
+        ...(sends ? { sendRecipients: sends.recipients } : {}),
       });
     }
+  }
+  // Review #19 S3-3: a firstContact label must name an exposed OUTWARD op; a typo or a wrong label would leave a send unheld.
+  for (const f of labels.firstContact ?? []) {
+    if (!usedSends.has(f.operation)) throw new Error(`catalog_entry_invalid: firstContact ${f.operation} names no exposed operation`);
+  }
+  for (const op of operations) {
+    if (op.sendRecipients !== undefined && op.effect !== "outward") throw new Error(`catalog_entry_invalid: firstContact ${op.operationId} is ${op.effect}, not outward`);
   }
   return { basePath, operations };
 }

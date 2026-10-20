@@ -323,6 +323,8 @@ const SELF_VALUES = new Set(["me", "self"]);
 const MAX_RECIPIENTS = 100;
 
 /** One address in a stable form: `Name <a@b.c>` → `a@b.c`; lower case; trimmed. */
+const EMAIL_TOKEN = /[^\s<>"',;()[\]]{1,200}@[^\s<>"',;()[\]]{1,200}/gu;
+
 function normaliseAddress(raw: string): string | null {
   const angle = /<([^<>]+)>/u.exec(raw);
   const v = (angle?.[1] ?? raw).trim().toLowerCase();
@@ -333,8 +335,18 @@ function collect(value: unknown, out: Set<string>, depth: number): void {
   if (out.size > MAX_RECIPIENTS || depth > 4 || value === null || value === undefined) return;
   if (typeof value === "string") {
     for (const piece of value.split(/[,;\n]+/u)) {
-      const a = normaliseAddress(piece);
-      if (a) out.add(a);
+      // Review #19 S2-1: '"<known@x>" <new@y>' must not hide new@y behind a display name. Every email-like token of the piece
+      // counts (over-holding is safe); a piece with none (a phone number, a channel id) is taken as one value.
+      const emails = piece.slice(0, 2000).match(EMAIL_TOKEN) ?? [];
+      if (emails.length > 0) {
+        for (const e of emails) {
+          const a = normaliseAddress(e);
+          if (a) out.add(a);
+        }
+      } else {
+        const a = normaliseAddress(piece);
+        if (a) out.add(a);
+      }
     }
   } else if (typeof value === "number") {
     out.add(String(value));
@@ -358,12 +370,19 @@ function collect(value: unknown, out: Set<string>, depth: number): void {
  */
 export function recipientsAt(args: Record<string, unknown>, pointers: readonly string[]): string[] {
   const out = new Set<string>();
-  for (const pointer of pointers) {
-    const [group, key] = pointer.split(".");
-    const container = group ? args[group] : undefined;
-    if (key && container && typeof container === "object" && !Array.isArray(container)) collect((container as Record<string, unknown>)[key], out, 0);
-  }
+  // Review #19 S3-1: the FIRST pointer is the primary recipient (to, recipients, raised_by). When it names nobody the app may
+  // fall back to a stored address, so the call is treated as having unknown recipients ([] = first contact, held).
+  const primary = new Set<string>();
+  if (pointers[0]) collectAt(args, pointers[0], primary);
+  if (primary.size === 0) return [];
+  for (const pointer of pointers) collectAt(args, pointer, out);
   return [...out].sort().slice(0, MAX_RECIPIENTS + 1);
+}
+
+function collectAt(args: Record<string, unknown>, pointer: string, out: Set<string>): void {
+  const [group, key] = pointer.split(".");
+  const container = group ? args[group] : undefined;
+  if (key && container && typeof container === "object" && !Array.isArray(container)) collect((container as Record<string, unknown>)[key], out, 0);
 }
 
 export function recipientsOf(args: Record<string, unknown>): string[] {

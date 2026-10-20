@@ -141,3 +141,62 @@ test("C276c recipientsAt reads only the named pointers; an invalid firstContact 
     assert.throws(() => parseBundle(gz2, sha(gz2)), /firstContact is invalid/u, JSON.stringify(bad));
   }
 });
+
+test("review #19 S2-1: a display name cannot hide a new address behind a known one", async () => {
+  const s = await setup();
+  try {
+    const send = tool("crm_send_email");
+    const body = { doctype: "CRM Lead", name: "L-1", subject: "Hi", content: "Hello", send_email: 1 };
+    await s.dyn.call(`${send}__first_contact`, { body: { ...body, recipients: "friend@ext.example" } }, s.agent);
+    await assert.rejects(s.dyn.call(send, { body: { ...body, recipients: '"<friend@ext.example>" <stranger@ext.example>' } }, s.agent), firstContact(["stranger@ext.example"]));
+    await assert.rejects(s.dyn.call(send, { body: { ...body, recipients: "Friend friend@ext.example stranger@ext.example" } }, s.agent), firstContact(["stranger@ext.example"]));
+    assert.equal(s.calls("/api/method/frappe.core.doctype.communication.email.make"), 1);
+  } finally {
+    s.done();
+  }
+});
+
+test("review #19 S2-2: the owner's hold view of a catalog send shows the recipient, subject and text", async () => {
+  const s = await setup();
+  try {
+    const view = await s.dyn.holdView?.(`${tool("crm_send_email")}__first_contact`, { body: { doctype: "CRM Lead", name: "L-1", subject: "Offer", content: "Dear customer", send_email: 1, recipients: "new@ext.example" } }, s.agent);
+    assert.ok(view);
+    assert.match(view.view, /To: new@ext\.example/u);
+    assert.match(view.view, /Offer/u);
+    assert.match(view.view, /Dear customer/u);
+    const stored = await s.dyn.holdView?.(`${tool("hd_ticket_update")}__first_contact`, { path: { name: "T-1" }, body: { status: "Resolved" } }, s.agent);
+    assert.match(stored?.view ?? "", /Connect cannot see who receives this/u);
+  } finally {
+    s.done();
+  }
+});
+
+test("review #19 S3-1/S3-2: an empty primary recipient is held; ticket create also counts contact and customer", async () => {
+  const s = await setup();
+  try {
+    const reply = tool("hd_reply_to_ticket");
+    await s.dyn.call(`${reply}__first_contact`, { path: { name: "T-1" }, body: { message: "x", to: "known@ext.example" } }, s.agent);
+    // no "to": Helpdesk may fall back to the stored customer → held, even with a known cc
+    await assert.rejects(s.dyn.call(reply, { path: { name: "T-1" }, body: { message: "x", cc: "known@ext.example" } }, s.agent), firstContact([]));
+    const create = tool("hd_ticket_create");
+    await s.dyn.call(`${create}__first_contact`, { body: { subject: "a", raised_by: "client@ext.example" } }, s.agent);
+    await assert.rejects(s.dyn.call(create, { body: { subject: "b", raised_by: "client@ext.example", contact: "Stranger GmbH" } }, s.agent), firstContact(["stranger gmbh"]));
+  } finally {
+    s.done();
+  }
+});
+
+test("review #19 S3-3 + S4: a firstContact label on a missing or non-outward op refuses the entry; path text and HTML errors are bounded", async () => {
+  const { compile } = await import("../src/sources/catalog/openapi.ts");
+  const { buildRequest, plainError } = await import("../src/sources/catalog/http.ts");
+  const spec = { openapi: "3.0.3", paths: { "/m": { post: { operationId: "mail" } }, "/r": { get: { operationId: "read_it" } } } };
+  assert.equal(compile(spec, { outward: ["mail"], firstContact: [{ operation: "mail", recipients: ["body.to"] }] }).operations.find((o) => o.operationId === "mail")?.sendRecipients?.[0], "body.to");
+  assert.throws(() => compile(spec, { outward: ["mail"], firstContact: [{ operation: "mial", recipients: [] }] }), /names no exposed operation/u);
+  assert.throws(() => compile(spec, { firstContact: [{ operation: "read_it", recipients: [] }] }), /not outward/u);
+  const started = Date.now();
+  plainError(`<html>${"<title".repeat(10_000)}`);
+  assert.ok(Date.now() - started < 200, "plainError stays fast on hostile input");
+  const [get] = compile({ openapi: "3.0.3", paths: { "/f/{p}": { get: { operationId: "g", parameters: [{ name: "p", in: "path", required: true, schema: { type: "string" } }] } } } }).operations;
+  assert.ok(get);
+  assert.throws(() => buildRequest({ baseUrl: "https://a.example.com", basePath: "", op: get, args: { path: { p: "\uD800" } }, auth: { type: "none" }, credentials: {} }), /not valid text/u);
+});

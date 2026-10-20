@@ -96,7 +96,7 @@ App-specific:
 3. The release Action pushes the GHCR image and the kit tarball. `registry-sync` signs the index entry with the image digest and the manifest digest.
 4. Core deploys the newest stable version when the owner installs or updates the app. Core (E3, live since RS-3) switches to the new version only after a health check and rolls back when it fails, restoring the pre-update data snapshot; the gate is "not worse than before" (C219). The full effect needs the app to run SDK 0.1.25, which holds for the dev channel builds today and for stable after their promotion.
 
-The catalog artifact (`catalog-0.3.0`, sha256 pinned in the manifest) is built with `pnpm catalog:build` and attached to a GitHub release. 0.3.0 = the 12 v1 Company Box entries + Mautic + Frappe CRM/Helpdesk + Umami (15 entries; Chatwoot replaced by a Connect override that excludes admin-class ops), built with `--from <v1 company-box> --override-from <staged entries> --version 0.2.0 --forbid-file <operator host list>`; the operator host list is kept outside this public repo. The same bytes are in `test/fixtures/catalog/` for the tests.
+The catalog artifact (`catalog-0.3.0`, sha256 pinned in the manifest) is built with `pnpm catalog:build` and attached to a GitHub release. 0.3.0 = the 12 v1 Company Box entries + Mautic + Frappe CRM/Helpdesk + Umami (15 entries; Chatwoot replaced by a Connect override that excludes admin-class ops), built with `--from <v1 company-box> --override-from <staged entries> --version 0.3.0 --forbid-file <operator host list>`; the operator host list is kept outside this public repo. The same bytes are in `test/fixtures/catalog/` for the tests.
 
 ## Dependency pins
 

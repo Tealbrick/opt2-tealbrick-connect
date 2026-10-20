@@ -74,7 +74,16 @@ function segment(value: unknown, name: string): string {
   }
   const text = String(value);
   if (!text || text === "." || text === ".." || /[/\\]/u.test(text)) throw new CatalogCallError("argument_invalid", `Path parameter ${name} is not a single segment.`);
-  return encodeURIComponent(text);
+  return encodeOrRefuse(text, name);
+}
+
+/** encodeURIComponent, with a lone surrogate refused as argument_invalid instead of a URIError. */
+function encodeOrRefuse(text: string, name: string): string {
+  try {
+    return encodeURIComponent(text);
+  } catch {
+    throw new CatalogCallError("argument_invalid", `Path parameter ${name} is not valid text.`);
+  }
 }
 
 /**
@@ -94,7 +103,7 @@ function segments(value: unknown, name: string): string {
     const dots = part.replace(/%2e/giu, ".");
     if (!part || dots === "." || dots === "..") throw new CatalogCallError("argument_invalid", `Path parameter ${name} has an empty, "." or ".." segment.`);
   }
-  return parts.map((part) => encodeURIComponent(part)).join("/");
+  return parts.map((part) => encodeOrRefuse(part, name)).join("/");
 }
 
 export function buildRequest(input: {
@@ -140,6 +149,8 @@ export function buildRequest(input: {
     if (!token) throw new CatalogCallError("credentials_missing", "The account has no API token.");
     headers[input.auth.name] = `${input.auth.prefix ?? ""}${token}`;
     secrets.push(token);
+    // Review #19 S4: a "key:secret" token (Frappe) is also scrubbed when an upstream echoes only one half.
+    for (const half of token.split(":")) if (half.length >= 8 && half !== token) secrets.push(half);
   } else if (input.auth.type === "basic") {
     const { username = "", password = "" } = input.credentials;
     if (!username || !password) throw new CatalogCallError("credentials_missing", "The account has no username/password.");
@@ -172,10 +183,10 @@ export function buildRequest(input: {
 /** QA INFO (0.6.0): an HTML error page reaches the agent only as its <title>; other text loses its tags and extra space. */
 export function plainError(text: string): string {
   if (/<\s*(?:!doctype|html|head|body)\b/iu.test(text)) {
-    const title = /<title[^>]*>([^<]{0,200})<\/title>/iu.exec(text)?.[1]?.trim();
+    const title = /<title[^>]{0,100}>([^<]{0,200})<\/title>/iu.exec(text.slice(0, 20_000))?.[1]?.trim();
     return title ? `HTML page "${title}"` : "HTML page";
   }
-  return text.replace(/<[^>]{0,500}>/gu, " ").replace(/\s+/gu, " ").trim();
+  return text.slice(0, 20_000).replace(/<[^>]{0,500}>/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 export async function callOperation(input: Parameters<typeof buildRequest>[0] & { fetchImpl?: FetchLike; lookup?: Lookup; allowOrigins?: readonly string[] }): Promise<{ status: number; data: unknown }> {

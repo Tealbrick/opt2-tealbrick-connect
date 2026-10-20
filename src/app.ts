@@ -432,6 +432,12 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     return hints.slice(0, 20);
   };
 
+  /** Catalog arguments are grouped by location; the hold view reads them as one flat object (body wins over query and path). */
+  const flattenGroups = (args: Record<string, unknown>): Record<string, unknown> => {
+    const pick = (k: string) => (args[k] && typeof args[k] === "object" && !Array.isArray(args[k]) ? (args[k] as Record<string, unknown>) : {});
+    return { ...pick("path"), ...pick("query"), ...pick("body") };
+  };
+
   /** The ONE account choice of a dynamic tool call (the call and its hold view use the same account). */
   const pickAccount = async (ctx: OpContext, s: Services, row: { service: string; crud: readonly CrudAction[] }, selector: unknown): Promise<Account> => {
     const usable = await usableAccounts(ctx, s, row.service, row.crud);
@@ -513,8 +519,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
       const account = await pickAccount(ctx, s, row, selector);
       const heading = `${row.title} (${row.service})${firstContact ? ", first contact" : ""}`;
-      let mail = mailFromArgs(upstreamArgs);
+      // Review #19 S2-2: catalog arguments are grouped ({path, query, body}); the owner must see the recipient, subject and text.
+      const flat = row.source === "catalog" ? flattenGroups(upstreamArgs) : upstreamArgs;
+      let mail = mailFromArgs(flat);
       const notes: string[] = [];
+      if (row.sendRecipients !== undefined) {
+        const shown = new Set([...mail.to, ...mail.cc, ...mail.bcc]);
+        for (const r of recipientsAt(upstreamArgs, row.sendRecipients)) if (!shown.has(r)) mail.to.push(r);
+        if (row.sendRecipients.length === 0 || recipientsAt(upstreamArgs, row.sendRecipients).length === 0) {
+          notes.push("Connect cannot see who receives this: the app may email the person stored on the record (for example the ticket's customer).");
+        }
+      }
       const read = row.source === "composio" ? gmailContentRead(row.upstream, upstreamArgs) : null;
       if (read) {
         const data = await s.composio.execute(account, read.slug, read.args, workspace(ctx));
