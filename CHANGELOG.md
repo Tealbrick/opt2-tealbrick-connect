@@ -2,7 +2,21 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Proposed next version: 0.6.0 (new operations and a migration).
 
-## 0.6.0 - 2026-10-18 (prepared, not tagged)
+## 0.6.0 - 2026-10-20 (release 2)
+
+Release 2 = the C240/R3 work below plus:
+
+### Security
+- **CF-GC-1:** Connect 0.5.x lets a calendar invite to a NEW person run with no hold (calendar tools were not send tools). Now outward tools that name an invite object (event, meeting, appointment, booking, calendar) go through first contact: a new external attendee is held `first_contact`; known attendees run; an event with no attendees runs.
+
+### Access (C276a, C283 A1, C283d; miniapp-sdk 0.1.36)
+- Per-method CRUD (C276a): a POST on a listed collection needs only `create`, PUT/PATCH only `update`, DELETE only `delete`. Actions, RPC-style paths, sends, imports and access/identity objects keep `[create, update]`; the new set is always a subset of the old one; effect and hold family never change. 470 of the 3236 catalog-0.2.0 ops need less (`test/fixtures/catalog/crud-diff-c276a-0.2.0.md`). Authentik keeps the full set.
+- Tool rows are re-made on start when the classifier, the catalog or the Composio policies change (migration 0014, `connect_meta`): no more "Refresh tools" after an update.
+- `accounts_list.hints[]`: no account assigned to you, tools that need more than your Portal grant allows, tools above your account access.
+- Accounts > Agent access: a level the owner sets is the agent's own access, also above its Portal grant (C283 A1). Older rows say the Portal grant may allow less, with "Use this access". A widened level shows its offer and needs the owner's "Accept" (C283d). Levels are named Read / Read + create + update / Full (+ delete).
+- Dependencies: miniapp-sdk 0.1.36 (0.1.35 skipped, C283c), manifest 0.1.28, spec 0.1.52, conformance 0.1.25 (A20/A21 rows pass with a harness-only fixture).
+
+## 0.6.0 (C240/R3 part, prepared 2026-10-18)
 
 The shared data operation family and the dataset `messages` (request R3, knowledge S-9; decisions C230 and C169). Not tagged: the lead decides the tag.
 
@@ -52,7 +66,7 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - Review fixes (C240 review): a share whose instance is no longer listed says "This app instance was removed; it can no longer read", keeps its level read-only, and has "Stop sharing" and "Share with the installed <app> instead" (the button and a note name an own-server target). Pre-0013 rows: "Share again" only when sharing is possible; the page notice counts connected chat accounts only. Moving a share to another instance unticks "Include the last 30 days". The instance picker shows where each instance runs and the end of its id. The receipt names the instance and "(your own server)". `current` needs the same product. `accounts_overview.callersKnown` false (SDK without `companionCallers`) shows "Sharing with apps needs the next Connect update." One account is shared with at most one instance per app.
 - **After the update, choose each shared app again:** shares made before migration 0013 stop serving at the upgrade until the owner picks the app again in Accounts ("Share again"). Released versions (0.5.11 and older) have no app shares, so this concerns pre-release 0.6.0 builds only.
 - **A newly installed app may be refused for up to about 20 seconds until the workspace config reaches Connect; it retries by itself.** (Healthy links: about 1–6 s with one Core replica, about 20 s worst case with several; longer only when a link fails.)
-- **Do not roll back from 0.6.0 to 0.5.11.** Migrations 0010 to 0013 have no down step. A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
+- **Do not roll back from 0.6.0 to 0.5.x.** Migrations 0010 to 0014 have no down step, and SDK schema 10 (miniapp-sdk 0.1.36) refuses an older SDK without a restore (`sdk_schema_newer`). A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
 
 ### Changed
 - `channel_reply` to a message that was deleted answers 404 `channel_message_unknown` (a deleted message is no longer in the agent inbox). Accepted.

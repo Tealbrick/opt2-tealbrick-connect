@@ -9,7 +9,7 @@ You reach outside services through Connect. The owner decides which accounts you
 
 1. Find a tool: call `connect__tools_search` with a short query, for example "gmail fetch emails" or "calendar list events".
 2. Call it: `connect__tools_call` with `tool` set to the result's name and `arguments` set to its inputs.
-3. Several accounts of the same service: add `connect_account` (the account label, for example "Work inbox") to the arguments. `connect__accounts_list` shows your accounts and your access level.
+3. Several accounts of the same service: add `connect_account` (the account label, for example "Work inbox") to the arguments. `connect__accounts_list` shows your accounts and your access level. Read its `hints`: they say when a service has no account assigned to you, when tools need more than your grant allows, or when they need more account access. Tell the owner the hint; do not guess.
 
 Access levels per account:
 

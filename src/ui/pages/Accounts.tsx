@@ -372,13 +372,17 @@ function AgentAccess({ account, agents, onChanged }: { account: Account; agents:
       setBusy(null);
     }
   };
+  // S4-1 (review #18): with a reload the page shows what the server holds (authority, offer); the local level only bridges a
+  // page that cannot reload.
   const change = (agent: AgentInfo, value: Picked) =>
-    run(agent, () => scopesSet(agent.id, account.id, value === "none" ? null : value), () => setLocal((l) => ({ ...l, [agent.id]: value })));
+    run(agent, () => scopesSet(agent.id, account.id, value === "none" ? null : value), onChanged ? undefined : () => setLocal((l) => ({ ...l, [agent.id]: value })));
   const crudWords = (adds: readonly string[]) => adds.join(", ");
+  const LEVEL_CRUD: Record<string, string> = { read: "read", read_update: "read, create and update", read_update_delete: "read, create, update and delete" };
 
   return (
     <fieldset className="tb-stack access">
       <legend className="tb-label access-legend">Agent access</legend>
+      <p className="tb-soft access-note">A level you choose here is the agent's own access to this account, also where its Portal grant allows less.</p>
       {error ? <Notice tone="error">{error}</Notice> : null}
       {agents.map((agent) => {
         const row = local[agent.id] === undefined ? agent.rows[account.id] : undefined;
@@ -397,7 +401,7 @@ function AgentAccess({ account, agents, onChanged }: { account: Account; agents:
             </div>
             {row && row.offerAdds.length > 0 ? (
               <div className="acc-row acc-offer">
-                <span className="acc-note">
+                <span className="access-note">
                   This level now also allows {crudWords(row.offerAdds)}. {agent.name} cannot use it until you accept.
                 </span>
                 <Button size="sm" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesAcceptOffer(agent.id, account.id, row.level, row.offerAdds))}>
@@ -407,13 +411,18 @@ function AgentAccess({ account, agents, onChanged }: { account: Account; agents:
             ) : null}
             {row && row.authority === "bounded" ? (
               <div className="acc-row acc-bounded">
-                <span className="acc-note">Limited by {agent.name}'s Portal grant. Use this access to make it {agent.name}'s own access to this account.</span>
+                <span className="access-note">
+                  {agent.name}'s Portal grant may allow less than this level. If you use this access, {agent.name} can {LEVEL_CRUD[row.level]} on this
+                  account, also where the Portal grant allows less.
+                </span>
                 <Button size="sm" variant="secondary" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesSet(agent.id, account.id, row.level))}>
                   Use this access
                 </Button>
               </div>
             ) : row && row.authority === "owner" ? (
-              <span className="tb-soft acc-note">Set in Connect: this is {agent.name}'s access to this account.</span>
+              <span className="tb-soft access-note">
+                Set in Connect: {agent.name} can {LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.
+              </span>
             ) : null}
           </div>
         );

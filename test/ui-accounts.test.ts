@@ -360,7 +360,7 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
   it("names levels by their CRUD set, never a bare Update", async () => {
     reset([{ type: "account", instanceId: "cna_1", access: "read_update", authority: "owner" }]);
     const p = await mount(h(mod.Accounts));
-    assert.match(text(p.host), /Set in Connect: this is Front desk's access to this account\./u);
+    assert.match(text(p.host), /Set in Connect: Front desk can read, create and update on this account, also where the Portal grant allows less\./u);
     assert.doesNotMatch(text(p.host), /READ\/UPDATE/u);
     await p.unmount();
   });
@@ -387,7 +387,7 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
   it("a bounded row becomes the owner's own only on 'Use this access' (same level, no acceptOffer)", async () => {
     reset([{ type: "account", instanceId: "cna_1", access: "read", authority: "bounded" }]);
     const p = await mount(h(mod.Accounts));
-    assert.match(text(p.host), /Limited by Front desk's Portal grant\./u);
+    assert.match(text(p.host), /Front desk's Portal grant may allow less than this level\. If you use this access, Front desk can read on this account, also where the Portal grant allows less\./u);
     assert.deepEqual(stub.scopeSets, []);
     await click(buttons(p.host, /^Use this access$/u)[0]);
     assert.deepEqual(stub.scopeSets, [{ agent: "agt_1", type: "account", id: "cna_1", access: "read" }]);

@@ -409,7 +409,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const hidden = tools.filter((t) => !t.crud.every((a) => grantCrud.includes(a)));
         if (hidden.length > 0) {
           hints.push(
-            `${hidden.length} ${service} tool${hidden.length === 1 ? " is" : "s are"} hidden by your grant (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}): ask the owner to raise your Connect grant.`,
+            `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant.`,
           );
         }
       }
