@@ -1,6 +1,14 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.1 (catalog 0.3.0, C276c, CF-NC-2).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.2 (catalog 0.3.1, CF-CT-1, WebDAV).
+
+## 0.6.2 (prepared 2026-10-20; normal path, 24 h soak)
+
+### Catalog semantics (rest of the v1 sweep)
+- **CF-CT-1:** a JSON request body is sent with its declared media type (plain `application/json` first, else the first JSON type the spec declares, e.g. `application/merge-patch+json`). API Platform PATCH (Mautic v2) works.
+- **Mautic v2 PATCH is back** (28 ops, per-method `[update]`; campaigns, events, contacts, segments, sms, notifications, messages, triggers, trigger events and reports are outward). v2 PUT stays excluded (it blanks omitted fields); webhook PATCH stays excluded (outbound URL); users, roles and permissions stay excluded.
+- **WebDAV methods** (v1 `x-<method>` keys): PROPFIND = read (Depth at most 1), MKCOL = create (a folder), COPY = create, MOVE = the destructive class `[update, delete]` (it removes the source; held by default). MOVE and COPY always send `Overwrite: F`. The `Destination` header is built from the spec's `x-destination-template` with the CF-NC-2 guards: a relative path under the same origin, prefix and user root; `..`, a leading `/`, empty segments and a full URL are refused. REPORT and PROPPATCH need an XML body and stay unavailable; LOCK/UNLOCK are not offered. 16 Nextcloud WebDAV ops.
+- catalog-0.3.1 (Mautic entry change). Review #20: Mautic emails (POST, PATCH, v1 edit), forms, pages and focus items are `outward` (broadcast email, form emails to any address, public HTML and redirects): 5 existing ops change class from write to outward (CRUD unchanged); everything else only adds ops (snapshot `classes-0.3.1.json`). MOVE/COPY no longer offer an `Overwrite` input (it is always F). compile and send use the same JSON-type test.
 
 ## 0.6.1 (prepared 2026-10-20; tagged after 0.6.0 is stable)
 
