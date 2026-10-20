@@ -142,11 +142,22 @@ export const buzzIdentityRotate = (agent: string) => callOp<{ identity: BuzzIden
 export const buzzProfilePublish = (agent?: string) =>
   callOp<{ published: (BuzzIdentity & { relays: RelayOutcome[] })[]; failed: { agent: string; error: string; detail: string }[] }>("buzz_profile_publish", agent ? { agent } : {});
 
+export type CrudWord = "create" | "update" | "delete";
+/** C283 A1 / C283d (miniapp-sdk 0.1.36): what the SDK says about one account row of an agent. */
+export interface AccessRow {
+  level: AccessLevel;
+  /** "owner" = set by the owner in Connect, primary (applies even above the Portal grant); "bounded" = the Portal grant caps it */
+  authority: "owner" | "bounded" | null;
+  /** CRUD the row's level now grants beyond what the owner accepted; NOT effective until the owner accepts (explicit click) */
+  offerAdds: CrudWord[];
+}
 export interface AgentInfo {
   id: string;
   name: string;
   /** Account instance id → level; `null` when `tb.agents_list` did not say (shape not known). */
   levels: Record<string, AccessLevel> | null;
+  /** Account instance id → row details (authority, offer); empty when the SDK does not say. */
+  rows: Record<string, AccessRow>;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -165,22 +176,38 @@ export function normalizeAgents(raw: unknown): AgentInfo[] {
     if (!id) continue;
     const rows = [entry.access, entry.scopes, entry.grants].find(Array.isArray) as unknown[] | undefined;
     let levels: AgentInfo["levels"] = null;
+    const details: AgentInfo["rows"] = {};
     if (rows) {
       levels = {};
       for (const row of rows) {
         if (!isRecord(row) || (row.type !== undefined && row.type !== "account")) continue;
         const instance = typeof row.instanceId === "string" ? row.instanceId : typeof row.id === "string" ? row.id : null;
-        if (instance && typeof row.access === "string" && LEVELS.includes(row.access)) levels[instance] = row.access as AccessLevel;
+        if (instance && typeof row.access === "string" && LEVELS.includes(row.access)) {
+          levels[instance] = row.access as AccessLevel;
+          const adds = isRecord(row.offer) && Array.isArray(row.offer.adds) ? row.offer.adds : [];
+          details[instance] = {
+            level: row.access as AccessLevel,
+            authority: row.authority === "owner" || row.authority === "bounded" ? row.authority : null,
+            offerAdds: (["create", "update", "delete"] as const).filter((a) => adds.includes(a)),
+          };
+        }
       }
     }
-    out.push({ id, name: typeof entry.name === "string" && entry.name ? entry.name : id, levels });
+    out.push({ id, name: typeof entry.name === "string" && entry.name ? entry.name : id, levels, rows: details });
   }
   return out;
 }
 
 export const agentsList = async (): Promise<AgentInfo[]> => normalizeAgents(await callOp<Json>("tb.agents_list", {}));
+/** `tb.scopes_set` from the owner's session: the row becomes the owner's own (primary, C283 A1). */
 export const scopesSet = (agent: string, accountId: string, access: AccessLevel | null) =>
   callOp<Json>("tb.scopes_set", { agent, type: "account", id: accountId, access });
+/**
+ * C283d: accept the row's offer at the SAME level. Only from an explicit owner click on the offer the page shows; a changed offer
+ * is refused 409 `offer_changed` by the SDK.
+ */
+export const scopesAcceptOffer = (agent: string, accountId: string, access: AccessLevel, adds: CrudWord[]) =>
+  callOp<Json>("tb.scopes_set", { agent, type: "account", id: accountId, access, acceptOffer: { adds } });
 
 export const catalogAccountTest = (id: string) => callOp<{ ok: boolean; operation: string | null; detail: string }>("catalog_account_test", { id });
 

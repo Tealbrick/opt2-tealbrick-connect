@@ -38,13 +38,24 @@ const DEFAULT_APPS = () => [
   { product: "observer", name: "Observer", instances: [inst(O1, "Observer")] },
 ];
 type Entry = { id: number; at: string; op: string; callerType: string; product: string | null; app: string | null; account: string | null; ok: boolean; outcome: string; rows: number; repeats: number };
-const stub: { shares: Share[]; entries: Entry[]; dataApps: { product: string; name: string; instances: Inst[] }[]; callersKnown: boolean; sent: Record<string, unknown>[] } = {
+const stub: {
+  shares: Share[];
+  entries: Entry[];
+  dataApps: { product: string; name: string; instances: Inst[] }[];
+  callersKnown: boolean;
+  sent: Record<string, unknown>[];
+  agentRows?: Record<string, unknown>[];
+  scopeSets: Record<string, unknown>[];
+  offerChanged?: boolean;
+} = {
   shares: [],
   entries: [],
   dataApps: DEFAULT_APPS(),
   callersKnown: true,
   // every account_app_share input the page sent (the stub answers ok and changes nothing)
   sent: [],
+  // every tb.scopes_set input the page sent (C283d)
+  scopeSets: [],
 };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const account = () => ({ id: "cna_1", service: "telegram", source: "channel", kind: "as_itself", label: "Support bot", ownerAgent: "agt_1", status: "connected", detail: "", shares: stub.shares });
@@ -62,7 +73,14 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     return json(200, { status: "ok", output: { shares: stub.shares } });
   }
   if (op === "data_access_log") return json(200, { status: "ok", output: { entries: stub.entries } });
-  if (op === "tb.agents_list") return json(200, { status: "ok", output: { agents: [{ id: "agt_1", name: "Front desk", status: "active" }] } });
+  if (op === "tb.agents_list") return json(200, { status: "ok", output: { agents: [{ id: "agt_1", name: "Front desk", status: "active", ...(stub.agentRows ? { access: stub.agentRows } : {}) }] } });
+  if (op === "tb.scopes_set") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> };
+    const input = body.input ?? (body as Record<string, unknown>);
+    stub.scopeSets.push(input);
+    if (stub.offerChanged && input.acceptOffer) return json(409, { error: { code: "offer_changed", message: "The offer changed." } });
+    return json(200, { status: "ok", output: {} });
+  }
   return json(404, { error: { code: "not_found", message: String(op) } });
 }) as typeof fetch;
 
@@ -319,5 +337,60 @@ describe("Accounts page: Recent access", () => {
     assert.deepEqual(rows[3]?.slice(1), ["Unverified app", "Read messages", "", "", "Refused: Unverified app"]);
     assert.ok(rows.every((r) => (r[0] ?? "") !== ""), "every line has a time");
     await page.unmount();
+  });
+});
+
+describe("Accounts page: agent access is the owner's own, offers need an explicit accept (C283 A1 / C283d)", () => {
+  const buttons = (host: Element, name: RegExp) => [...host.querySelectorAll("button")].filter((b) => name.test(b.textContent ?? ""));
+  const click = async (b: Element | undefined) => {
+    assert.ok(b, "button");
+    await act(async () => (b as HTMLButtonElement).click());
+    await flush();
+  };
+  const reset = (rows: Record<string, unknown>[]) => {
+    stub.entries = [];
+    stub.shares = [];
+    stub.dataApps = DEFAULT_APPS();
+    stub.callersKnown = true;
+    stub.agentRows = rows;
+    stub.scopeSets = [];
+    stub.offerChanged = false;
+  };
+
+  it("names levels by their CRUD set, never a bare Update", async () => {
+    reset([{ type: "account", instanceId: "cna_1", access: "read_update", authority: "owner" }]);
+    const p = await mount(h(mod.Accounts));
+    assert.match(text(p.host), /Set in Connect: this is Front desk's access to this account\./u);
+    assert.doesNotMatch(text(p.host), /READ\/UPDATE/u);
+    await p.unmount();
+  });
+
+  it("shows offer.adds and sends acceptOffer only on the owner's click, at the row's own level", async () => {
+    reset([{ type: "account", instanceId: "cna_1", access: "read_update", authority: "owner", offer: { adds: ["delete", "create"] } }]);
+    const p = await mount(h(mod.Accounts));
+    assert.match(text(p.host), /This level now also allows create, delete\. Front desk cannot use it until you accept\./u);
+    assert.deepEqual(stub.scopeSets, [], "nothing is accepted without a click");
+    await click(buttons(p.host, /^Accept create, delete$/u)[0]);
+    assert.deepEqual(stub.scopeSets, [{ agent: "agt_1", type: "account", id: "cna_1", access: "read_update", acceptOffer: { adds: ["create", "delete"] } }]);
+    await p.unmount();
+  });
+
+  it("a changed offer (409 offer_changed) is said plainly and the list is read again", async () => {
+    reset([{ type: "account", instanceId: "cna_1", access: "read", authority: "owner", offer: { adds: ["create"] } }]);
+    stub.offerChanged = true;
+    const p = await mount(h(mod.Accounts));
+    await click(buttons(p.host, /^Accept create$/u)[0]);
+    assert.match(text(p.host), /Front desk: The offer changed\. Check the new offer, then accept again\./u);
+    await p.unmount();
+  });
+
+  it("a bounded row becomes the owner's own only on 'Use this access' (same level, no acceptOffer)", async () => {
+    reset([{ type: "account", instanceId: "cna_1", access: "read", authority: "bounded" }]);
+    const p = await mount(h(mod.Accounts));
+    assert.match(text(p.host), /Limited by Front desk's Portal grant\./u);
+    assert.deepEqual(stub.scopeSets, []);
+    await click(buttons(p.host, /^Use this access$/u)[0]);
+    assert.deepEqual(stub.scopeSets, [{ agent: "agt_1", type: "account", id: "cna_1", access: "read" }]);
+    await p.unmount();
   });
 });

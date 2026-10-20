@@ -20,6 +20,7 @@ import {
   mcpToolReadSet,
   mcpToolsList,
   type ShareLevel,
+  scopesAcceptOffer,
   scopesSet,
   toolsRefresh,
 } from "../ops.ts";
@@ -32,11 +33,12 @@ const SHARE_OPTIONS: { value: ShareLevel; label: string }[] = [
   { value: "shared", label: "Share messages (read only)" },
 ];
 
+// C276 (1): each level is named by its CRUD set, never a bare "Update".
 const LEVEL_OPTIONS: { value: Picked; label: string }[] = [
   { value: "none", label: "None" },
-  { value: "read", label: "READ" },
-  { value: "read_update", label: "READ/UPDATE" },
-  { value: "read_update_delete", label: "READ/UPDATE/DELETE" },
+  { value: "read", label: "Read" },
+  { value: "read_update", label: "Read + create + update" },
+  { value: "read_update_delete", label: "Full (+ delete)" },
 ];
 
 export function Accounts() {
@@ -85,7 +87,7 @@ export function Accounts() {
 
   return (
     <section className="app-page" aria-label="Accounts">
-      <PageHead title="Accounts" lede="Your connected accounts, and what each agent may do with them. READ/UPDATE includes creating and sending." />
+      <PageHead title="Accounts" lede="Your connected accounts, and what each agent may do with them. “Read + create + update” includes sending." />
       {notice ? <Notice tone="ok">{notice}</Notice> : null}
       {error ? <Notice tone="error">{error}</Notice> : null}
       {reshare > 0 ? (
@@ -121,6 +123,7 @@ export function Accounts() {
                   account={account}
                   ownerName={agentName(account.ownerAgent)}
                   agents={agents.data ?? []}
+                  onAgentsChanged={agents.reload}
                   dataApps={accounts.data?.dataApps ?? []}
                   callersKnown={callersKnown}
                   onShared={() => accounts.reload()}
@@ -232,7 +235,17 @@ function RefreshTools({ service }: { service: string }) {
   );
 }
 
-function AccountRow(props: { account: Account; ownerName: string; agents: AgentInfo[]; dataApps: DataApp[]; callersKnown: boolean; onShared(): Promise<void>; onRenamed(): void; onDisconnect(): void }) {
+function AccountRow(props: {
+  account: Account;
+  ownerName: string;
+  agents: AgentInfo[];
+  dataApps: DataApp[];
+  callersKnown: boolean;
+  onShared(): Promise<void>;
+  onAgentsChanged(): Promise<void>;
+  onRenamed(): void;
+  onDisconnect(): void;
+}) {
   const { account } = props;
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(account.label);
@@ -286,7 +299,7 @@ function AccountRow(props: { account: Account; ownerName: string; agents: AgentI
       )}
       {error ? <Notice tone="error">{error}</Notice> : null}
       {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
-      {account.status === "connected" ? <AgentAccess account={account} agents={props.agents} /> : null}
+      {account.status === "connected" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} /> : null}
       {account.status === "connected" && account.source === "channel" && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
         <div className="tb-ctas">
@@ -328,7 +341,13 @@ function TestConnection({ id, label }: { id: string; label: string }) {
   );
 }
 
-function AgentAccess({ account, agents }: { account: Account; agents: AgentInfo[] }) {
+/**
+ * C283 A1 / C283d: the owner sets each agent's access to this account. A level the owner saves here is the agent's own access
+ * ("set in Connect"), also above the agent's Portal grant. A row Connect or the Portal made ("limited by the Portal grant")
+ * becomes the owner's own only on the owner's click ("Use this access"). When a level now allows more than the owner accepted
+ * (an app update widened it), the extra actions are NOT used until the owner clicks "Accept".
+ */
+function AgentAccess({ account, agents, onChanged }: { account: Account; agents: AgentInfo[]; onChanged?(): Promise<void> }) {
   // Levels set in this session win over the (possibly unknown) list shape.
   const [local, setLocal] = useState<Record<string, Picked>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -338,36 +357,67 @@ function AgentAccess({ account, agents }: { account: Account; agents: AgentInfo[
 
   const currentLevel = (agent: AgentInfo): Picked | "" => local[agent.id] ?? (agent.levels ? (agent.levels[account.id] ?? "none") : "");
 
-  const change = async (agent: AgentInfo, value: Picked) => {
+  const run = async (agent: AgentInfo, action: () => Promise<unknown>, after?: () => void) => {
     setBusy(agent.id);
     setError(null);
     try {
-      await scopesSet(agent.id, account.id, value === "none" ? null : value);
-      setLocal((l) => ({ ...l, [agent.id]: value }));
+      await action();
+      after?.();
+      await onChanged?.();
     } catch (e) {
-      setError(`${agent.name}: ${errorText(e)}`);
+      const code = (e as { code?: string }).code;
+      setError(`${agent.name}: ${code === "offer_changed" ? "The offer changed. Check the new offer, then accept again." : errorText(e)}`);
+      if (code === "offer_changed") await onChanged?.();
     } finally {
       setBusy(null);
     }
   };
+  const change = (agent: AgentInfo, value: Picked) =>
+    run(agent, () => scopesSet(agent.id, account.id, value === "none" ? null : value), () => setLocal((l) => ({ ...l, [agent.id]: value })));
+  const crudWords = (adds: readonly string[]) => adds.join(", ");
 
   return (
     <fieldset className="tb-stack access">
       <legend className="tb-label access-legend">Agent access</legend>
       {error ? <Notice tone="error">{error}</Notice> : null}
-      {agents.map((agent) => (
-        <div key={agent.id} className="acc-row">
-          <span>{agent.name}</span>
-          <Select
-            aria-label={`${agent.name} access to ${account.label}`}
-            options={LEVEL_OPTIONS}
-            value={currentLevel(agent)}
-            placeholder="Choose access"
-            disabled={busy === agent.id}
-            onValueChange={(v) => v !== currentLevel(agent) && void change(agent, v as Picked)}
-          />
-        </div>
-      ))}
+      {agents.map((agent) => {
+        const row = local[agent.id] === undefined ? agent.rows[account.id] : undefined;
+        return (
+          <div key={agent.id} className="tb-stack">
+            <div className="acc-row">
+              <span>{agent.name}</span>
+              <Select
+                aria-label={`${agent.name} access to ${account.label}`}
+                options={LEVEL_OPTIONS}
+                value={currentLevel(agent)}
+                placeholder="Choose access"
+                disabled={busy === agent.id}
+                onValueChange={(v) => v !== currentLevel(agent) && void change(agent, v as Picked)}
+              />
+            </div>
+            {row && row.offerAdds.length > 0 ? (
+              <div className="acc-row acc-offer" role="group" aria-label={`${agent.name}: access offer`}>
+                <span className="acc-note">
+                  This level now also allows {crudWords(row.offerAdds)}. {agent.name} cannot use it until you accept.
+                </span>
+                <Button size="sm" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesAcceptOffer(agent.id, account.id, row.level, row.offerAdds))}>
+                  Accept {crudWords(row.offerAdds)}
+                </Button>
+              </div>
+            ) : null}
+            {row && row.authority === "bounded" ? (
+              <div className="acc-row acc-bounded">
+                <span className="acc-note">Limited by {agent.name}'s Portal grant. Use this access to make it {agent.name}'s own access to this account.</span>
+                <Button size="sm" variant="secondary" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesSet(agent.id, account.id, row.level))}>
+                  Use this access
+                </Button>
+              </div>
+            ) : row && row.authority === "owner" ? (
+              <span className="tb-soft acc-note">Set in Connect: this is {agent.name}'s access to this account.</span>
+            ) : null}
+          </div>
+        );
+      })}
     </fieldset>
   );
 }
