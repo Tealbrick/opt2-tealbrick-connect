@@ -13,5 +13,10 @@
   },
   "buzz_schedule_cancel": {
     "id": "${scheduled}"
+  },
+  "channel_send": {
+    "account": "cna_01CONFORMANCEA20CHAT000000",
+    "conversation": "conformance-a20-channel",
+    "text": "conformance chat post"
   }
 }
