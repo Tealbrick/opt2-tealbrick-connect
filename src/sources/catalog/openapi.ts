@@ -6,9 +6,9 @@
  * patterns; `reads` may only downgrade POST; `outward` patterns; `excluded` operations are skipped.
  * Only JSON and form-urlencoded bodies (no binary inputs in opt2, C11).
  */
-import type { JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
+import type { CrudAction, JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
 
-import { classify, namesMoney, type ToolClass } from "../../effect.ts";
+import { classify, isActionWord, keepsFullCrud, nameParts, namesMoney, type ToolClass, withCrud } from "../../effect.ts";
 import { headerDefault } from "./http.ts";
 
 export const METHODS = ["get", "head", "options", "post", "put", "patch", "delete"] as const;
@@ -38,6 +38,8 @@ export interface EntryLabels {
   destructive?: string[];
   reads?: string[];
   excluded?: { operation: string; reason: string }[];
+  /** C276a review #17: every write keeps the full [create, update] (identity providers and other admin-only apps). */
+  fullCrud?: boolean;
 }
 
 type Rec = Record<string, unknown>;
@@ -123,6 +125,40 @@ export function operationKey(method: string, path: string, operationId: string |
   return operationId ?? toolNameSegment(`${method}_${path.replace(/[{}]/gu, "")}`);
 }
 
+/**
+ * C276a: the CRUD a catalog operation needs, by HTTP method (null = keep classify()'s set). POST on a collection → [create];
+ * PUT / PATCH → [update]; DELETE → [delete]. A POST is a collection create only when the same path also lists (has a GET) and
+ * its last segment is a plain resource name. Guardrail (a): POST on an item path (the last segment holds a `{param}`), with an
+ * action word as its last segment (/send, /publish, /status, /cancel, /add, /graphql, ...) or on a path with no GET (/tx,
+ * /redeem, /transmit, ...: RPC-style actions) stays [create, update]. Guardrail (b):
+ * an explicit `x-tealbrick-crud` on the operation (spec or overlay) wins when it is valid. withCrud() then keeps read, money
+ * and the destructive ⇒ delete rule (c: effect and hold family never change).
+ */
+export function catalogCrud(method: Method, path: string, explicit: unknown, pathLists = false, operationId = ""): CrudAction[] | null {
+  if (Array.isArray(explicit) && explicit.length > 0 && explicit.every((a) => a === "create" || a === "update" || a === "delete")) {
+    return [...new Set(explicit as CrudAction[])];
+  }
+  if (method === "delete") return ["delete"];
+  const literals = path.split("/").filter((segment) => segment && !segment.includes("{"));
+  // Review #17: access, identity, secrets, imports and people-reaching objects anywhere in the path keep the full set (users,
+  // roles, members, invites, shares, tokens, recovery codes, oauth/authorize, imports, messages, ...). The operationId is checked
+  // for VERBS only below: it often carries a controller or namespace name ("PublicIntegrationsController_createPost").
+  if (literals.some(keepsFullCrud)) return null;
+  const verbs = nameParts(operationId);
+  if (method === "put" || method === "patch") {
+    // An "update" whose operationId also creates, sends or deletes (transactional apply, create-or-update) keeps the full set.
+    return verbs.some((v) => !READ_LIKE.has(v) && isActionWord(v) && !UPDATE_LIKE.has(v)) ? null : ["update"];
+  }
+  if (method !== "post") return null;
+  const last = path.split("/").filter(Boolean).at(-1);
+  if (!pathLists || !last || last.includes("{") || literals.some(isActionWord)) return null;
+  // A POST "create" whose operationId names another verb (changeFiles, updateLayout, generate...) is not a plain create.
+  return verbs.some((v) => !READ_LIKE.has(v) && isActionWord(v) && !CREATE_LIKE.has(v)) ? null : ["create"];
+}
+const CREATE_LIKE = new Set(["create", "add", "insert", "post", "new"]);
+const UPDATE_LIKE = new Set(["update", "set", "patch", "edit", "put", "partial", "modify"]);
+const READ_LIKE = new Set(["get", "list", "read", "retrieve", "fetch", "view", "find"]);
+
 export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: string; operations: CompiledOperation[] } {
   const doc = rec(raw);
   if (!doc) throw new Error("openapi_invalid");
@@ -207,7 +243,7 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
       const outward = (labels.outward ?? []).some((pattern) => patternMatches(pattern, subject));
       // Money movement on a non-read method is always `money` (always held, SEC-02).
       const money = !readMethod && namesMoney(`${operationId} ${path}`);
-      const cls = classify({ write: !readMethod && !readByLabel, outward, destructive, money });
+      const cls = withCrud(classify({ write: !readMethod && !readByLabel, outward, destructive, money }), labels.fullCrud ? null : catalogCrud(method, path, op["x-tealbrick-crud"], rec(pathItem.get) !== undefined, operationId));
 
       const group = (location: Parameter["in"]) => {
         const items = parameters.filter((p) => p.in === location);

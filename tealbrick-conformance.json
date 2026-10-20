@@ -1,6 +1,17 @@
 {
   "setup": [
     {
+      "id": "a20_owner_row",
+      "as": "owner",
+      "op": "tb.scopes_set",
+      "input": {
+        "agent": "${tb.agentA}",
+        "type": "account",
+        "id": "cna_01CONFORMANCEA20CHAT000000",
+        "access": "read_update"
+      }
+    },
+    {
       "id": "caps_scheduled_post",
       "as": "capsAgent",
       "op": "buzz_schedule",

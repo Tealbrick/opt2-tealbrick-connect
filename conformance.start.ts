@@ -12,9 +12,11 @@ import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json, OpContext } from "@opt2-tealbrick/spec/sdk";
 
 import { AccountStore } from "./src/accounts.ts";
-import { createConnectApp } from "./src/app.ts";
+import { createConnectApp, PRODUCT_SCOPE } from "./src/app.ts";
 import { BuzzIdentities, WORKSPACE_SENDER } from "./src/channels/buzz/identity.ts";
 import { verifyEvent } from "./src/channels/buzz/nostr.ts";
+import { ChannelError, type ChannelProvider } from "./src/channels/provider.ts";
+import { channelProviders } from "./src/channels/registry.ts";
 import { SenderStore } from "./src/senders.ts";
 import { classifyComposioTool, loadPolicies } from "./src/sources/composio/policy.ts";
 import { entrySchema, ToolRegistry, toolName } from "./src/tools.ts";
@@ -24,6 +26,41 @@ const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "tealbrick.ma
 const CONFORMANCE_SEND_AT = "conformance:in-one-hour";
 const TEST_RELAY = "wss://relay.conformance.example";
 const TEST_RELAY_HTTP = "https://relay.conformance.example";
+
+/**
+ * A20 fixture (conformance >= 0.1.25, C283 A1; owner state, like the Gmail fixture below). A20.owner_row_above_grant needs a
+ * scoped non-read agent op (channel_send, scope type account) that RUNS for a fresh agent on an account the owner gave it a row
+ * for with tb.scopes_set. Real accounts have no default grants, so the harness has one connected chat account with this FIXED
+ * id; tealbrick-conformance.json (setup) gives agent A an owner row on it and conformance.inputs.json names it. The chat
+ * service is an in-process fake (no network): it only has to answer verify/send.
+ */
+const A20_ACCOUNT_ID = "cna_01CONFORMANCEA20CHAT000000";
+const A20_CONVERSATION = "conformance-a20-channel";
+const fakeChatProvider: ChannelProvider = {
+  service: "telegram",
+  credentialFields: ["bot_token"],
+  maxTextLength: 4096,
+  verify: async () => ({ botId: "conformance-bot", botName: "Conformance bot" }),
+  conversations: async () => [{ id: A20_CONVERSATION, name: "Conformance channel", type: "channel" }],
+  send: async (_creds, _net, input) => {
+    if (input.conversation !== A20_CONVERSATION) throw new ChannelError("conversation_unknown", "Unknown conformance conversation.", 404);
+    return { messageId: `conformance-msg-${Date.now()}` };
+  },
+  edit: async () => undefined,
+  delete: async () => undefined,
+  react: async () => undefined,
+  openDirect: async (_creds, _net, input) => ({ conversation: `conformance-dm-${input.personId}` }),
+  // webhook kind: no inbound worker, no socket (the suite has no chat network).
+  inbound: { kind: "webhook", verifyWebhook: async () => ({ messages: [] }) },
+};
+const fakeChatNet = {
+  fetch: (() => Promise.reject(new Error("conformance harness: no network"))) as typeof fetch,
+  webSocket: () => {
+    throw new Error("conformance harness: no WebSocket");
+  },
+  now: () => Date.now(),
+  sleep: async () => undefined,
+};
 
 /** Fake test relay: accepts signed events at POST /events; anything else is forwarded to the real fetch. */
 const relayFetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -49,6 +86,8 @@ export default async function start(env: Record<string, string>): Promise<{ url:
     fetchImpl: relayFetch,
     allowRelayOrigins: [TEST_RELAY, TEST_RELAY_HTTP],
     buzzRelays: TEST_RELAY,
+    channelProviders: new Map([...channelProviders(), [fakeChatProvider.service, fakeChatProvider]]),
+    channelNet: fakeChatNet,
   });
   // F20: Buzz ops create the calling agent's identity on first use, so the suite drives the real handlers unwrapped.
   // C86 fixture (owner state, like conformance.inputs.json): the owner has set a workspace Buzz sender, so the suite's
@@ -64,9 +103,23 @@ export default async function start(env: Record<string, string>): Promise<{ url:
     buzz_schedule: (input: Json, ctx: OpContext) =>
       realSchedule(input && typeof input === "object" && !Array.isArray(input) && input.sendAt === CONFORMANCE_SEND_AT ? { ...input, sendAt: new Date(Date.now() + 3_600_000).toISOString() } : input, ctx),
   };
+  // A20: the chat handlers let an agent use only the account it OWNS (scope_denied otherwise). The A20 checks call the op as a
+  // FRESH agent whose id the fixture file cannot name, so for the fixed fixture account (and only it) this harness hands the
+  // account to the calling agent right before the real handler runs. The SDK scope gate (what A20 tests: owner row vs Portal
+  // grant) runs before this and is untouched.
+  const sendSpec = definition.handlers.channel_send;
+  if (!sendSpec || typeof sendSpec === "function") throw new Error("conformance harness: channel_send is expected to be a handler spec");
+  const sendHandler = {
+    ...sendSpec,
+    run: (input: Json, ctx: OpContext) => {
+      const account = input && typeof input === "object" && !Array.isArray(input) ? input.account : undefined;
+      if (account === A20_ACCOUNT_ID && ctx.caller.type === "agent") ctx.db.prepare("UPDATE connect_accounts SET owner_agent = ? WHERE id = ?").run(ctx.caller.id, A20_ACCOUNT_ID);
+      return sendSpec.run(input, ctx);
+    },
+  };
   const app = defineApp({
     ...definition,
-    handlers,
+    handlers: { ...handlers, channel_send: sendHandler },
     onStart: async (ctx) => {
       const buzz = new BuzzIdentities({ db: ctx.db, secrets: ctx.secrets, relayUrls: TEST_RELAY, allowRelayOrigins: [TEST_RELAY, TEST_RELAY_HTTP] });
       await buzz.ensure({ id: WORKSPACE_SENDER, name: "Conformance workspace" });
@@ -90,6 +143,22 @@ export default async function start(env: Record<string, string>): Promise<{ url:
           })),
         );
       }
+      // A20 fixture (owner state): one connected chat account with a fixed id, a fake bot and a scope instance (no row for any
+      // agent; the setup step in tealbrick-conformance.json writes agent A's owner row with tb.scopes_set).
+      if (!accounts.get(A20_ACCOUNT_ID)) {
+        const now = Date.now();
+        ctx.db
+          .prepare(
+            `INSERT INTO connect_accounts (id, service, source, kind, label, owner_agent, external_ref, auth_config_id, status, detail, created_at, updated_at)
+             VALUES (?, 'telegram', 'channel', 'as_itself', 'Conformance chat', 'agt_01CONFORMANCEA20OWNER00000', 'conformance-bot', NULL, 'connected', '', ?, ?)`,
+          )
+          .run(A20_ACCOUNT_ID, now, now);
+        ctx.db
+          .prepare("INSERT INTO connect_channel_bots (account_id, bot_id, bot_name, workspace, settings, updated_at) VALUES (?, 'conformance-bot', 'Conformance bot', NULL, '{}', ?)")
+          .run(A20_ACCOUNT_ID, now);
+        await ctx.secrets.put(`account:${A20_ACCOUNT_ID}`, JSON.stringify({ bot_token: "conformance-fake-token" }));
+      }
+      await ctx.scopes.instances.create(PRODUCT_SCOPE, A20_ACCOUNT_ID, "Conformance chat", {});
       await definition.onStart?.(ctx);
     },
   });

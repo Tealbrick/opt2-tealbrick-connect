@@ -30,6 +30,9 @@
 .acct-tags { gap: var(--tb-s2); }
 .access { gap: var(--tb-s2); }
 .access-legend { padding-bottom: var(--tb-s2); }
+.acc-note, .access-note { grid-column: 1 / -1; margin: 0; }
+.acc-actions { grid-column: 1 / -1; }
+.acc-actions .tb-btn { white-space: normal; max-width: 100%; }
 .acc-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 220px); gap: var(--tb-s3); align-items: center; font-weight: var(--tb-weight-nav); overflow-wrap: anywhere; }
 .inline-error { color: var(--tb-brick-ink); font-weight: var(--tb-weight-nav); }
 .tool-claims { display: grid; gap: var(--tb-s3); }
