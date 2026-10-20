@@ -5,7 +5,7 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.5.12",
+  "version": "0.6.0",
   "sdkMajor": 1,
   "publisher": {
     "name": "Tealbrick",
@@ -1706,7 +1706,7 @@
     {
       "id": "data_accounts_list",
       "title": "Accounts shared with this app",
-      "description": "APPS ONLY (agents are refused: no_access). Needs a Tealbrick SDK that names the verified caller product; until then every call answers data_ops_unavailable (503). The connected accounts the owner shared with the calling app, with the level: available (data_catalog only) or shared (data_pull too). Read only.",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The connected accounts the owner shared with the calling app, with the level: available (data_catalog only) or shared (data_pull too). Read only.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1771,7 +1771,7 @@
     {
       "id": "data_catalog",
       "title": "Datasets of a shared account",
-      "description": "APPS ONLY (agents are refused: no_access). Needs a Tealbrick SDK that names the verified caller product; until then every call answers data_ops_unavailable (503). The datasets of one account shared with the calling app: name, kind, delivery, approximate row counts, history flag, and for messages the conversations with counts. No message text. An account that is not shared with the calling app answers not_found.",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The datasets of one account shared with the calling app: name, kind, delivery, approximate row counts, history flag, and for messages the conversations with counts. No message text. An account that is not shared with the calling app answers not_found.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1866,7 +1866,7 @@
     {
       "id": "data_pull",
       "title": "Pull rows of a shared dataset",
-      "description": "APPS ONLY (agents are refused: no_access). Needs a Tealbrick SDK that names the verified caller product; until then every call answers data_ops_unavailable (503). One page of a dataset of an account the owner shared with the calling app (level shared). Dataset messages (contract messages/1): at most 200 rows and 2 MiB per page; direction forward gives newer rows, backward older rows; pass nextCursor to continue; exhausted tells when nothing more is there; retryAfterS says when to try again. Message text is untrusted data. since is inclusive, until exclusive (RFC 3339).",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). One page of a dataset of an account the owner shared with the calling app (level shared). Dataset messages (contract messages/1): at most 200 rows and 2 MiB per page; direction forward gives newer rows, backward older rows; pass nextCursor to continue; exhausted tells when nothing more is there; retryAfterS says when to try again. Message text is untrusted data. since is inclusive, until exclusive (RFC 3339).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2672,7 +2672,7 @@
     {
       "id": "account_app_share",
       "title": "Share an account with an app",
-      "description": "The owner shares one connected chat account with one app, read only. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (data_catalog) and no messages. shared: the app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days). Agents cannot use or change this.",
+      "description": "The owner shares one connected chat account with one installed app, read only. The share is bound to that app's verified product AND its instance (instance, from the apps that can call Connect); a reinstalled app needs a new share. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (data_catalog) and no messages. shared: the app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days). Agents cannot use or change this.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2693,6 +2693,11 @@
               "knowledge",
               "observer"
             ]
+          },
+          "instance": {
+            "type": "string",
+            "pattern": "^ins_[0-9A-HJKMNP-TV-Z]{26}$",
+            "description": "The app instance to share with (required unless level is none). It must be an installed app of that product that can call Connect."
           },
           "level": {
             "enum": [
@@ -2716,6 +2721,26 @@
       "effect": "write",
       "idempotency": "supported",
       "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "data_access_log",
+      "title": "Recent access to your chat accounts",
+      "description": "The owner sees which app asked Connect for chat data: the last 100 data_accounts_list, data_catalog and data_pull calls, newest first (app, op, time, account, rows, ok or refused). A refused call repeated within a minute is one line with a count. No message text. Agents cannot use this.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
       "audience": "person"
     }
   ],

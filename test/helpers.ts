@@ -110,6 +110,15 @@ export function testCtx(input: {
   app?: string;
   /** manifest name of the companion app caller (the SDK names an app caller by it; default "Test app") */
   appName?: string;
+  /** the VERIFIED product of the companion app caller (SDK >= 0.1.27 `ctx.caller.product`); absent = an app the slice does not list */
+  appProduct?: string;
+  /**
+   * TEST DOUBLE of miniapp-sdk 0.1.32 / spec 0.1.48 (SDK-COMPANION-CALLERS, C240): on a PERSON call, `ctx.companionCallers()`
+   * returns these entries (the verified app instances of the current signed slice). Absent = an SDK without the function.
+   */
+  companionCallers?: { product: string; ins: string; name: string; provider?: string | null }[];
+  /** TEST DOUBLE of miniapp-sdk 0.1.32 `ctx.caller.listed` (C240 option B) on an APP caller; absent = an SDK without the flag */
+  appListed?: boolean;
   /** SDK workspace (slice / person principal); defaults to `ws` */
   workspace?: string | null;
   publicUrl?: string | null;
@@ -127,7 +136,7 @@ export function testCtx(input: {
     caller: input.person
       ? { type: "person", id: "per_01TESTOWNER00000000000000" as `per_${string}`, name: "Owner", mode: null }
       : input.app
-        ? { type: "app", id: input.app as `ins_${string}`, name: input.appName ?? "Test app", mode: null }
+        ? { type: "app", id: input.app as `ins_${string}`, name: input.appName ?? "Test app", mode: null, ...(input.appProduct === undefined ? {} : { product: input.appProduct as never }), ...(input.appListed === undefined ? {} : { listed: input.appListed }) }
         : { type: "agent", id: agent as `agt_${string}`, name: "Test agent", mode: "free" },
     grant: input.person
       ? null
@@ -155,6 +164,7 @@ export function testCtx(input: {
     statusChanged() {},
     ownerLink: () => null,
     companionTargets: () => [],
+    ...(input.person && input.companionCallers ? { companionCallers: () => (input.companionCallers ?? []).map((c) => Object.freeze({ ...c })) } : {}),
     appsPolicy: () => null,
     agentScopeRequest: () => null,
     ownerLinkFor: () => null,

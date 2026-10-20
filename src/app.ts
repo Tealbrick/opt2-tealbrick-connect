@@ -16,7 +16,7 @@ import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
 import { ChannelError, type ChannelNet, type ChannelProvider, type ChannelService as ChannelServiceId } from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
 import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
-import { DATA_OPS_UNAVAILABLE_CODE, DATA_OPS_UNAVAILABLE_MESSAGE, DATA_OPS_VERIFIED_PRODUCT_SUPPORTED, verifiedAppProduct } from "./data/caller.ts";
+import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
 import { classifyMcpTool, isSendTool, recipientsOf } from "./effect.ts";
@@ -78,12 +78,6 @@ export interface ConnectEnv {
   channelNet?: ChannelNet;
   /** Manifest setting `buzz_relays` (env CONNECT_BUZZ_RELAYS): ordered relay list (C73; settings reach apps only as env, S6). */
   buzzRelays?: string | null;
-  /**
-   * TEST-ONLY seam for the data_* ops (C230 R3, Coordinator ruling): the verified product of an app caller. Production never
-   * sets it: `verifiedAppProduct` (src/data/caller.ts) answers null until the SDK offers the verified caller product, and
-   * then every data op answers `data_ops_unavailable` (503).
-   */
-  verifiedAppProduct?: (ctx: OpContext) => string | null;
   /** C133: the removed setting `buzz_relay_url` is still in the env (value never read); Buzz reports it clearly. */
   oldBuzzRelaySettingPresent?: boolean;
 }
@@ -485,33 +479,70 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
 
   // ── data_* op family (C230 R3): apps only, one confused-deputy rule for all three ops ──
 
-  /** Data ops need the verified caller product. Without it (today, SDK < 0.1.27) every data op refuses every caller. */
-  const dataOpsAvailable = DATA_OPS_VERIFIED_PRODUCT_SUPPORTED || env.verifiedAppProduct !== undefined;
-  /** The calling app's verified product id, or null for an app that is not verified. Persons and agents: no_access. */
-  const dataCaller = (ctx: OpContext): string | null => {
-    if (!dataOpsAvailable) return fail(DATA_OPS_UNAVAILABLE_CODE, DATA_OPS_UNAVAILABLE_MESSAGE, 503);
+  /**
+   * The calling app's VERIFIED product id (ctx.caller.product, miniapp-sdk >= 0.1.27) and its verified instance id (C240).
+   * Persons and agents: no_access. An app caller without a verified product is refused (fail closed): never its name or an
+   * input field. Shares match on BOTH (ShareStore.forCaller), so a reinstalled app needs a new share.
+   */
+  const dataCaller = (ctx: OpContext): { product: string; instance: string } => {
     if (ctx.caller.type !== "app") return fail("no_access", "The data operations serve apps only. Agents and people cannot use them.", 403);
-    return (env.verifiedAppProduct ?? verifiedAppProduct)(ctx);
+    return verifiedAppCaller(ctx) ?? fail("caller_unverified", "The calling app has no verified product, so it cannot use the data operations.", 403);
+  };
+  /**
+   * C240 call-time check (Coordinator): a bound share serves only while the caller instance is STILL listed under its product
+   * in the current signed slice (`ctx.caller.listed`, sdk 0.1.32). A removed instance may still hold a valid grant `prd`: refused
+   * `share_instance_gone`. An SDK without the flag is refused `companion_list_unavailable` (fail closed). Both are audited.
+   */
+  const LIST_RETRY = { retryable: true, retryAfterMs: 30_000 } as const;
+  const stillListed = (ctx: OpContext): void => {
+    const state = companionListed(ctx);
+    // retryable (Coordinator, like C261 caller_unverified): a fresh companion whose grant arrives before the slice lists it
+    // retries after the slice catches up instead of failing hard
+    if (state === "gone") fail("share_instance_gone", "This app instance is not in the workspace list now, so it cannot read shared accounts. Try again later.", 403, LIST_RETRY);
+    if (state === "unknown") fail("companion_list_unavailable", "Connect cannot check that this app is still installed. Update Connect.", 503, LIST_RETRY);
   };
   /** The ONE refusal for every account the calling app cannot see (unknown, not a chat account, not connected, not shared with it). */
   const noSuchAccount = (): never => fail("not_found", "No such account.", 404);
   const dataAccount = (s: Services, ctx: OpContext, raw: unknown, need: "available" | "shared", note?: { product?: string | null }): { account: Account; level: "available" | "shared"; product: string; since: number | null } => {
-    const product = dataCaller(ctx);
+    const { product, instance } = dataCaller(ctx);
     if (note) note.product = product;
     const id = str(raw);
     const account = id ? s.accounts.get(id) : null;
-    if (!product || !account || account.source !== "channel" || account.status !== "connected") return noSuchAccount();
-    const share = s.shares.get(account.id, product);
+    if (account?.source !== "channel" || account.status !== "connected") return noSuchAccount();
+    // C240: the share must be bound to this product AND this instance (a row from before 0013 has no instance: no match)
+    const share = s.shares.forCaller(account.id, product, instance);
     if (!share) return noSuchAccount();
+    stillListed(ctx);
     if (need === "shared" && share.level !== "shared") fail("scope_denied", "This account is shared with you for its catalog only. Ask the owner to share it for reading.", 403);
     return { account, level: share.level, product, since: share.includeHistory ? null : share.setAt };
   };
-  const shareView = (r: { product: string; level: string; includeHistory: boolean; setAt: number }) => ({
+  /**
+   * One share as the owner page shows it. `current` (C240): the bound instance is still an app that can call Connect (in the
+   * current signed slice). false = the app was removed or reinstalled, or the row is from before 0013: it serves no call
+   * and the owner shares again.
+   */
+  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number }, callers: { product: string; instance: string }[]) => ({
     product: r.product,
+    instance: r.instance,
+    current: r.instance !== null && callers.some((c) => c.instance === r.instance && c.product === r.product),
     level: r.level,
     includeHistory: r.includeHistory,
     setAt: new Date(r.setAt).toISOString(),
   });
+  /** The data apps the owner can share with (C240): each verified instance of a known data product, with where it runs. */
+  const dataTargets = (ctx: OpContext) => {
+    const callers = companionCallersFor(ctx).filter((c) => isDataApp(c.product));
+    return {
+      callers,
+      dataApps: Object.entries(DATA_APPS).map(([product, name]) => ({
+        product,
+        name,
+        instances: callers
+          .filter((c) => c.product === product)
+          .map((c) => ({ instance: c.instance, name: c.name, provider: c.provider, ownInfra: c.provider === OWN_INFRA_PROVIDER })),
+      })),
+    };
+  };
   const messagesDeps = (s: Services, ctx: OpContext) => ({
     db: ctx.db,
     log: ctx.log,
@@ -539,9 +570,14 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     quarantined?: number;
   }
   /**
-   * One audit line per data_* call, refused ones too (outcome = the refusal code): who called (type and id), which op, the
-   * verified product when there is one, account, dataset, row count. Never message text. The account and dataset are
-   * recorded as the caller named them (clipped), because a refusal has no resolved account.
+   * One audit line per data_* call (who called: type and id; which op; the verified product when there is one; account,
+   * dataset, row count). Never message text. The account and dataset are recorded as the caller named them (clipped),
+   * because a refusal has no resolved account.
+   *
+   * FAIL CLOSED: a SERVED call writes its line BEFORE the answer is returned; when the line cannot be written the call
+   * answers 503 `audit_unavailable` and the data is dropped (nothing leaves unrecorded). A REFUSED call carries no data, so
+   * it stays refused when its line cannot be written (the failure is an error in the log). Refused calls are throttled: the
+   * same caller, product, op and code write one line per minute, and `repeats` counts the rest.
    */
   const audited = async (op: string, ctx: OpContext, input: Json, body: (note: AuditNote) => Promise<Json>): Promise<Json> => {
     const i = asInput(input);
@@ -549,25 +585,39 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       ...(typeof i.account === "string" ? { account: i.account.slice(0, 64) } : {}),
       ...(typeof i.dataset === "string" ? { dataset: i.dataset.slice(0, 64) } : {}),
     };
-    const record = (outcome: string) => {
+    const logLine = (outcome: string) => ctx.log.info(op, { outcome, caller: ctx.caller.type, app: note.product ?? null, account: note.account ?? null, rows: note.rows ?? 0, quarantined: note.quarantined ?? 0 });
+    const insert = (outcome: string, now: number) =>
+      ctx.db
+        .prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, account_id, dataset, row_count, quarantined) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(now, op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null, note.account ?? null, note.dataset ?? null, note.rows ?? 0, note.quarantined ?? 0);
+    const recordRefused = (outcome: string) => {
       try {
-        ctx.db
-          .prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, account_id, dataset, row_count, quarantined) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-          .run(Date.now(), op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null, note.account ?? null, note.dataset ?? null, note.rows ?? 0, note.quarantined ?? 0);
-        ctx.log.info(op, { outcome, caller: ctx.caller.type, app: note.product ?? null, account: note.account ?? null, rows: note.rows ?? 0, quarantined: note.quarantined ?? 0 });
+        const now = Date.now();
+        const same = ctx.db
+          .prepare("SELECT id FROM connect_data_audit WHERE at > ? AND op = ? AND outcome = ? AND caller_type = ? AND caller_id = ? AND product IS ? ORDER BY id DESC LIMIT 1")
+          .get(now - AUDIT_REFUSAL_WINDOW_MS, op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null);
+        if (same) ctx.db.prepare("UPDATE connect_data_audit SET repeats = repeats + 1 WHERE id = ?").run(Number(same.id));
+        else insert(outcome, now);
+        logLine(outcome);
       } catch (error) {
-        // Not silent: the call itself goes on, the failed audit line is an error in the log.
         ctx.log.error("data audit line could not be written", { op, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
       }
     };
+    let out: Json;
     try {
-      const out = await body(note);
-      record("ok");
-      return out;
+      out = await body(note);
     } catch (error) {
-      record(typeof (error as { code?: unknown }).code === "string" ? String((error as { code: string }).code).slice(0, 64) : "error");
+      recordRefused(typeof (error as { code?: unknown }).code === "string" ? String((error as { code: string }).code).slice(0, 64) : "error");
       throw error;
     }
+    try {
+      insert("ok", Date.now());
+    } catch (error) {
+      ctx.log.error("data audit line could not be written; the answer is withheld", { op, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+      return fail("audit_unavailable", "Connect could not record this access, so it sent no data. Try again later.", 503, { retryable: true });
+    }
+    logLine("ok");
+    return out;
   };
 
   const handlers: Record<string, Handler | HandlerSpec> = {
@@ -576,9 +626,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       return audited("data_accounts_list", ctx, input, async (note) =>
         guard(async () => {
           const s = services(ctx);
-          const product = dataCaller(ctx);
+          const { product, instance } = dataCaller(ctx);
           note.product = product;
-          const accounts = (product ? s.shares.forProduct(product) : []).flatMap((share) => {
+          const bound = s.shares.accountsForCaller(product, instance);
+          if (bound.length > 0) stillListed(ctx);
+          const accounts = bound.flatMap((share) => {
             const a = s.accounts.get(share.account);
             return a?.source === "channel" && a.status === "connected"
               ? [{ account: a.id, service: a.service, label: a.label, kinds: ["messages"], level: share.level }]
@@ -1011,8 +1063,12 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     async accounts_overview(_input, ctx) {
       const s = services(ctx);
       // Chat accounts also list who the owner shared them with (C230 R3); `dataApps` are the apps one can share with.
-      const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map(shareView) } : accountView(a)));
-      return { accounts, dataApps: Object.entries(DATA_APPS).map(([product, name]) => ({ product, name })), dataOpsAvailable } as unknown as Json;
+      // C240: `dataApps[].instances` are the verified app instances that can call Connect (ctx.companionCallers, person ops,
+      // miniapp-sdk >= 0.1.32), each with its provider; `ownInfra` marks one that runs on the owner's own infrastructure.
+      const { callers, dataApps } = dataTargets(ctx);
+      const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a)));
+      // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
+      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx) } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
@@ -1028,11 +1084,53 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const account = s.accounts.get(id);
         if (account?.source !== "channel") fail("account_not_found", "No such chat connection.", 404);
         if (level !== "none" && account?.status !== "connected") fail("channel_account_not_connected", "This chat connection is not connected. Connect it again first.", 409);
-        s.shares.set(id, product, level as ShareLevel, i.includeHistory === true);
-        ctx.log.info("account shared with an app", { account: id, product, level: level as string });
-        ctx.receipt.summary(`Sharing of “${account?.label ?? id}” with ${DATA_APPS[product]}: ${level === "none" ? "not shared" : level === "available" ? "names and counts only" : "messages, read only"}`);
-        ctx.receipt.meta({ account: id, product, level: level as string, includeHistory: i.includeHistory === true });
-        return { account: id, product, level, shares: s.shares.forAccount(id).map(shareView), dataOpsAvailable } as unknown as Json;
+        // C240: bind the share to the verified product AND the instance the owner picked, from the CURRENT signed slice.
+        // Not listed (not installed, removed, reinstalled, an SDK without companionCallers, an expired slice) = refused.
+        const { callers } = dataTargets(ctx);
+        let instance: string | null = null;
+        let target: (typeof callers)[number] | undefined;
+        if (level !== "none") {
+          instance = str(i.instance) ?? fail("instance_required", `Pick which ${DATA_APPS[product]} to share with.`);
+          target = callers.find((c) => c.instance === instance && c.product === product);
+          if (!target) fail("app_instance_unknown", `This ${DATA_APPS[product]} is not installed in your workspace or cannot call Connect. Reload the page and pick it again.`, 404);
+        }
+        s.shares.set(id, product, level as ShareLevel, i.includeHistory === true, instance);
+        ctx.log.info("account shared with an app", { account: id, product, instance, level: level as string });
+        // which instance, and whether it runs on the owner's own server (C240 item 3), not only the product
+        const who = target ? `${DATA_APPS[product]} “${target.name}”${target.provider === OWN_INFRA_PROVIDER ? " (your own server)" : ""}` : DATA_APPS[product];
+        ctx.receipt.summary(`Sharing of “${account?.label ?? id}” with ${who}: ${level === "none" ? "not shared" : level === "available" ? "names and counts only" : "messages, read only"}`);
+        ctx.receipt.meta({ account: id, product, instance, level: level as string, includeHistory: i.includeHistory === true });
+        return { account: id, product, instance, level, shares: s.shares.forAccount(id).map((r) => shareView(r, callers)) } as unknown as Json;
+      });
+    },
+    // The owner (a person) sees which app asked for what: the last ACCESS_LOG_LIMIT audit lines, newest first. No message text.
+    async data_access_log(_input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner sees the access list.", 403);
+        const s = services(ctx);
+        const labels = new Map<string, string>();
+        const entries = ctx.db
+          .prepare("SELECT id, at, op, outcome, caller_type, product, account_id, row_count, repeats FROM connect_data_audit ORDER BY id DESC LIMIT ?")
+          .all(ACCESS_LOG_LIMIT)
+          .map((r) => {
+            const accountId = r.account_id === null ? null : String(r.account_id);
+            if (accountId !== null && !labels.has(accountId)) labels.set(accountId, s.accounts.get(accountId)?.label ?? "");
+            const product = r.product === null ? null : String(r.product);
+            return {
+              id: Number(r.id),
+              at: new Date(Number(r.at)).toISOString(),
+              op: String(r.op),
+              callerType: String(r.caller_type),
+              product,
+              app: product === null ? null : (DATA_APPS[product] ?? product),
+              account: accountId === null ? null : labels.get(accountId) || null,
+              ok: r.outcome === "ok",
+              outcome: String(r.outcome),
+              rows: Number(r.row_count),
+              repeats: Number(r.repeats),
+            };
+          });
+        return { entries } as unknown as Json;
       });
     },
     async account_connect(input, ctx) {
@@ -1439,6 +1537,10 @@ type IdentityRow = {
   identity: string;
 };
 const IDENTITIES_PAGE = 200;
+/** A refused data_* call writes one audit line per minute for the same caller, product, op and code (the rest are counted). */
+const AUDIT_REFUSAL_WINDOW_MS = 60_000;
+/** The owner's "Recent access" list shows this many audit lines. */
+const ACCESS_LOG_LIMIT = 100;
 const rowKey = (r: IdentityRow): string => `${r.agent}\u0000${r.channel}\u0000${r.identity}`;
 const encodeCursor = (key: string): string => Buffer.from(key, "utf8").toString("base64url");
 

@@ -1,20 +1,78 @@
 /**
- * Which app is calling a data_* op (C230 R3, Coordinator ruling): the identity MUST come from the VERIFIED caller
- * product, never from the app's manifest name (a name is not an identity: any installed app can carry any name).
+ * Which app is calling a data_* op (C230 R3, Coordinator ruling): the identity is the VERIFIED caller product, never the
+ * app's manifest name (a name is not an identity: any installed app can carry any name).
  *
- * The SDK does not give a handler the verified product yet (request SDK-CALLER-PRODUCT, expected in miniapp-sdk
- * 0.1.27). Until it does, `verifiedAppProduct` answers null and all three data ops refuse EVERY caller with
- * `data_ops_unavailable` (503): fail closed. The owner can still set shares; they take effect when Connect is updated.
- * When the SDK offers the product, change `verifiedAppProduct` to read it and flip DATA_OPS_VERIFIED_PRODUCT_SUPPORTED.
+ * miniapp-sdk 0.1.27+ (SDK-CALLER-PRODUCT) gives every handler `ctx.caller.product` for an app caller. Since 0.1.28 it is the
+ * `prd` claim of the verified companion grant first, else the Portal-signed slice entry (`companionCallers`) of the calling
+ * instance; a grant `prd` that differs from the slice entry is refused by the SDK (`grant_invalid`) before any handler runs. It is
+ * absent for people and agents and for an app neither the grant nor the slice names. This file is the only place that reads it.
+ * Fail closed: an app caller without a verified product is refused. There is no fallback to `ctx.caller.name`, the manifest
+ * name, the instance id or any input field. Every share check, share record and audit row keys on this product id; since C240
+ * a share also binds the verified instance id (verifiedAppCaller).
  */
 import type { OpContext } from "@opt2-tealbrick/spec/sdk";
 
-/** true once `verifiedAppProduct` can answer from the SDK's verified caller product. */
-export const DATA_OPS_VERIFIED_PRODUCT_SUPPORTED = false;
-export const DATA_OPS_UNAVAILABLE_CODE = "data_ops_unavailable";
-export const DATA_OPS_UNAVAILABLE_MESSAGE = "Connect data sharing needs a newer Tealbrick SDK";
+/** The verified product id of an app caller, or null (not an app, no product, or an empty one). */
+export function verifiedAppProduct(ctx: OpContext): string | null {
+  const caller = ctx.caller;
+  return caller.type === "app" && typeof caller.product === "string" && caller.product !== "" ? caller.product : null;
+}
 
-/** The product id of the calling app as the SDK verified it, or null (not an app, or not verifiable). Today: always null. */
-export function verifiedAppProduct(_ctx: OpContext): string | null {
-  return null;
+/**
+ * The calling app as a share key (C240): its verified product AND its instance id. `ctx.caller.id` of an app caller is the
+ * `sub` of the verified companion grant (the SDK refuses the call before the handler otherwise), so the pair is verified.
+ */
+export function verifiedAppCaller(ctx: OpContext): { product: string; instance: string } | null {
+  const product = verifiedAppProduct(ctx);
+  const instance = ctx.caller.id;
+  return product && typeof instance === "string" && instance.startsWith("ins_") ? { product, instance } : null;
+}
+
+/** One app instance that may call Connect, as the owner page sees it (spec 0.1.48 `CompanionCaller`). */
+export interface CompanionCallerView {
+  product: string;
+  instance: string;
+  name: string;
+  /** where it runs (`railway`, `own_infra`, ...); null = unknown (older Core) */
+  provider: string | null;
+}
+
+/** spec 0.1.48 / miniapp-sdk 0.1.32 (SDK-COMPANION-CALLERS): person-op contexts carry `companionCallers()`. */
+type WithCompanionCallers = { companionCallers?: () => readonly { product?: unknown; ins?: unknown; name?: unknown; provider?: unknown }[] };
+
+/**
+ * The verified app instances that may call Connect, from the CURRENT signed slice. Person (owner) calls only: anyone else, an
+ * SDK without the function, an expired slice or a malformed entry gives nothing, so a share cannot be created (fail closed).
+ */
+export function companionCallersFor(ctx: OpContext): CompanionCallerView[] {
+  if (ctx.caller.type !== "person") return [];
+  const fn = (ctx as OpContext & WithCompanionCallers).companionCallers;
+  if (typeof fn !== "function") return [];
+  const out: CompanionCallerView[] = [];
+  for (const e of fn() ?? []) {
+    if (!e || typeof e.product !== "string" || e.product === "" || typeof e.ins !== "string" || !e.ins.startsWith("ins_")) continue;
+    const name = typeof e.name === "string" && e.name !== "" ? e.name : e.ins;
+    const provider = typeof e.provider === "string" && e.provider !== "" ? e.provider : null;
+    out.push({ product: e.product, instance: e.ins, name, provider });
+  }
+  return out;
+}
+
+/** false = this SDK has no person-op `companionCallers` (miniapp-sdk < 0.1.32): the owner page says sharing needs an update. */
+export function companionCallersKnown(ctx: OpContext): boolean {
+  return typeof (ctx as OpContext & WithCompanionCallers).companionCallers === "function";
+}
+
+/** An `own_infra` caller runs code the workspace owner operates (S3-4 residual): the owner page says so. */
+export const OWN_INFRA_PROVIDER = "own_infra";
+
+/**
+ * C240 call-time check (Coordinator, option B): is the calling app instance STILL listed, under its verified product, in the
+ * current signed slice? miniapp-sdk 0.1.32 sets the verified flag `ctx.caller.listed` on app callers (false when the slice is
+ * expired or does not list it). A share is served only when it is true: a grant `prd` alone is not enough (an app removed
+ * from the workspace may still hold a valid grant). No flag (older SDK) = `unknown`: the caller refuses (fail closed).
+ */
+export function companionListed(ctx: OpContext): "listed" | "gone" | "unknown" {
+  const flag = (ctx.caller as { listed?: unknown }).listed;
+  return typeof flag === "boolean" ? (flag ? "listed" : "gone") : "unknown";
 }

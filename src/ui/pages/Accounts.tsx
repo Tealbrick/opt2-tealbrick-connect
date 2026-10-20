@@ -1,9 +1,10 @@
-import { Button, Card, EmptyState, Select, TextInput } from "@opt2-tealbrick/ui";
+import { Button, Card, EmptyState, Select, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { type FormEvent, useMemo, useState } from "react";
 
 import { ConfirmDialog, KindBadge, LoadError, Notice, PageHead, ServiceTile, StatusLabel } from "../components.tsx";
 import { errorText, useLoad } from "../hooks.ts";
 import {
+  type AccessEntry,
   type AccessLevel,
   type Account,
   type AgentInfo,
@@ -14,6 +15,7 @@ import {
   agentsList,
   catalogAccountTest,
   type DataApp,
+  dataAccessLog,
   type McpToolRow,
   mcpToolReadSet,
   mcpToolsList,
@@ -39,6 +41,7 @@ const LEVEL_OPTIONS: { value: Picked; label: string }[] = [
 
 export function Accounts() {
   const accounts = useLoad(accountsOverview);
+  const access = useLoad(dataAccessLog);
   const agents = useLoad(agentsList);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,11 +76,25 @@ export function Accounts() {
     }
   };
 
+  // C240 / migration 0013: a share from before the update has no app instance; it serves nothing until the owner shares again
+  // (only rows the page shows: connected chat accounts)
+  const reshare = (accounts.data?.accounts ?? [])
+    .filter((a) => a.source === "channel" && a.status === "connected")
+    .reduce((n, a) => n + (a.shares ?? []).filter((x) => x.instance === null).length, 0);
+  const callersKnown = accounts.data?.callersKnown !== false;
+
   return (
     <section className="app-page" aria-label="Accounts">
       <PageHead title="Accounts" lede="Your connected accounts, and what each agent may do with them. READ/UPDATE includes creating and sending." />
       {notice ? <Notice tone="ok">{notice}</Notice> : null}
       {error ? <Notice tone="error">{error}</Notice> : null}
+      {reshare > 0 ? (
+        <Notice>
+          {callersKnown
+            ? `Connect was updated. ${reshare === 1 ? "1 app share" : `${reshare} app shares`} must be chosen again: look for “Share again” below. Until then that app gets nothing.`
+            : `Connect was updated. ${reshare === 1 ? "1 app share" : `${reshare} app shares`} must be chosen again after the next Connect update. Until then that app gets nothing.`}
+        </Notice>
+      ) : null}
       {accounts.error ? <LoadError message={accounts.error} busy={accounts.loading} onRetry={() => void accounts.reload()} /> : null}
       {accounts.loading && !accounts.data ? (
         <p className="tb-soft" role="status">
@@ -105,7 +122,7 @@ export function Accounts() {
                   ownerName={agentName(account.ownerAgent)}
                   agents={agents.data ?? []}
                   dataApps={accounts.data?.dataApps ?? []}
-                  dataOpsAvailable={accounts.data?.dataOpsAvailable === true}
+                  callersKnown={callersKnown}
                   onShared={() => accounts.reload()}
                   onRenamed={() => {
                     setNotice(null);
@@ -118,6 +135,10 @@ export function Accounts() {
           </ul>
         </section>
       ))}
+
+      {accounts.data && (accounts.data.accounts.some((a) => a.source === "channel") || (access.data?.entries.length ?? 0) > 0) ? (
+        <RecentAccess entries={access.data?.entries ?? null} error={access.error} busy={access.loading} onReload={() => void access.reload()} />
+      ) : null}
 
       <ConfirmDialog
         open={confirm !== null}
@@ -211,7 +232,7 @@ function RefreshTools({ service }: { service: string }) {
   );
 }
 
-function AccountRow(props: { account: Account; ownerName: string; agents: AgentInfo[]; dataApps: DataApp[]; dataOpsAvailable: boolean; onShared(): Promise<void>; onRenamed(): void; onDisconnect(): void }) {
+function AccountRow(props: { account: Account; ownerName: string; agents: AgentInfo[]; dataApps: DataApp[]; callersKnown: boolean; onShared(): Promise<void>; onRenamed(): void; onDisconnect(): void }) {
   const { account } = props;
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(account.label);
@@ -266,7 +287,7 @@ function AccountRow(props: { account: Account; ownerName: string; agents: AgentI
       {error ? <Notice tone="error">{error}</Notice> : null}
       {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
       {account.status === "connected" ? <AgentAccess account={account} agents={props.agents} /> : null}
-      {account.status === "connected" && account.source === "channel" && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} available={props.dataOpsAvailable} onChanged={props.onShared} /> : null}
+      {account.status === "connected" && account.source === "channel" && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
         <div className="tb-ctas">
           <Button size="sm" onClick={() => setEditing(true)} aria-label={`Rename ${account.label}`}>
@@ -356,17 +377,26 @@ function AgentAccess({ account, agents }: { account: Account; agents: AgentInfo[
  * messages Connect receives from now on; "Include the last 30 days" adds what Connect already holds. "Names and counts
  * only" shows the app the conversation names and counts and no message. Agents never see this: the data operations
  * serve apps only. The control shows what the server holds: it re-reads the list after every save.
+ * C240: a share is bound to one installed instance of the app (picked here when there are several). The page never
+ * pretends a share is gone while it may still serve:
+ *   - bound to an instance that is no longer listed (removed, installed again): it can no longer read (the server checks
+ *     `ctx.caller.listed` on every call); its level shows read-only, with "Stop sharing" and an explicit move button;
+ *   - from before migration 0013 (no instance): it serves nobody; "Share again" on the row and a page notice;
+ *   - moving a share to another instance is a new share: "Include the last 30 days" starts unticked again.
+ * An instance on the owner's own server is named as such.
  */
-function AppSharing({ account, apps, available, onChanged }: { account: Account; apps: DataApp[]; available: boolean; onChanged(): Promise<void> }) {
+function AppSharing({ account, apps, callersKnown, onChanged }: { account: Account; apps: DataApp[]; callersKnown: boolean; onChanged(): Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // with several installed instances and no live share, the owner picks which one the next share goes to (product -> id)
+  const [picked, setPicked] = useState<Record<string, string>>({});
   const share = (app: DataApp) => account.shares?.find((x) => x.product === app.product);
 
-  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean) => {
+  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null) => {
     setBusy(app.product);
     setError(null);
     try {
-      await accountAppShare(account.id, app.product, level, includeHistory);
+      await accountAppShare(account.id, app.product, level, includeHistory, instance);
       await onChanged();
     } catch (e) {
       setError(`${app.name}: ${errorText(e)}`);
@@ -378,36 +408,179 @@ function AppSharing({ account, apps, available, onChanged }: { account: Account;
   return (
     <fieldset className="tb-stack access">
       <legend className="tb-label access-legend">Apps (read only)</legend>
-      {available ? null : <p className="tb-soft">Sharing takes effect when Connect is updated. You can choose now.</p>}
       {error ? <Notice tone="error">{error}</Notice> : null}
       {apps.map((app) => {
-        const current = share(app);
-        const level = current?.level ?? "none";
+        const instances = app.instances ?? [];
+        const row = share(app);
+        // a row with an instance can serve; one without (before migration 0013) serves nobody
+        const bound = row && row.instance !== null ? row : undefined;
+        const legacy = row !== undefined && row.instance === null;
+        const listed = bound?.current === true;
+        // with an SDK that cannot list the apps, a bound share is not "removed": the page cannot tell (and data calls fail closed)
+        const unknown = !callersKnown && bound !== undefined;
+        const unlisted = bound !== undefined && !listed && !unknown;
+        const level: ShareLevel = bound?.level ?? "none";
+        const pick = picked[app.product];
+        const target = listed ? instances.find((i) => i.instance === bound?.instance) : (instances.find((i) => i.instance === pick) ?? instances[0]);
+        const includeHistory = listed ? (bound?.includeHistory ?? false) : false;
+        const isBusy = busy === app.product;
+        const options = SHARE_OPTIONS.map((o) => (o.value !== "none" && !target ? { ...o, disabled: true } : o));
+        const where = target?.ownInfra ? " (your own server)" : "";
+        const setLevel = (v: ShareLevel) => {
+          if (v === level) return;
+          if (v === "none") return void change(app, "none", false, null);
+          if (!target) return;
+          // the same instance keeps its history choice; another instance is a new share (history unticked)
+          void change(app, v, target.instance === bound?.instance ? includeHistory : false, target.instance);
+        };
         return (
           <div key={app.product} className="acc-row">
             <span>Share with {app.name} (read only)</span>
-            <Select
-              aria-label={`Share ${account.label} with ${app.name}`}
-              options={SHARE_OPTIONS}
-              value={level}
-              disabled={busy === app.product}
-              onValueChange={(v) => v !== level && void change(app, v as ShareLevel, current?.includeHistory ?? false)}
-            />
-            {level === "shared" ? (
+            <Select aria-label={`Share ${account.label} with ${app.name}`} options={options} value={level} disabled={isBusy || unlisted || unknown || (level === "none" && !target)} onValueChange={(v) => setLevel(v as ShareLevel)} />
+            {instances.length > 1 ? (
+              <>
+                <span className="tb-soft">Which {app.name}</span>
+                <Select
+                  aria-label={`Which ${app.name} gets ${account.label}`}
+                  options={instances.map((i) => ({ value: i.instance, label: instanceLabel(i) }))}
+                  value={target?.instance ?? ""}
+                  disabled={isBusy}
+                  onValueChange={(v) => {
+                    if (listed && level !== "none") {
+                      // moving a live share to another instance is a new share: history starts unticked
+                      if (v !== bound?.instance) void change(app, level, false, v);
+                    } else setPicked((p) => ({ ...p, [app.product]: v }));
+                  }}
+                />
+              </>
+            ) : null}
+            {level === "shared" && listed ? (
               <label className="tb-row">
                 <input
                   type="checkbox"
-                  checked={current?.includeHistory ?? false}
-                  disabled={busy === app.product}
-                  onChange={(e) => void change(app, "shared", e.target.checked)}
+                  checked={includeHistory}
+                  disabled={isBusy}
+                  onChange={(e) => void change(app, "shared", e.target.checked, bound?.instance ?? null)}
                   aria-label={`Include the last 30 days of ${account.label} for ${app.name}`}
                 />
                 <span className="tb-soft">Include the last 30 days</span>
               </label>
             ) : null}
+            {unlisted || unknown ? null : <p className="tb-soft acc-note">{shareSentence(level, includeHistory, bound?.setAt)}</p>}
+            {legacy && callersKnown ? <p className="tb-soft acc-note">Share again — this app must be chosen again after the update.</p> : null}
+            {unlisted ? <p className="tb-soft acc-note">This app instance was removed; it can no longer read.</p> : null}
+            {!callersKnown ? <p className="tb-soft acc-note">Sharing with apps needs the next Connect update.</p> : null}
+            {callersKnown && instances.length === 0 && !unlisted ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share this account with it.`}</p> : null}
+            {target?.ownInfra ? (
+              <p className="tb-soft acc-note">{`This ${app.name} runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server.`}</p>
+            ) : null}
+            {unlisted || legacy || unknown ? (
+              <div className="tb-ctas acc-actions">
+                <Button size="sm" disabled={isBusy} onClick={() => void change(app, "none", false, null)} aria-label={`Stop sharing ${account.label} with ${app.name}`}>
+                  Stop sharing
+                </Button>
+                {unlisted && target ? (
+                  <Button size="sm" disabled={isBusy} onClick={() => void change(app, level, false, target.instance)} aria-label={`Share ${account.label} with the installed ${app.name}${where} instead`}>
+                    {`Share with the installed ${app.name}${where} instead`}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         );
       })}
     </fieldset>
+  );
+}
+
+/** Two instances with the same name stay apart: where each runs and the end of its id. */
+function instanceLabel(i: { instance: string; name: string; provider: string | null; ownInfra: boolean }): string {
+  const where = i.ownInfra ? "your own server" : (i.provider ?? "unknown host");
+  return `${i.name} · ${where} · …${i.instance.slice(-6)}`;
+}
+
+/** One plain sentence per sharing level: what the app really gets (S3-3). */
+function shareSentence(level: ShareLevel, includeHistory: boolean, setAt: string | undefined): string {
+  if (level === "available") return "This app sees the name and message count of every conversation of this bot, for the whole log Connect holds, and no message text. You can stop sharing at any time.";
+  if (level === "shared" && includeHistory) return "This app reads every conversation of this bot: the last 30 days Connect already holds and every new message. You can stop sharing at any time.";
+  if (level === "shared") {
+    const since = setAt ? ` (${new Date(setAt).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })})` : "";
+    return `This app reads every conversation of this bot, but only the messages Connect received from the time you shared${since}; tick “Include the last 30 days” to add the older ones. You can stop sharing at any time.`;
+  }
+  return "This app sees nothing of this connection. Pick a level to share; you can revoke it at any time.";
+}
+
+const ACCESS_OPS: Record<string, string> = {
+  data_accounts_list: "Listed the shared accounts",
+  data_catalog: "Read names and counts",
+  data_pull: "Read messages",
+};
+const REFUSED_TEXT: Record<string, string> = {
+  not_found: "Not shared with this app",
+  scope_denied: "Names and counts only",
+  caller_unverified: "Unverified app",
+  share_instance_gone: "App instance removed",
+  companion_list_unavailable: "Connect needs an update",
+  no_access: "Not an app",
+  audit_unavailable: "Could not be recorded",
+};
+
+function accessWhen(iso: string): string {
+  return new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * C230 R3 (S3-2): which app asked Connect for chat data, newest first, the last 100 calls. The owner only. No message text.
+ * A refusal repeated within a minute is one line with a count.
+ */
+function RecentAccess({ entries, error, busy, onReload }: { entries: AccessEntry[] | null; error: string | null; busy: boolean; onReload(): void }) {
+  return (
+    <section className="tb-stack" aria-labelledby="recent-access">
+      <div className="group-head">
+        <h2 id="recent-access">Recent access</h2>
+        <Button size="sm" disabled={busy} onClick={onReload}>
+          Refresh
+        </Button>
+      </div>
+      <p className="tb-soft">The last 100 times an app asked Connect for the messages of your chat accounts. Connect keeps this record for 90 days.</p>
+      {error ? <LoadError message={error} busy={busy} onRetry={onReload} /> : null}
+      {entries === null ? (
+        error ? null : (
+          <p className="tb-soft" role="status">
+            Loading access.
+          </p>
+        )
+      ) : entries.length === 0 ? (
+        <EmptyState title="No app has asked for your chat messages yet." />
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>App</th>
+              <th>Request</th>
+              <th>Account</th>
+              <th>Messages</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td className="num">{accessWhen(e.at)}</td>
+                <td>{e.app ?? (e.callerType === "app" ? "Unverified app" : e.callerType === "agent" ? "An agent" : e.callerType)}</td>
+                <td>{ACCESS_OPS[e.op] ?? e.op}</td>
+                <td>{e.account ?? ""}</td>
+                <td className="num">{e.op === "data_pull" && e.ok ? e.rows : ""}</td>
+                <td>
+                  <Tag status={e.ok ? "live" : "default"}>{e.ok ? "Served" : `Refused: ${REFUSED_TEXT[e.outcome] ?? e.outcome}`}</Tag>
+                  {e.repeats > 0 ? <span className="tb-soft">{` and ${e.repeats} more in the same minute`}</span> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </section>
   );
 }

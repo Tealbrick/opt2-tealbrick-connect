@@ -8,6 +8,11 @@
  * `set_at` is when the share began (it moves when the level or the history choice changes). A pull returns only messages
  * Connect received at or after it, unless the owner chose `includeHistory` (the whole log, 30 days).
  * Who the calling app is: see `caller.ts` (the verified product, never a name).
+ *
+ * C240 (migration 0013): a share is bound to the verified product AND the instance id the owner picked at share time, from
+ * the person-op list `ctx.companionCallers()` (miniapp-sdk >= 0.1.32). A data_* call is served only when its verified
+ * Caller.product and Caller.id are that pair. A reinstalled app has a new instance id, so it needs a new share; a row from
+ * before 0013 has no instance and matches no caller. Nothing is bound on a first call.
  */
 import type { Db } from "@opt2-tealbrick/spec/sdk";
 
@@ -25,6 +30,8 @@ export const isDataApp = (product: string): boolean => Object.hasOwn(DATA_APPS, 
 
 export interface ShareRow {
   product: string;
+  /** the app instance the owner shared with; null = a row from before migration 0013 (matches no caller) */
+  instance: string | null;
   level: StoredLevel;
   includeHistory: boolean;
   /** epoch ms */
@@ -33,6 +40,7 @@ export interface ShareRow {
 
 const rowOf = (r: Record<string, unknown>): ShareRow => ({
   product: String(r.product),
+  instance: typeof r.instance_id === "string" && r.instance_id !== "" ? r.instance_id : null,
   level: String(r.level) as StoredLevel,
   includeHistory: Number(r.include_history) === 1,
   setAt: Number(r.set_at),
@@ -50,34 +58,45 @@ export class ShareStore {
     return row ? rowOf(row) : null;
   }
 
+  /** The share that serves a call: the row of this product, only when it is bound to exactly this caller instance. */
+  forCaller(account: string, product: string, instance: string): ShareRow | null {
+    const row = this.get(account, product);
+    return row && row.instance !== null && row.instance === instance ? row : null;
+  }
+
   level(account: string, product: string): ShareLevel {
     return this.get(account, product)?.level ?? "none";
   }
 
-  /** `none` removes the row. A call that changes nothing keeps `set_at`; a change moves it to now. */
-  set(account: string, product: string, level: ShareLevel, includeHistory = false, now = Date.now()): void {
+  /**
+   * `none` removes the row (no instance needed). Else the row is bound to `instance`: a call that changes nothing keeps
+   * `set_at`; a change of level, history choice or instance moves it to now (a new instance is a new share).
+   */
+  set(account: string, product: string, level: ShareLevel, includeHistory = false, instance: string | null = null, now = Date.now()): void {
     if (level === "none") {
       this.#db.prepare("DELETE FROM connect_account_shares WHERE account_id = ? AND product = ?").run(account, product);
       return;
     }
+    if (!instance) throw new Error("a share needs the app instance (C240)");
     const current = this.get(account, product);
-    if (current && current.level === level && current.includeHistory === includeHistory) return;
+    if (current && current.level === level && current.includeHistory === includeHistory && current.instance === instance) return;
     this.#db
       .prepare(
-        `INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (account_id, product) DO UPDATE SET level = excluded.level, include_history = excluded.include_history, set_at = excluded.set_at`,
+        `INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at, instance_id) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (account_id, product) DO UPDATE SET level = excluded.level, include_history = excluded.include_history, set_at = excluded.set_at, instance_id = excluded.instance_id`,
       )
-      .run(account, product, level, includeHistory ? 1 : 0, now);
+      .run(account, product, level, includeHistory ? 1 : 0, now, instance);
   }
 
   forAccount(account: string): ShareRow[] {
     return this.#db.prepare("SELECT * FROM connect_account_shares WHERE account_id = ? ORDER BY product").all(account).map(rowOf);
   }
 
-  forProduct(product: string): (ShareRow & { account: string })[] {
+  /** The shares that serve this caller: bound to this product AND this instance. */
+  accountsForCaller(product: string, instance: string): (ShareRow & { account: string })[] {
     return this.#db
-      .prepare("SELECT * FROM connect_account_shares WHERE product = ? ORDER BY account_id")
-      .all(product)
+      .prepare("SELECT * FROM connect_account_shares WHERE product = ? AND instance_id = ? ORDER BY account_id")
+      .all(product, instance)
       .map((r) => ({ ...rowOf(r), account: String(r.account_id) }));
   }
 

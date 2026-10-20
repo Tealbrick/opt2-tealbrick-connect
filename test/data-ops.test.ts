@@ -20,6 +20,7 @@ import { parseDiscordDeletes, parseDiscordMessage, parseDiscordUpdate } from "..
 import { parseSlackEvent } from "../src/channels/providers/slack.ts";
 import { parseTelegramUpdate } from "../src/channels/providers/telegram.ts";
 import { ChannelHub, INBOX_RETENTION_MS } from "../src/channels/service.ts";
+import { companionCallersFor, verifiedAppProduct } from "../src/data/caller.ts";
 import { encodeCursor, pullMessages, RetryLater } from "../src/data/messages.ts";
 import { DATA_APPS } from "../src/data/shares.ts";
 import { eventCtx, handlerOf, memorySecrets, root, testCtx, testDb } from "./helpers.ts";
@@ -27,12 +28,12 @@ import { eventCtx, handlerOf, memorySecrets, root, testCtx, testDb } from "./hel
 const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
 const schema = JSON.parse(readFileSync(join(root, "test", "contracts", "messages.1.schema.json"), "utf8")) as JsonSchemaObject;
 const AGENT = "agt_01DATAAGENT000000000000000";
-const KNOWLEDGE = "ins_01KNOWLEDGE00000000000000";
-const OBSERVER = "ins_01OBSERVER0000000000000000";
-const ROGUE = "ins_01ROGUE00000000000000000000";
+const KNOWLEDGE = "ins_01HZKNWDG00000000000000000";
+const OBSERVER = "ins_01HZ0BSRVR0000000000000000";
+const ROGUE = "ins_01HZR0GE000000000000000000";
+const UNVERIFIED = "ins_01HZVNVRFD0000000000000000";
+const KNOWLEDGE_2 = "ins_01HZKNWDG20000000000000000";
 const T0 = 1_760_000_000_000;
-/** The test-only seam: instance id → the product the SDK would have verified (SDK-CALLER-PRODUCT, not yet in the SDK). */
-const VERIFIED: Record<string, string> = { [KNOWLEDGE]: "knowledge", [OBSERVER]: "observer" };
 
 type Row = { id: string; conversation: string; thread?: string; sentAt: string; editedAt?: string; deleted?: boolean; author: { kind: string; handle: string; display?: string }; text: string; attachments: { name: string; mime: string; bytes: number }[]; untrusted: true; truncated?: boolean; attachmentsTruncated?: boolean };
 type Page = { rows: Row[]; nextCursor: string | null; anchor?: string; exhausted: boolean; retryAfterS?: number; schema: string; untrusted: boolean };
@@ -64,7 +65,7 @@ function fakeProvider(service: ChannelService, sinks: Map<string, InboundSink>, 
 
 const net: ChannelNet = { fetch: (() => Promise.reject(new Error("no network"))) as typeof fetch, webSocket: () => { throw new Error("no ws"); }, now: () => Date.now(), sleep: async () => undefined };
 
-async function setup(options: { history?: ChannelService[]; services?: ChannelService[]; noSeam?: boolean } = {}) {
+async function setup(options: { history?: ChannelService[]; services?: ChannelService[]; callers?: { product: string; ins: string; name: string; provider?: string | null }[] } = {}) {
   const sinks = new Map<string, InboundSink>();
   const services = options.services ?? ["telegram", "slack", "discord", "teams"];
   const providers = new Map<ChannelService, ChannelProvider>(services.map((s) => [s, fakeProvider(s, sinks, options.history?.includes(s) ? { readsHistory: true } : {})]));
@@ -76,23 +77,34 @@ async function setup(options: { history?: ChannelService[]; services?: ChannelSe
     warn: (msg, fields) => void logs.push({ level: "warn", msg, ...(fields ? { fields } : {}) }),
     error: (msg, fields) => void logs.push({ level: "error", msg, ...(fields ? { fields } : {}) }),
   };
-  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), channelProviders: providers, channelNet: net, ...(options.noSeam ? {} : { verifiedAppProduct: (ctx) => VERIFIED[ctx.caller.id] ?? null }) });
+  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), channelProviders: providers, channelNet: net });
   await app.events?.agentAdded?.({ id: AGENT as `agt_${string}`, name: "Agent", mode: "free", status: "active" }, eventCtx(db));
   const accounts = new AccountStore(db);
   const hub = new ChannelHub({ db, accounts, secrets: memorySecrets(), providers, net, log });
-  const person = testCtx({ db, person: true, log });
-  const knowledge = testCtx({ db, app: KNOWLEDGE, appName: "Knowledge", log });
-  const observer = testCtx({ db, app: OBSERVER, appName: "Observer", log });
+  // the owner's page sees the verified app instances that can call Connect (test double of miniapp-sdk 0.1.32
+  // ctx.companionCallers, C240); a share binds the product AND the instance picked here
+  const callers = options.callers ?? [
+    { product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "railway" },
+    { product: "observer", ins: OBSERVER, name: "Observer", provider: "railway" },
+  ];
+  const person = testCtx({ db, person: true, log, companionCallers: callers });
+  // app callers carry what the real SDK (>= 0.1.27) puts in ctx.caller.product: the product of the Portal-signed slice entry
+  const knowledge = testCtx({ db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", appListed: true, log });
+  const observer = testCtx({ db, app: OBSERVER, appName: "Observer", appProduct: "observer", appListed: true, log });
   const agent = testCtx({ db, agent: AGENT, access: {}, log });
-  // an instance that carries the exact manifest name "Knowledge" but is not the verified Knowledge
-  const rogue = testCtx({ db, app: ROGUE, appName: "Knowledge", log });
+  // an instance that carries the exact manifest name "Knowledge" but whose verified product is another one
+  const rogue = testCtx({ db, app: ROGUE, appName: "Knowledge", appProduct: "rogue-app", appListed: true, log });
+  // an app caller the slice does not list: no verified product at all (its name still says "Knowledge")
+  const unverified = testCtx({ db, app: UNVERIFIED, appName: "Knowledge", log });
   const op = (name: string, input: Record<string, unknown>, ctx = person) => handlerOf(app, name)(input as Json, ctx);
   const connect = async (service: ChannelService, token: string, label = `${service} ${token}`): Promise<string> => {
     const out = (await op("channel_account_connect", { service, label, agent: AGENT, credentials: { bot_token: token } })) as unknown as { account: { id: string } };
     await new Promise((r) => setTimeout(r, 5));
     return out.account.id;
   };
-  const share = (account: string, product: string, level: string, includeHistory = true) => op("account_app_share", { account, product, level, includeHistory });
+  const instanceOf: Record<string, string> = { knowledge: KNOWLEDGE, observer: OBSERVER };
+  const share = (account: string, product: string, level: string, includeHistory = true, instance: string | undefined = instanceOf[product]) =>
+    op("account_app_share", { account, product, level, includeHistory, ...(level === "none" || instance === undefined ? {} : { instance }) });
   const msg = (n: number, extra: Partial<InboundMessage> = {}): InboundMessage => ({
     conversation: "chan-1",
     conversationName: "general",
@@ -115,7 +127,7 @@ async function setup(options: { history?: ChannelService[]; services?: ChannelSe
     assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 2 * 1024 * 1024);
     return page;
   };
-  return { db, app, hub, accounts, op, connect, share, ingest, msg, pull, logs, ctx: { person, knowledge, observer, agent, rogue } };
+  return { db, app, hub, accounts, op, connect, share, ingest, msg, pull, logs, ctx: { person, knowledge, observer, agent, rogue, unverified } };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 3));
@@ -123,12 +135,12 @@ const shareSetAt = (db: ReturnType<typeof testDb>, account: string, product: str
   Number(db.prepare("SELECT set_at FROM connect_account_shares WHERE account_id = ? AND product = ?").get(account, product)?.set_at);
 
 /** The whole refusal: code, status and message. */
-async function refusal(p: Promise<unknown>): Promise<{ code: string; httpStatus: number; message: string }> {
+async function refusal(p: Promise<unknown>): Promise<{ code: string; httpStatus: number; message: string; details?: unknown }> {
   try {
     await p;
   } catch (e) {
-    const { code, httpStatus, message } = e as { code: string; httpStatus: number; message: string };
-    return { code, httpStatus, message };
+    const { code, httpStatus, message, details } = e as { code: string; httpStatus: number; message: string; details?: unknown };
+    return { code, httpStatus, message, ...(details === undefined ? {} : { details }) };
   }
   throw new Error("expected a refusal, the call succeeded");
 }
@@ -150,6 +162,14 @@ test("manifest: the three data ops are agent-audience, crud read, effect read, i
 test("manifest: the product enum of account_app_share is exactly the data apps Connect knows", () => {
   const allowed = (inputProps("account_app_share").product?.enum ?? []) as string[];
   assert.deepEqual([...allowed].sort(), Object.keys(DATA_APPS).sort());
+});
+
+test("manifest: account_app_share takes an instance id of the spec's shape; the test ids are valid ones (C240)", () => {
+  const input = manifest.operations.find((o) => o.id === "account_app_share")?.input as JsonSchemaObject;
+  const ok = (instance: string) => validateAgainstSchema(input, { account: "cna_1", product: "knowledge", level: "shared", instance } as Json).ok;
+  for (const id of [KNOWLEDGE, OBSERVER, ROGUE, UNVERIFIED, KNOWLEDGE_2]) assert.equal(ok(id), true, id);
+  for (const bad of ["ins_01KNOWLEDGE00000000000000", "agt_01HZKNWDG00000000000000000", "ins_01HZKNWDG", "", "ins_01HZKNWDG00000000000000000 "]) assert.equal(ok(bad), false, bad);
+  assert.equal(validateAgainstSchema(input, { account: "cna_1", product: "knowledge", level: "none" } as Json).ok, true, "none needs no instance");
 });
 
 // ── only apps ──
@@ -307,11 +327,175 @@ test("accounts_overview lists the shares of a chat account and the apps one can 
   const acct = await s.connect("telegram", "t1");
   s.accounts.create({ service: "gmail", source: "composio", kind: "as_me", label: "Mail", status: "connected" });
   await s.share(acct, "observer", "available");
-  const out = (await s.op("accounts_overview", {})) as unknown as { accounts: { id: string; source: string; shares?: unknown[] }[]; dataApps: { product: string; name: string }[] };
-  assert.deepEqual(out.accounts.find((a) => a.id === acct)?.shares, [{ product: "observer", level: "available", includeHistory: true, setAt: new Date(shareSetAt(s.db, acct, "observer")).toISOString() }]);
-  assert.equal((out as unknown as { dataOpsAvailable: boolean }).dataOpsAvailable, true);
+  const out = (await s.op("accounts_overview", {})) as unknown as { accounts: { id: string; source: string; shares?: unknown[] }[]; dataApps: unknown[] };
+  assert.deepEqual(out.accounts.find((a) => a.id === acct)?.shares, [
+    { product: "observer", instance: OBSERVER, current: true, level: "available", includeHistory: true, setAt: new Date(shareSetAt(s.db, acct, "observer")).toISOString() },
+  ]);
+  assert.ok(!("dataOpsAvailable" in out), "the gate is gone: sharing works");
   assert.equal(out.accounts.find((a) => a.source === "composio")?.shares, undefined);
-  assert.deepEqual(out.dataApps, [{ product: "knowledge", name: "Knowledge" }, { product: "observer", name: "Observer" }]);
+  assert.deepEqual(out.dataApps, [
+    { product: "knowledge", name: "Knowledge", instances: [{ instance: KNOWLEDGE, name: "Knowledge", provider: "railway", ownInfra: false }] },
+    { product: "observer", name: "Observer", instances: [{ instance: OBSERVER, name: "Observer", provider: "railway", ownInfra: false }] },
+  ]);
+});
+
+// ── C240: a share binds the verified product AND the instance id picked at share time ──
+
+type Overview = { accounts: { id: string; shares?: { product: string; instance: string | null; current: boolean; level: string }[] }[]; dataApps: { product: string; instances: { instance: string; name: string; provider: string | null; ownInfra: boolean }[] }[] };
+const DATA_OPS = (acct: string) => [["data_catalog", { account: acct }], ["data_pull", { account: acct, dataset: "messages" }]] as const;
+
+test("C240: the bound instance is served; another instance with the same verified product gets the no-share refusal on every data op", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1));
+  const twin = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge", appListed: true });
+  // quiet on good: the bound instance reads
+  assert.equal((await s.pull(acct)).rows.length, 1);
+  assert.equal(((await s.op("data_accounts_list", {}, s.ctx.knowledge)) as unknown as { accounts: unknown[] }).accounts.length, 1);
+  // fires on bad: same product, other instance
+  for (const [op, input] of DATA_OPS(acct)) assert.deepEqual((await refusal(s.op(op, input, twin))).code, "not_found", op);
+  assert.deepEqual(((await s.op("data_accounts_list", {}, twin)) as unknown as { accounts: unknown[] }).accounts, []);
+});
+
+test("C240: reinstall = new share. The old instance leaves the slice, the share shows current:false and serves nobody; sharing again binds the new instance", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  const firstSetAt = shareSetAt(s.db, acct, "knowledge");
+  // the owner reinstalled Knowledge: the slice now lists only the new instance
+  const owner = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE_2, name: "Knowledge", provider: "railway" }] });
+  const reinstalled = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge", appListed: true });
+  const view = (await s.op("accounts_overview", {}, owner)) as unknown as Overview;
+  assert.deepEqual(view.accounts.find((a) => a.id === acct)?.shares?.map((x) => [x.instance, x.current]), [[KNOWLEDGE, false]]);
+  assert.deepEqual(view.dataApps.find((a) => a.product === "knowledge")?.instances.map((i) => i.instance), [KNOWLEDGE_2]);
+  for (const [op, input] of DATA_OPS(acct)) assert.equal((await refusal(s.op(op, input, reinstalled))).code, "not_found", op);
+  await tick();
+  await s.op("account_app_share", { account: acct, product: "knowledge", instance: KNOWLEDGE_2, level: "shared", includeHistory: true }, owner);
+  assert.ok(shareSetAt(s.db, acct, "knowledge") > firstSetAt, "a new instance is a new share (set_at moves)");
+  assert.equal(((await s.op("data_catalog", { account: acct }, reinstalled)) as unknown as { account: string }).account, acct);
+  // the old instance (if it still called) is not served any more
+  assert.equal((await refusal(s.op("data_catalog", { account: acct }, s.ctx.knowledge))).code, "not_found");
+});
+
+test("C240 call time: a bound instance that is no longer listed (ctx.caller.listed false) is refused share_instance_gone on every data op, audited; listed = served", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1));
+  // quiet on good: listed
+  assert.equal((await s.pull(acct)).rows.length, 1);
+  // fires on bad: the same verified product and instance (a valid grant prd), but no longer in the signed slice
+  const removed = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", appListed: false });
+  for (const [op, input] of [...DATA_OPS(acct), ["data_accounts_list", {}]] as const) {
+    const r = await refusal(s.op(op, input, removed));
+    assert.deepEqual([r.code, r.httpStatus], ["share_instance_gone", 403], op);
+    assert.deepEqual(r.details, { retryable: true, retryAfterMs: 30_000 }, `${op}: retryable (slice lag)`);
+  }
+  const audit = s.db.prepare("SELECT op, outcome FROM connect_data_audit WHERE outcome = 'share_instance_gone' ORDER BY id").all().map((r) => `${r.op}:${r.outcome}`);
+  assert.deepEqual(audit, ["data_catalog:share_instance_gone", "data_pull:share_instance_gone", "data_accounts_list:share_instance_gone"]);
+  // an app with no share bound to it learns nothing new: still the plain not_found / empty list
+  const stranger = testCtx({ db: s.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge", appListed: false });
+  assert.equal((await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, stranger))).code, "not_found");
+  assert.deepEqual(((await s.op("data_accounts_list", {}, stranger)) as unknown as { accounts: unknown[] }).accounts, []);
+});
+
+test("C240 call time: an SDK without ctx.caller.listed is refused companion_list_unavailable (503, fail closed) for a bound share", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  const oldSdk = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge" });
+  for (const [op, input] of [...DATA_OPS(acct), ["data_accounts_list", {}]] as const) {
+    const r = await refusal(s.op(op, input, oldSdk));
+    assert.deepEqual([r.code, r.httpStatus], ["companion_list_unavailable", 503], op);
+    assert.deepEqual(r.details, { retryable: true, retryAfterMs: 30_000 }, op);
+  }
+});
+
+test("C240: share time refuses an instance that is missing, unknown, of another product, or not visible (SDK without companionCallers); no row is written", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  const rows = () => Number(s.db.prepare("SELECT COUNT(*) AS n FROM connect_account_shares").get()?.n);
+  const oldSdk = testCtx({ db: s.db, person: true });
+  const cases: [Record<string, unknown>, typeof s.ctx.person, string, number][] = [
+    [{ account: acct, product: "knowledge", level: "shared" }, s.ctx.person, "instance_required", 400],
+    [{ account: acct, product: "knowledge", level: "available", instance: KNOWLEDGE_2 }, s.ctx.person, "app_instance_unknown", 404],
+    [{ account: acct, product: "knowledge", level: "shared", instance: OBSERVER }, s.ctx.person, "app_instance_unknown", 404],
+    [{ account: acct, product: "knowledge", level: "shared", instance: KNOWLEDGE }, oldSdk, "app_instance_unknown", 404],
+  ];
+  for (const [input, ctx, code, status] of cases) {
+    const r = await refusal(s.op("account_app_share", input, ctx));
+    assert.deepEqual([r.code, r.httpStatus], [code, status], JSON.stringify(input));
+  }
+  assert.equal(rows(), 0);
+  // quiet on good: a listed instance of that product is bound
+  await s.share(acct, "knowledge", "available");
+  assert.equal(s.db.prepare("SELECT instance_id FROM connect_account_shares").get()?.instance_id, KNOWLEDGE);
+  // "none" needs no instance and works even when the app is gone from the slice
+  await s.op("account_app_share", { account: acct, product: "knowledge", level: "none" }, oldSdk);
+  assert.equal(rows(), 0);
+});
+
+test("C240: a share row from before migration 0013 (no instance) serves no caller and shows current:false (the page says Share again: ui-accounts.test.ts)", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  s.db.prepare("INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at) VALUES (?, 'knowledge', 'shared', 1, ?)").run(acct, Date.now());
+  for (const [op, input] of DATA_OPS(acct)) assert.equal((await refusal(s.op(op, input, s.ctx.knowledge))).code, "not_found", op);
+  assert.deepEqual(((await s.op("data_accounts_list", {}, s.ctx.knowledge)) as unknown as { accounts: unknown[] }).accounts, []);
+  const view = (await s.op("accounts_overview", {})) as unknown as Overview;
+  assert.deepEqual(view.accounts.find((a) => a.id === acct)?.shares?.map((x) => [x.instance, x.current]), [[null, false]]);
+});
+
+test("C240 item 3: the owner page marks a target on the owner's own infrastructure (provider own_infra); unknown provider is null", async () => {
+  const s = await setup({
+    callers: [
+      { product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "own_infra" },
+      { product: "observer", ins: OBSERVER, name: "Observer" },
+      { product: "rogue-app", ins: ROGUE, name: "Knowledge", provider: "railway" },
+    ],
+  });
+  const view = (await s.op("accounts_overview", {})) as unknown as Overview;
+  assert.deepEqual(view.dataApps.map((a) => [a.product, a.instances]), [
+    ["knowledge", [{ instance: KNOWLEDGE, name: "Knowledge", provider: "own_infra", ownInfra: true }]],
+    ["observer", [{ instance: OBSERVER, name: "Observer", provider: null, ownInfra: false }]],
+  ]);
+  assert.equal((view as unknown as { callersKnown: boolean }).callersKnown, true);
+  // the receipt names the instance and that it runs on the owner's own server
+  const acct = await s.connect("telegram", "t1", "Support bot");
+  const owner = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE, name: "Knowledge lab", provider: "own_infra" }] });
+  await s.op("account_app_share", { account: acct, product: "knowledge", instance: KNOWLEDGE, level: "available" }, owner);
+  assert.deepEqual(owner.receipts.summary, ["Sharing of “Support bot” with Knowledge “Knowledge lab” (your own server): names and counts only"]);
+});
+
+test("C240: a share is current only when its instance is listed under the SAME product; an SDK without companionCallers says callersKnown:false", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  // the slice now lists that instance id under another product: not current
+  const owner = testCtx({ db: s.db, person: true, companionCallers: [{ product: "observer", ins: KNOWLEDGE, name: "Knowledge" }] });
+  const view = (await s.op("accounts_overview", {}, owner)) as unknown as Overview & { callersKnown: boolean };
+  assert.deepEqual(view.accounts.find((a) => a.id === acct)?.shares?.map((x) => [x.instance, x.current]), [[KNOWLEDGE, false]]);
+  assert.equal(view.callersKnown, true);
+  const old = (await s.op("accounts_overview", {}, testCtx({ db: s.db, person: true }))) as unknown as { callersKnown: boolean };
+  assert.equal(old.callersKnown, false);
+});
+
+test("C240: companionCallersFor reads person calls only and skips malformed entries", () => {
+  const db = testDb();
+  const entries = [
+    { product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "railway" },
+    { product: "", ins: OBSERVER, name: "x" },
+    { product: "observer", ins: "agt_01NOTANINSTANCE0000000000", name: "x" },
+    { product: "observer", ins: OBSERVER, name: "" },
+  ];
+  const person = testCtx({ db, person: true, companionCallers: entries });
+  assert.deepEqual(companionCallersFor(person), [
+    { product: "knowledge", instance: KNOWLEDGE, name: "Knowledge", provider: "railway" },
+    { product: "observer", instance: OBSERVER, name: OBSERVER, provider: null },
+  ]);
+  const app = { ...testCtx({ db, app: KNOWLEDGE, appProduct: "knowledge" }), companionCallers: () => entries };
+  assert.deepEqual(companionCallersFor(app as never), []);
+  assert.deepEqual(companionCallersFor(testCtx({ db, person: true })), []);
 });
 
 // ── pull: paging, cursors ──
@@ -636,19 +820,35 @@ test("migrations 0010 + 0011: old rows get a per-account rev (1, 2, 3 per accoun
 
 // ── Coordinator ruling A: the app is identified by the verified caller product, never by name ──
 
-test("A: without a verified caller product (today) all three data ops refuse EVERY caller with data_ops_unavailable 503; the owner can still set shares", async () => {
-  const s = await setup({ noSeam: true });
+test("A: an app caller without a verified product is refused caller_unverified 403 by all three ops, whatever its name says; its share by name changes nothing", async () => {
+  const s = await setup();
   const acct = await s.connect("telegram", "t1");
-  const out = (await s.share(acct, "knowledge", "shared")) as unknown as { dataOpsAvailable: boolean };
-  assert.equal(out.dataOpsAvailable, false);
+  await s.share(acct, "knowledge", "shared");
+  await s.share(acct, "observer", "shared");
   const calls: [string, Record<string, unknown>][] = [["data_accounts_list", {}], ["data_catalog", { account: acct }], ["data_pull", { account: acct, dataset: "messages" }]];
+  const named = (name: string) => testCtx({ db: s.db, app: UNVERIFIED, appName: name });
   for (const [op, input] of calls) {
-    for (const ctx of [s.ctx.agent, s.ctx.person, s.ctx.knowledge, s.ctx.observer, s.ctx.rogue]) {
-      assert.deepEqual(await refusal(s.op(op, input, ctx)), { code: "data_ops_unavailable", httpStatus: 503, message: "Connect data sharing needs a newer Tealbrick SDK" }, `${op} as ${ctx.caller.type} ${ctx.caller.name}`);
+    for (const ctx of [s.ctx.unverified, named("Observer"), named("observer"), named("knowledge")]) {
+      const r = await refusal(s.op(op, input, ctx));
+      assert.deepEqual([r.code, r.httpStatus], ["caller_unverified", 403], `${op} as ${ctx.caller.name}`);
     }
+    // people and agents are still no_access; the verified apps are served
+    assert.equal((await refusal(s.op(op, input, s.ctx.person))).code, "no_access");
+    assert.equal((await refusal(s.op(op, input, s.ctx.agent))).code, "no_access");
+    await s.op(op, input, s.ctx.knowledge);
   }
-  const overview = (await s.op("accounts_overview", {})) as unknown as { dataOpsAvailable: boolean };
-  assert.equal(overview.dataOpsAvailable, false);
+});
+
+test("A: verifiedAppProduct answers the verified product of an app caller and null otherwise (no name, no id, no input)", () => {
+  const db = testDb();
+  assert.equal(verifiedAppProduct(testCtx({ db, app: KNOWLEDGE, appName: "Observer", appProduct: "knowledge" })), "knowledge");
+  assert.equal(verifiedAppProduct(testCtx({ db, app: KNOWLEDGE, appName: "Observer" })), null, "an app without a product: null, whatever the name");
+  assert.equal(verifiedAppProduct(testCtx({ db, app: KNOWLEDGE, appName: "Observer", appProduct: "" })), null, "an empty product is no product");
+  assert.equal(verifiedAppProduct(testCtx({ db, person: true })), null);
+  assert.equal(verifiedAppProduct(testCtx({ db, agent: AGENT })), null);
+  const agentWithProduct = testCtx({ db, agent: AGENT });
+  (agentWithProduct.caller as { product?: string }).product = "observer";
+  assert.equal(verifiedAppProduct(agentWithProduct), null, "only an app caller has a verified product");
 });
 
 test("A: an instance that carries the exact manifest name \"Knowledge\" but is not the verified Knowledge is refused (sees nothing, not_found)", async () => {
@@ -659,8 +859,12 @@ test("A: an instance that carries the exact manifest name \"Knowledge\" but is n
   assert.deepEqual(await s.op("data_accounts_list", {}, s.ctx.rogue), { accounts: [] });
   assert.equal((await refusal(s.op("data_catalog", { account: acct }, s.ctx.rogue))).code, "not_found");
   assert.equal((await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.rogue))).code, "not_found");
+  // the share the owner gave Observer is not reachable by a name that says Observer
+  const nameOnly = testCtx({ db: s.db, app: ROGUE, appName: "Observer", appProduct: "rogue-app", appListed: true });
+  await s.share(acct, "observer", "shared");
+  assert.deepEqual(await s.op("data_accounts_list", {}, nameOnly), { accounts: [] });
   // and a verified instance is served whatever name it carries
-  const renamed = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Something else entirely" });
+  const renamed = testCtx({ db: s.db, app: KNOWLEDGE, appName: "Something else entirely", appProduct: "knowledge", appListed: true });
   assert.equal(((await s.op("data_accounts_list", {}, renamed)) as unknown as { accounts: unknown[] }).accounts.length, 1);
 });
 
@@ -868,10 +1072,10 @@ test("C: set_at is kept by a call that changes nothing and moves when the level 
 test("E: account_app_share writes a receipt line; every data_* call writes one audit line (op, outcome, caller, product, account, dataset, row count; no text), refusals too", async () => {
   const s = await setup();
   const acct = await s.connect("telegram", "t1", "Support bot");
-  const person = testCtx({ db: s.db, person: true });
-  await s.op("account_app_share", { account: acct, product: "knowledge", level: "shared", includeHistory: true }, person);
-  assert.deepEqual(person.receipts.summary, ["Sharing of “Support bot” with Knowledge: messages, read only"]);
-  assert.deepEqual(person.receipts.meta, [{ account: acct, product: "knowledge", level: "shared", includeHistory: true }]);
+  const person = testCtx({ db: s.db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE, name: "Knowledge" }] });
+  await s.op("account_app_share", { account: acct, product: "knowledge", instance: KNOWLEDGE, level: "shared", includeHistory: true }, person);
+  assert.deepEqual(person.receipts.summary, ["Sharing of “Support bot” with Knowledge “Knowledge”: messages, read only"]);
+  assert.deepEqual(person.receipts.meta, [{ account: acct, product: "knowledge", instance: KNOWLEDGE, level: "shared", includeHistory: true }]);
   s.ingest(acct, s.msg(1, { text: "private words" }), s.msg(2));
   await s.pull(acct, { limit: 1 });
   await s.pull(acct);
@@ -898,16 +1102,16 @@ test("E: account_app_share writes a receipt line; every data_* call writes one a
   assert.ok(s.logs.some((l) => l.msg === "data_pull" && l.fields?.rows === 1));
 });
 
-test("E: while the gate is closed (no verified product) the refused calls are audited too, with the caller and no product", async () => {
-  const s = await setup({ noSeam: true });
+test("E: a refused unverified app caller is audited too, with the caller and no product", async () => {
+  const s = await setup();
   const acct = await s.connect("telegram", "t1");
   await s.share(acct, "knowledge", "shared");
-  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.knowledge));
+  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.unverified));
   await refusal(s.op("data_catalog", { account: acct }, s.ctx.person));
   const audit = s.db.prepare("SELECT op, outcome, caller_type, caller_id, product FROM connect_data_audit ORDER BY id").all().map((r) => ({ ...r }));
   assert.deepEqual(audit, [
-    { op: "data_pull", outcome: "data_ops_unavailable", caller_type: "app", caller_id: KNOWLEDGE, product: null },
-    { op: "data_catalog", outcome: "data_ops_unavailable", caller_type: "person", caller_id: "per_01TESTOWNER00000000000000", product: null },
+    { op: "data_pull", outcome: "caller_unverified", caller_type: "app", caller_id: UNVERIFIED, product: null },
+    { op: "data_catalog", outcome: "no_access", caller_type: "person", caller_id: "per_01TESTOWNER00000000000000", product: null },
   ]);
 });
 
@@ -984,4 +1188,92 @@ test("I: the catalog at the available level is exactly names, kinds, counts and 
   });
   const text = JSON.stringify(catalog);
   for (const leak of ["secret launch plan", "Anna", "123456789", "777", "m1", "m2"]) assert.ok(!text.includes(leak), `catalog leaks ${leak}`);
+});
+
+// ── PR #14 review: audit fails closed, refusals are throttled, the owner can read the access list ──
+
+const auditCount = (db: ReturnType<typeof testDb>) => Number(db.prepare("SELECT COUNT(*) AS n FROM connect_data_audit").get()?.n);
+const breakAudit = (db: ReturnType<typeof testDb>) => db.exec("CREATE TRIGGER audit_insert_fails BEFORE INSERT ON connect_data_audit BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
+const repairAudit = (db: ReturnType<typeof testDb>) => db.exec("DROP TRIGGER audit_insert_fails");
+
+test("S3-1: when the audit line cannot be written a served call answers 503 audit_unavailable and returns NO data (all three ops); refused calls stay refused", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1, { text: "private words" }));
+  const calls: [string, Record<string, unknown>][] = [["data_accounts_list", {}], ["data_catalog", { account: acct }], ["data_pull", { account: acct, dataset: "messages" }]];
+  breakAudit(s.db);
+  for (const [op, input] of calls) {
+    const r = await refusal(s.op(op, input, s.ctx.knowledge));
+    assert.deepEqual([r.code, r.httpStatus], ["audit_unavailable", 503], op);
+    assert.ok(!JSON.stringify(r).includes("private words"));
+    // a refused call is still the same refusal (no data was at stake)
+    assert.equal((await refusal(s.op(op, input, s.ctx.agent))).code, "no_access");
+    assert.equal((await refusal(s.op(op, input, s.ctx.unverified))).code, "caller_unverified");
+  }
+  assert.equal(auditCount(s.db), 0);
+  assert.ok(s.logs.some((l) => l.level === "error" && /audit line could not be written/u.test(l.msg)), "the failure is an error in the log");
+  repairAudit(s.db);
+  const page = await s.pull(acct);
+  assert.equal(page.rows.length, 1, "served again once the audit works");
+  assert.equal(auditCount(s.db), 1);
+});
+
+test("S4: a refused call is audited once per minute per caller, product, op and code; the rest are counted; a served call is never folded", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1");
+  await s.share(acct, "knowledge", "shared");
+  for (let n = 0; n < 5; n++) await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  await refusal(s.op("data_catalog", { account: acct }, s.ctx.observer)); // another op: its own line
+  await refusal(s.op("data_pull", { account: "cna_nope", dataset: "messages" }, s.ctx.rogue)); // another product
+  for (let n = 0; n < 3; n++) await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.unverified)); // another code
+  for (let n = 0; n < 3; n++) await s.pull(acct);
+  const rows = s.db.prepare("SELECT op, outcome, product, repeats FROM connect_data_audit ORDER BY id").all().map((r) => ({ ...r }));
+  assert.deepEqual(rows, [
+    { op: "data_pull", outcome: "not_found", product: "observer", repeats: 4 },
+    { op: "data_catalog", outcome: "not_found", product: "observer", repeats: 0 },
+    { op: "data_pull", outcome: "not_found", product: "rogue-app", repeats: 0 },
+    { op: "data_pull", outcome: "caller_unverified", product: null, repeats: 2 },
+    { op: "data_pull", outcome: "ok", product: "knowledge", repeats: 0 },
+    { op: "data_pull", outcome: "ok", product: "knowledge", repeats: 0 },
+    { op: "data_pull", outcome: "ok", product: "knowledge", repeats: 0 },
+  ]);
+  // after the minute the same refusal writes a new line
+  s.db.prepare("UPDATE connect_data_audit SET at = at - 61000").run();
+  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  assert.equal(auditCount(s.db), 8);
+});
+
+test("S3-2: data_access_log gives the owner the last 100 calls, newest first, with app name, account label, rows and ok/refused; no text; apps and agents are refused", async () => {
+  const s = await setup();
+  const acct = await s.connect("telegram", "t1", "Support bot");
+  await s.share(acct, "knowledge", "shared");
+  s.ingest(acct, s.msg(1, { text: "private words" }), s.msg(2));
+  await s.pull(acct);
+  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  await refusal(s.op("data_pull", { account: acct, dataset: "messages" }, s.ctx.observer));
+  const out = (await s.op("data_access_log", {})) as unknown as { entries: Record<string, unknown>[] };
+  assert.deepEqual(
+    out.entries.map(({ id: _id, at: _at, ...rest }) => rest),
+    [
+      { op: "data_pull", callerType: "app", product: "observer", app: "Observer", account: "Support bot", ok: false, outcome: "not_found", rows: 0, repeats: 1 },
+      { op: "data_pull", callerType: "app", product: "knowledge", app: "Knowledge", account: "Support bot", ok: true, outcome: "ok", rows: 2, repeats: 0 },
+    ],
+  );
+  assert.ok(!JSON.stringify(out).includes("private words"));
+  assert.match(String(out.entries[0]?.at), /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/u);
+  assert.equal((await refusal(s.op("data_access_log", {}, s.ctx.knowledge))).code, "no_access");
+  assert.equal((await refusal(s.op("data_access_log", {}, s.ctx.agent))).code, "no_access");
+  // only the last 100
+  const insert = s.db.prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, row_count) VALUES (?, 'data_catalog', 'ok', 'app', ?, 'knowledge', 0)");
+  for (let n = 0; n < 150; n++) insert.run(Date.now(), `ins_${n}`);
+  const big = (await s.op("data_access_log", {})) as unknown as { entries: { id: number }[] };
+  assert.equal(big.entries.length, 100);
+  assert.ok(big.entries.every((e, i) => i === 0 || e.id < (big.entries[i - 1] as { id: number }).id), "newest first");
+});
+
+test("manifest: data_access_log is a person read without receipt", () => {
+  const op = manifest.operations.find((o) => o.id === "data_access_log");
+  assert.ok(op);
+  assert.deepEqual([op.audience, op.effect, op.crud, op.receipt, op.idempotency], ["person", "read", ["read"], false, "none"]);
 });

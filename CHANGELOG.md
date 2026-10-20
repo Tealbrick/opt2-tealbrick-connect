@@ -2,9 +2,17 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Proposed next version: 0.6.0 (new operations and a migration).
 
-## 0.6.0 - Unreleased
+## 0.6.0 - 2026-10-18 (prepared, not tagged)
 
-The shared data operation family and the dataset `messages` (request R3, knowledge S-9; decisions C230 and C169). Not tagged: Connect is under a stable soak and the lead decides the tag.
+The shared data operation family and the dataset `messages` (request R3, knowledge S-9; decisions C230 and C169). Not tagged: the lead decides the tag.
+
+### Data sharing works for apps the owner shares with (C230 R3, SDK-CALLER-PRODUCT; with miniapp-sdk 0.1.32, pinned before the tag)
+- The data operations `data_accounts_list`, `data_catalog` and `data_pull` now serve apps. The calling app is identified by the VERIFIED caller product (`ctx.caller.product`, miniapp-sdk 0.1.28: the verified grant's `prd` first, else the signed slice entry; a grant/slice mismatch is refused `grant_invalid` by the SDK), never by its name or instance id. The share check, the share record and the audit row all key on the product id.
+- An app caller without a verified product is refused `caller_unverified` (403); a person or an agent is refused `no_access` (403); an app the owner did not share the account with gets `not_found` (404), identical for every account it cannot see. There is no fallback to the app name.
+- The 503 `data_ops_unavailable` gate, the test-only `verifiedAppProduct` option of `createConnectApp` and the `dataOpsAvailable` flag are removed. Accounts no longer says "Sharing takes effect when Connect is updated".
+- Dependencies: miniapp-sdk 0.1.28 (was 0.1.25), spec 0.1.46 (was 0.1.39; the type of `OpContext.caller.product`), manifest 0.1.23 (was 0.1.19; optional grant claim `prd`), conformance 0.1.21 (was 0.1.18; adds `A12.caller_product_verified` and `A12.grant_prd_*`, which pass). Lockfile integrity re-pinned with `tb-ci pin-tarballs`.
+- The conformance waiver `A3.caps_count` is gone: a `capsAgent` setup step (conformance 0.1.21) has the fresh caps agent schedule a Buzz post, so `buzz_schedule_cancel` runs. The fixtures are `tealbrick-conformance.json` and `conformance.inputs.json`; `conformance.start.ts` turns the sentinel `sendAt` into "one hour from now" (harness only). Result: PASS (126 pass, 23 not_applicable, no waiver).
+- New test `test/data-caller-e2e.test.ts` (real SDK, signed slice): an app named "Observer" whose verified product is Knowledge gets what is shared with Knowledge and nothing of what is shared with Observer; a grant `prd` that differs from the slice product is refused with no data.
 
 ### Added
 - Operations `data_accounts_list`, `data_catalog` and `data_pull` (agent audience until the app audience exists; effect read, crud read, idempotency none, no receipt). They serve apps only: an agent or a person gets `no_access` (403). One contract for Knowledge and Observer; a later dataset needs no new operation.
@@ -15,7 +23,7 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - Migration 0010: the inbound log gets `rev` (change counter), `edited_at`, `deleted` and `attachments`; tables `connect_inbox_rev` and `connect_account_shares`. Existing rows get `rev = seq`. There is no down migration; a failed update is rolled back by the SDK pre-update snapshot.
 
 ### Review changes (C230 review of PR #13)
-- Fail closed: the calling app is identified by the verified caller product, never by its manifest name. The SDK does not offer it yet (SDK-CALLER-PRODUCT, expected in miniapp-sdk 0.1.27), so every data operation answers every caller `data_ops_unavailable` (503) for now. The name table `src/data/apps.ts` is gone. The owner operation and the UI stay and say sharing takes effect when Connect is updated.
+- Fail closed: the calling app is identified by the verified caller product, never by its manifest name. The name table `src/data/apps.ts` is gone.
 - Edits and deletions come from the providers: Slack and Discord (both), Telegram (edits only; `deletions: false`). Teams is parsed but reports neither in `data_catalog` (`edits: false, deletions: false`: Teams sends the activities only in some installations). Where `deletions` is false a deleted message keeps its text for apps until the 30-day purge. An edit or deletion of a message that is not in the log is dropped and counted (`unmatchedChanges` in `channel_accounts`), never stored as a row. An edit is ordered and idempotent (a replay or an older edit takes no new rev).
 - A share starts when it is made: `data_pull` returns only messages received at or after it, unless `account_app_share` has `includeHistory` (UI: "Include the last 30 days").
 - A stored row that does not fit `messages/1` is quarantined (skipped, counted, logged with its rev) instead of blocking the account.
@@ -24,6 +32,27 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - Author kind `bot` where the provider says so. Rows of other bots are stored (flagged) only while the account has an app share, and are never listed for agents.
 - UI: the share control re-reads the list after every save.
 - Migration 0011: per-account `rev` (renumbered in one pass with a window function and `UPDATE ... FROM`: 200 000 rows in about 0.2 s), `sender_is_bot`, `include_history`, `unmatched_changes`, an index on `received_at` for the purge, `connect_account_rev`, `connect_data_audit`; the global counter table of 0010 is dropped.
+
+### Review fixes (PR #14)
+- Audit fails closed: a served `data_accounts_list`, `data_catalog` or `data_pull` writes its audit line BEFORE the answer is returned. When the line cannot be written the call answers 503 `audit_unavailable` and sends no data (before: the data went out and the failure was only logged). A refused call stays refused.
+- Refused calls are throttled: the same caller, product, op and code write one audit line per minute; further ones raise `repeats` on that line (migration 0012). A served call always has its own line.
+- Owner op `data_access_log` and, in Accounts, "Recent access": the last 100 calls, newest first (app, request, time, account, messages, served or refused). No message text. The record is kept 90 days.
+- Accounts: under each app row, one plain sentence says what that level gives the app: every conversation of the bot; only messages from the share time on unless "Include the last 30 days"; names and counts of every conversation for the whole log at the catalog level; revoke at any time.
+- Recent access shows a caller without a verified product as "Unverified app" (refused `caller_unverified`).
+- The unused `DATA_OPS_VERIFIED_PRODUCT_SUPPORTED` constant is removed.
+
+### A share is bound to one installed app (C240, SDK-COMPANION-CALLERS)
+- `account_app_share` takes `instance` (required unless `level` is `none`). The owner picks it from the installed apps that can call Connect (`ctx.companionCallers()`, person ops, miniapp-sdk 0.1.32 / spec 0.1.48). An instance that is not listed for that product is refused `app_instance_unknown` (404); no instance is refused `instance_required` (400). An SDK without the function lists nothing, so no share can be made (fail closed).
+- A data call is served only when its verified product AND its instance id (`ctx.caller.id`, the verified grant subject) are the pair the owner shared with. Another instance of the same product gets the same `not_found` as an unshared app. A reinstalled app has a new instance id and needs a new share. Nothing is bound on a first call.
+- Migration 0013 adds `connect_account_shares.instance_id`. A share made before it (pre-release 0.6.0 builds only; 0.5.11 has no app shares) has no instance and serves nobody. Accounts shows it as "Not shared" with "Share again — this app must be chosen again after the update" on its row, and one notice at the top of the page counts these shares; it is never silently gone.
+- Accounts: when two instances of an app are installed the owner picks which one; an app that is not installed says so; an instance on the owner's own server (provider `own_infra`) is named, with "Connect cannot check the code that runs there".
+- `accounts_overview`: `dataApps[].instances` (`instance`, `name`, `provider`, `ownInfra`), and per share `instance` and `current`.
+
+- Call-time check (Coordinator, C240): every data call needs the caller to be STILL listed under its product in the current signed slice (`ctx.caller.listed`, miniapp-sdk 0.1.32). `false` = 403 `share_instance_gone`, no flag = 503 `companion_list_unavailable` (fail closed); both audited and retryable (`details: {retryable: true, retryAfterMs: 30000}`), so a fresh companion whose grant arrives before the slice lists it retries instead of failing hard. A removed app with a still-valid grant reads nothing.
+- Review fixes (C240 review): a share whose instance is no longer listed says "This app instance was removed; it can no longer read", keeps its level read-only, and has "Stop sharing" and "Share with the installed <app> instead" (the button and a note name an own-server target). Pre-0013 rows: "Share again" only when sharing is possible; the page notice counts connected chat accounts only. Moving a share to another instance unticks "Include the last 30 days". The instance picker shows where each instance runs and the end of its id. The receipt names the instance and "(your own server)". `current` needs the same product. `accounts_overview.callersKnown` false (SDK without `companionCallers`) shows "Sharing with apps needs the next Connect update." One account is shared with at most one instance per app.
+- **After the update, choose each shared app again:** shares made before migration 0013 stop serving at the upgrade until the owner picks the app again in Accounts ("Share again"). Released versions (0.5.11 and older) have no app shares, so this concerns pre-release 0.6.0 builds only.
+- **A newly installed app may be refused for up to about 20 seconds until the workspace config reaches Connect; it retries by itself.** (Healthy links: about 1–6 s with one Core replica, about 20 s worst case with several; longer only when a link fails.)
+- **Do not roll back from 0.6.0 to 0.5.11.** Migrations 0010 to 0013 have no down step. A downgrade to 0.5.11 followed by a new upgrade leaves the log rows written in between hidden (their `rev` stays NULL), so an app would never see them. Restore the pre-update snapshot instead, or move forward.
 
 ### Changed
 - `channel_reply` to a message that was deleted answers 404 `channel_message_unknown` (a deleted message is no longer in the agent inbox). Accepted.
@@ -38,4 +67,4 @@ The shared data operation family and the dataset `messages` (request R3, knowled
 - Buzz is not a connected account and is not part of the dataset in this phase.
 
 ### Gaps
-- Needs a miniapp-sdk that names the verified caller product (SDK-CALLER-PRODUCT, expected 0.1.27). Then `verifiedAppProduct` in `src/data/caller.ts` reads it and `DATA_OPS_VERIFIED_PRODUCT_SUPPORTED` becomes true.
+- Calls the SDK itself rejects (bad grant, `grant_invalid` on a `prd`/slice mismatch, paused, stale slice) never reach a handler, so they are not in the access list. By design.
