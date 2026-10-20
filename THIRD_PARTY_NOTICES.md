@@ -44,7 +44,7 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
   No Composio SDK or Composio code is bundled or vendored. Composio is a third-party service under its own terms
   (https://composio.dev). The tool-name patterns in `policies/composio/*.json` are Connect's own classification of
   tool names (read, write, outward, destructive); they contain no Composio source code.
-- **Tealbrick catalog of self-hosted apps** (`catalog-0.2.0`, release asset of this repository, pinned by sha256 in
+- **Tealbrick catalog of self-hosted apps** (`catalog-0.3.0`, release asset of this repository, pinned by sha256 in
   `tealbrick.manifest.json` `artifacts[]`). Downloaded at run time, not part of the image. It holds API descriptions of
   third-party self-hosted apps. Each entry keeps the name of its upstream app; the upstream apps and their API
   descriptions stay under their own licences.

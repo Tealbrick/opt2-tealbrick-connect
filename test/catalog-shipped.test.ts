@@ -213,3 +213,34 @@ test("no operator host names anywhere in the shipped artifact", () => {
   const text = gunzipSync(gz).toString("utf8");
   assert.doesNotMatch(text, /polygonface|\.ts\.net|tailnet|fedora-?n150|192\.168\./iu);
 });
+
+test("Frappe CRM + Helpdesk (catalog 0.3.0): 65 ops with their labels; DocType paths keep %20; token auth key:secret", () => {
+  const f = app("frappe-crm");
+  assert.deepEqual(f.auth, { type: "header", name: "Authorization", prefix: "token ", label: "API key and secret, as key:secret" });
+  const ops = compile(f.spec, f.labels).operations;
+  assert.equal(ops.length, 65);
+  const count: Record<string, number> = {};
+  for (const o of ops) count[o.effect] = (count[o.effect] ?? 0) + 1;
+  assert.deepEqual(count, { read: 30, write: 21, outward: 4, destructive: 10 });
+  const byId = new Map(ops.map((o) => [o.operationId, o]));
+  for (const id of ["crm_send_email", "hd_reply_to_ticket", "hd_ticket_create", "hd_ticket_update"]) assert.equal(byId.get(id)?.effect, "outward", id);
+  // merge_ticket is listed outward too, destructive wins
+  assert.equal(byId.get("hd_merge_tickets")?.effect, "destructive");
+  for (const o of ops.filter((x) => x.method === "delete")) assert.equal(o.effect, "destructive", o.operationId);
+  assert.equal(byId.get(f.healthOperation ?? "")?.effect, "read");
+  const create = ops.find((o) => o.method === "post" && o.path === "/api/resource/CRM%20Lead");
+  assert.ok(create);
+  const sent = buildRequest({ baseUrl: "https://crm.example.com", basePath: f.basePathOverride ?? "", op: create, args: { body: { first_name: "A" } }, auth: f.auth, credentials: { token: "k:s" } });
+  assert.equal(sent.url.toString(), "https://crm.example.com/api/resource/CRM%20Lead");
+  assert.equal((sent.init.headers as Record<string, string>).Authorization, "token k:s");
+});
+
+test("Umami (catalog 0.3.0): 34 ops, all read; no collection, login, admin or /api/me (it echoes the token)", () => {
+  const u = app("umami");
+  assert.deepEqual(u.auth, { type: "header", name: "Authorization", prefix: "Bearer ", label: "Umami token" });
+  const ops = compile(u.spec, u.labels).operations;
+  assert.equal(ops.length, 34);
+  assert.ok(ops.every((o) => o.effect === "read" && o.crud.join() === "read"), "all read");
+  for (const bad of ["/api/send", "/api/batch", "/api/me", "/api/auth/login", "/api/users", "/api/admin"]) assert.ok(!ops.some((o) => o.path.startsWith(bad)), bad);
+  assert.equal(ops.find((o) => o.operationId === u.healthOperation)?.path, "/api/websites");
+});
