@@ -323,6 +323,8 @@ const SELF_VALUES = new Set(["me", "self"]);
 const MAX_RECIPIENTS = 100;
 
 /** One address in a stable form: `Name <a@b.c>` → `a@b.c`; lower case; trimmed. */
+/** Never a real address (spaces): a recipient value Connect cannot read, so no contact book holds it. */
+export const UNREADABLE_RECIPIENT = "(unreadable recipient value)";
 const EMAIL_TOKEN = /[^\s<>"',;()[\]]{1,200}@[^\s<>"',;()[\]]{1,200}/gu;
 
 function normaliseAddress(raw: string): string | null {
@@ -337,7 +339,11 @@ function collect(value: unknown, out: Set<string>, depth: number): void {
     for (const piece of value.split(/[,;\n]+/u)) {
       // Review #19 S2-1: '"<known@x>" <new@y>' must not hide new@y behind a display name. Every email-like token of the piece
       // counts (over-holding is safe); a piece with none (a phone number, a channel id) is taken as one value.
-      const emails = piece.slice(0, 2000).match(EMAIL_TOKEN) ?? [];
+      // Review #19 re-check: no truncation (padding must not hide an address); a piece too long to be a real address list adds a
+      // marker no contact book holds, so the call is always a first contact.
+      if (piece.length > 2000) out.add(UNREADABLE_RECIPIENT);
+      if (piece.length > 20_000) continue; // held anyway; do not scan huge values
+      const emails = piece.match(EMAIL_TOKEN) ?? [];
       if (emails.length > 0) {
         for (const e of emails) {
           const a = normaliseAddress(e);

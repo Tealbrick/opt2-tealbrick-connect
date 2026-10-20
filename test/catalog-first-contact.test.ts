@@ -150,6 +150,11 @@ test("review #19 S2-1: a display name cannot hide a new address behind a known o
     await s.dyn.call(`${send}__first_contact`, { body: { ...body, recipients: "friend@ext.example" } }, s.agent);
     await assert.rejects(s.dyn.call(send, { body: { ...body, recipients: '"<friend@ext.example>" <stranger@ext.example>' } }, s.agent), firstContact(["stranger@ext.example"]));
     await assert.rejects(s.dyn.call(send, { body: { ...body, recipients: "Friend friend@ext.example stranger@ext.example" } }, s.agent), firstContact(["stranger@ext.example"]));
+    // re-check: padding must not push an address out of sight
+    await assert.rejects(
+      s.dyn.call(send, { body: { ...body, recipients: `"<friend@ext.example>${" ".repeat(2100)}" <stranger@ext.example>` } }, s.agent),
+      (e: ConnectError) => e.code === "first_contact_required" && (e.details as { recipients: string[] }).recipients.includes("stranger@ext.example"),
+    );
     assert.equal(s.calls("/api/method/frappe.core.doctype.communication.email.make"), 1);
   } finally {
     s.done();
