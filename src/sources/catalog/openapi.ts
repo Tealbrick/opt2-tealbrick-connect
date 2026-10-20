@@ -9,11 +9,19 @@
 import type { CrudAction, JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
 
 import { classify, isActionWord, keepsFullCrud, nameParts, namesMoney, type ToolClass, withCrud } from "../../effect.ts";
-import { headerDefault } from "./http.ts";
+import { headerDefault, isJsonType } from "./http.ts";
 
 export const METHODS = ["get", "head", "options", "post", "put", "patch", "delete"] as const;
-export type Method = (typeof METHODS)[number];
-const READ_METHODS = new Set<Method>(["get", "head", "options"]);
+/**
+ * WebDAV methods (v1 openapi-adapter WEBDAV_METHODS): OpenAPI has no slot for them, so a spec declares each under an
+ * `x-<method>` key of the path item. Connect supports PROPFIND (read), MKCOL (create a folder), COPY (create) and MOVE (removes
+ * the source: the destructive class). REPORT / PROPPATCH need an XML body (compiled out), LOCK / UNLOCK are not offered.
+ */
+export const WEBDAV_METHODS = ["propfind", "mkcol", "copy", "move"] as const;
+export type Method = (typeof METHODS)[number] | (typeof WEBDAV_METHODS)[number];
+const READ_METHODS = new Set<Method>(["get", "head", "options", "propfind"]);
+const isWebdav = (m: Method): m is (typeof WEBDAV_METHODS)[number] => (WEBDAV_METHODS as readonly string[]).includes(m);
+
 const NODE_BUDGET = 4_000;
 
 export interface Parameter {
@@ -23,6 +31,8 @@ export interface Parameter {
   schema: Record<string, unknown>;
   /** CF-NC-2: a path param that may span "/" (OpenAPI `allowReserved: true` or the v1 overlay flag `x-multi-segment: true`) */
   multiSegment?: boolean;
+  /** WebDAV MOVE/COPY: a `Destination` header built from this path template (v1 `x-destination-template`) under the source root */
+  destinationTemplate?: string;
 }
 
 export interface CompiledOperation extends ToolClass {
@@ -31,7 +41,8 @@ export interface CompiledOperation extends ToolClass {
   path: string;
   summary: string;
   parameters: Parameter[];
-  body: { contentType: "application/json" | "application/x-www-form-urlencoded"; required: boolean; schema: Record<string, unknown> } | null;
+  /** CF-CT-1: the declared JSON media type is sent as is (merge-patch+json for API Platform PATCH); else form-urlencoded */
+  body: { contentType: string; required: boolean; schema: Record<string, unknown> } | null;
   inputSchema: JsonSchemaObject;
   /** C276c: set for an outward op the entry labels as a send (see EntryLabels.firstContact) */
   sendRecipients?: string[];
@@ -148,12 +159,14 @@ export function catalogCrud(method: Method, path: string, explicit: unknown, pat
     return [...new Set(explicit as CrudAction[])];
   }
   if (method === "delete") return ["delete"];
+  if (method === "move" || method === "propfind") return null; // move: classify's [update, delete]; propfind: read
   const literals = path.split("/").filter((segment) => segment && !segment.includes("{"));
   // Review #17: access, identity, secrets, imports and people-reaching objects anywhere in the path keep the full set (users,
   // roles, members, invites, shares, tokens, recovery codes, oauth/authorize, imports, messages, ...). The operationId is checked
   // for VERBS only below: it often carries a controller or namespace name ("PublicIntegrationsController_createPost").
   if (literals.some(keepsFullCrud)) return null;
   const verbs = nameParts(operationId);
+  if (method === "mkcol" || method === "copy") return ["create"]; // a new folder / a copy; Overwrite: F, so nothing is replaced
   if (method === "put" || method === "patch") {
     // An "update" whose operationId also creates, sends or deletes (transactional apply, create-or-update) keeps the full set.
     return verbs.some((v) => !READ_LIKE.has(v) && isActionWord(v) && !UPDATE_LIKE.has(v)) ? null : ["update"];
@@ -197,8 +210,8 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
   const usedSends = new Set<string>();
   for (const [path, item] of Object.entries(rec(doc.paths) ?? {})) {
     const pathItem = rec(item) ?? {};
-    for (const method of METHODS) {
-      const op = rec(pathItem[method]);
+    for (const method of [...METHODS, ...WEBDAV_METHODS] as Method[]) {
+      const op = rec(pathItem[isWebdav(method) ? `x-${method}` : method]);
       if (!op || op.deprecated === true) continue;
       const operationId = operationKey(method, path, str(op.operationId));
       const subject = { operationId, method, path };
@@ -223,7 +236,15 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
           // A header with a const/default is filled in at call time (http.ts headerDefault), so the agent may omit it.
           const filled = location === "header" && headerDefault({ in: location, schema }) !== undefined;
           const multiSegment = location === "path" && (p.allowReserved === true || p["x-multi-segment"] === true);
-          parameters.push({ name: String(p.name), in: location, required: location === "path" || (p.required === true && !filled), schema, ...(multiSegment ? { multiSegment: true } : {}) });
+          const template = location === "header" && typeof p["x-destination-template"] === "string" && p["x-destination-template"].startsWith("/") ? p["x-destination-template"] : undefined;
+          parameters.push({
+            name: String(p.name),
+            in: location,
+            required: location === "path" || (p.required === true && !filled),
+            schema,
+            ...(multiSegment ? { multiSegment: true } : {}),
+            ...(template ? { destinationTemplate: template } : {}),
+          });
         } else if (location === "body") {
           body = { contentType: "application/json", required: p.required === true, schema: inline(doc, p.schema ?? {}) ?? OPEN };
         } else if (location === "formData") {
@@ -234,12 +255,14 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
         const requestBody = rec(str(rec(op.requestBody)?.$ref) ? pointer(doc, String(rec(op.requestBody)?.$ref)) : op.requestBody);
         const content = rec(requestBody?.content);
         if (content) {
-          const json = Object.keys(content).find((t) => /json/iu.test(t));
-          const form = Object.keys(content).find((t) => t.toLowerCase().startsWith("application/x-www-form-urlencoded"));
+          // CF-CT-1: plain application/json first, then the first other JSON type the spec declares (merge-patch+json).
+          const types = Object.keys(content);
+          const json = types.find((t) => /^application\/json\b/iu.test(t)) ?? types.find(isJsonType);
+          const form = types.find((t) => t.toLowerCase().startsWith("application/x-www-form-urlencoded"));
           const chosen = json ?? form;
           if (chosen) {
             body = {
-              contentType: json ? "application/json" : "application/x-www-form-urlencoded",
+              contentType: json ? json.split(";")[0]?.trim().toLowerCase() || "application/json" : "application/x-www-form-urlencoded",
               required: requestBody?.required === true,
               schema: inline(doc, rec(content[chosen])?.schema ?? {}) ?? OPEN,
             };
@@ -250,7 +273,8 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
 
       const readMethod = READ_METHODS.has(method);
       const readByLabel = method === "post" && (labels.reads ?? []).some((pattern) => patternMatches(pattern, subject));
-      const destructive = method === "delete" || (labels.destructive ?? []).some((pattern) => patternMatches(pattern, subject));
+      // WebDAV MOVE removes the source path (Coordinator 2026-10-20: the update + delete class).
+      const destructive = method === "delete" || method === "move" || (labels.destructive ?? []).some((pattern) => patternMatches(pattern, subject));
       const outward = (labels.outward ?? []).some((pattern) => patternMatches(pattern, subject));
       const sends = (labels.firstContact ?? []).find((f) => patternMatches(f.operation, subject));
       if (sends) usedSends.add(sends.operation);

@@ -31,6 +31,7 @@ Connect is the one place for outside connectivity (C16 and the PRD). Per connect
 - Person: 8 reads (`services_search`, `accounts_overview`, ...), 14 writes (`account_connect`, `account_app_share`, `catalog_account_connect`, `mcp_account_connect`, `buzz_identities_generate`, `channel_account_connect`, `sender_identity_set`, ...), and `buzz_profile_publish` (outward, hold family `identity`).
 - Dynamic tools resolve per tool to read, write, outward, destructive or money. Unknown verbs classify fail-CLOSED (write or outward; payment is money, always held) (SEC-02). Hold view binding for send tools: account, recipients or channel, subject, first 500 characters as plain text, attachment names and sizes (`src/hold-view.ts`, C201).
 - CRUD per tool (C276a): catalog ops by method — POST on a listed collection `[create]`, PUT/PATCH `[update]`, DELETE `[delete]`; a POST on an item path, with an action word, or on a path with no GET stays `[create, update]`; an op-level `x-tealbrick-crud` wins. Composio/MCP names: CREATE/ADD/INSERT → create, UPDATE/SET/PATCH/EDIT → update, DELETE/REMOVE → delete, anything else `[create, update]`. Read and money never change, destructive keeps delete, effect and hold family never change (`withCrud`, `src/effect.ts`). Stored tool rows are re-made on start when the classifier or catalog version changes (`src/tool-resync.ts`, table `connect_meta`, migration 0014). Snapshot of every catalog op: `test/fixtures/catalog/classes-<version>.json`.
+- Catalog HTTP (0.6.2): the declared JSON media type is sent (CF-CT-1); WebDAV `x-propfind`/`x-mkcol`/`x-copy`/`x-move` are compiled (PROPFIND read with Depth ≤ 1; MKCOL/COPY create; MOVE the destructive class); MOVE/COPY send `Overwrite: F` and a `Destination` built from `x-destination-template` under the same origin, prefix and user root, with the multi-segment guards of CF-NC-2.
 - Catalog sends (C276c): an entry's `firstContact` labels outward ops that email or message people and says where the recipients are in the input (`body.to`, ...). They go through the X-02 first-contact check like `GMAIL_SEND_EMAIL`; `[]` (the recipient is stored data, e.g. a ticket's customer) makes every call a first contact. Entry `credentialHint` is shown in the connect form.
 
 ## Scopes, hooks and companions
@@ -72,7 +73,7 @@ Services, Accounts (with "Share with <app> (read only)" per chat account), Buzz,
 
 ## Requirements and runtime hints
 
-A Composio key only if Composio services are used. Buzz relays only if Buzz is used. Public routes (3, unauthenticated by design): `/oauth/composio/callback`, `/oauth/mcp/callback`, `/inbound/teams` (Bot Framework JWT verified, 128 KiB cap). A catalog artifact `catalog-0.3.0` (sha256 pinned in the manifest).
+A Composio key only if Composio services are used. Buzz relays only if Buzz is used. Public routes (3, unauthenticated by design): `/oauth/composio/callback`, `/oauth/mcp/callback`, `/inbound/teams` (Bot Framework JWT verified, 128 KiB cap). A catalog artifact `catalog-0.3.1` (sha256 pinned in the manifest).
 
 Port 8314. 0.5 cpu, 512 MB. Data 2 GB plus backup 5 GB declared as two volumes; Core and the generated Railway recipe merge them into one volume at the data mount (SDK-API 7.3; `TB_BACKUP_DIR=/data/backup`). Needs a non-sleeping container (long-lived outbound sockets). Backup cron `23 3 * * *`, retain 14. `EXPOSE 8314`.
 

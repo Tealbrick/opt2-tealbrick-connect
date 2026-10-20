@@ -16,6 +16,11 @@ import type { CompiledOperation } from "./openapi.ts";
 
 export type CatalogAuth = { type: "header"; name: string; prefix?: string } | { type: "basic" } | { type: "query"; name: string } | { type: "none" };
 
+/** CF-CT-1: a JSON media type (application/json, application/merge-patch+json, application/vnd.api+json, ...). */
+export function isJsonType(t: string): boolean {
+  return /^application\/(?:[\w.-]+\+)?json(?:\s*;.*)?$/iu.test(t.trim());
+}
+
 export const CALL_TIMEOUT_MS = 30_000;
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const FORBIDDEN_HEADERS = new Set([
@@ -130,6 +135,18 @@ export function buildRequest(input: {
       const value = queryArgs[p.name];
       for (const v of Array.isArray(value) ? value : [value]) url.searchParams.append(p.name, typeof v === "object" ? JSON.stringify(v) : String(v));
     }
+    // WebDAV Destination (v1 x-destination-template): a relative path under the template's root, guarded like CF-NC-2, made
+    // absolute on the SAME origin and prefix as the request. The caller never names a host or a root.
+    if (p.in === "header" && p.destinationTemplate) {
+      const raw = Object.hasOwn(headerArgs, p.name) ? headerArgs[p.name] : headerDefault(p);
+      if (raw === undefined) {
+        if (p.required) throw new CatalogCallError("argument_invalid", `Header ${p.name} is required.`);
+        continue;
+      }
+      const rendered = p.destinationTemplate.replace(/\{([^}]+)\}/gu, (_m, name: string) => (name === p.name ? segments(raw, name) : segment(pathArgs[name], name)));
+      headers[p.name] = `${base.origin}${prefix}${rendered}`;
+      continue;
+    }
     // A declared header the caller omits gets its schema const/default (v1 openapi-http.ts:478); the caller's value wins.
     const own = Object.hasOwn(headerArgs, p.name) ? headerArgs[p.name] : undefined;
     const headerValue = p.in === "header" ? (own ?? headerDefault(p)) : undefined;
@@ -139,6 +156,18 @@ export function buildRequest(input: {
       const v = String(headerValue);
       if (/[\r\n]/u.test(v)) throw new CatalogCallError("argument_invalid", `Header ${p.name} contains a line break.`);
       headers[p.name] = v;
+    }
+  }
+  // WebDAV: MOVE and COPY never overwrite an existing destination; PROPFIND lists at most one level.
+  if (input.op.method === "move" || input.op.method === "copy") {
+    for (const k of Object.keys(headers)) if (k.toLowerCase() === "overwrite") delete headers[k];
+    headers.Overwrite = "F";
+  }
+  if (input.op.method === "propfind") {
+    const depth = Object.keys(headers).find((k) => k.toLowerCase() === "depth");
+    if (!depth || !["0", "1"].includes(String(headers[depth]))) {
+      if (depth) delete headers[depth];
+      headers.Depth = "1";
     }
   }
   const unknownGroups = Object.keys(input.args).filter((k) => !["path", "query", "header", "body"].includes(k));
@@ -165,9 +194,10 @@ export function buildRequest(input: {
   }
   let body: string | null = null;
   if (input.op.body && input.args.body !== undefined) {
-    if (input.op.body.contentType === "application/json") {
+    if (isJsonType(input.op.body.contentType)) {
+      // CF-CT-1: the declared JSON type (application/merge-patch+json for API Platform PATCH), not always application/json
       body = JSON.stringify(input.args.body);
-      headers["content-type"] = "application/json";
+      headers["content-type"] = input.op.body.contentType;
     } else {
       const form = new URLSearchParams();
       for (const [k, v] of Object.entries((input.args.body ?? {}) as Record<string, unknown>)) form.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));

@@ -154,19 +154,19 @@ test("CF-NC-1: defaults never set auth, transport or credential headers; const w
   assert.throws(() => buildRequest({ baseUrl: "https://a.example.com", basePath: "", op: x, args: { header: { "X-Mode": "a\r\nb" } }, auth: { type: "none" }, credentials: {} }), /line break/u);
 });
 
-test("Mautic: 140 exposed ops, outward/destructive labels intact, admin and webhook ops not exposed", () => {
+test("Mautic: 168 exposed ops (v2 PATCH back since CF-CT-1), outward/destructive labels intact, admin and webhook ops not exposed", () => {
   const m = app("mautic");
   assert.equal(m.auth.type, "basic");
   assert.equal(m.baseUrlExample, "https://mautic.example.com");
   const ops = compile(m.spec, m.labels).operations;
-  assert.equal(ops.length, 140);
+  assert.equal(ops.length, 168);
   const count = (key: (o: CompiledOperation) => string) => {
     const acc: Record<string, number> = {};
     for (const o of ops) acc[key(o)] = (acc[key(o)] ?? 0) + 1;
     return acc;
   };
-  assert.deepEqual(count((o) => o.effect), { read: 67, write: 24, outward: 20, destructive: 29 });
-  assert.deepEqual(count((o) => o.method), { get: 67, post: 40, patch: 4, delete: 29 });
+  assert.deepEqual(count((o) => o.effect), { read: 67, write: 42, outward: 30, destructive: 29 });
+  assert.deepEqual(count((o) => o.method), { get: 67, post: 40, patch: 32, delete: 29 });
   const byId = new Map(ops.map((o) => [o.operationId, o]));
   for (const id of m.labels.outward ?? []) {
     const o = byId.get(id);
@@ -174,7 +174,7 @@ test("Mautic: 140 exposed ops, outward/destructive labels intact, admin and webh
     assert.equal(o.effect, "outward", id);
     assert.equal(o.holdFamily, "outward", id);
   }
-  assert.equal((m.labels.outward ?? []).length, 20);
+  assert.equal((m.labels.outward ?? []).length, 30);
   for (const o of ops.filter((x) => x.method === "delete")) {
     assert.equal(o.effect, "destructive", o.operationId);
     assert.equal(o.holdFamily, "destructive", o.operationId);
@@ -183,7 +183,16 @@ test("Mautic: 140 exposed ops, outward/destructive labels intact, admin and webh
   for (const id of ["v1_emails_send", "v1_emails_contact_send", "v1_campaigns_contact_add", "v1_contacts_dnc_email_remove"]) assert.equal(byId.get(id)?.effect, "outward", id);
   assert.ok(!ops.some((o) => /\/api\/v2\/(users|roles|permissions)\b/u.test(o.path)), "no admin ops");
   assert.ok(!ops.some((o) => o.method === "post" && o.path === "/api/v2/webhooks"), "no webhook create");
-  assert.ok(!ops.some((o) => o.path.startsWith("/api/v2/") && (o.method === "put" || o.method === "patch")), "no v2 PUT/PATCH");
+  assert.ok(!ops.some((o) => o.path.startsWith("/api/v2/") && o.method === "put"), "no v2 PUT (it blanks omitted fields)");
+  assert.ok(!ops.some((o) => o.path.startsWith("/api/v2/webhooks") && ["post", "patch", "put"].includes(o.method)), "no webhook create or PATCH");
+  // CF-CT-1: the v2 PATCH sends the declared merge-patch type
+  const patch = ops.find((o) => o.method === "patch" && o.path === "/api/v2/tags/{id}");
+  assert.equal(patch?.body?.contentType, "application/merge-patch+json");
+  assert.deepEqual(patch?.crud, ["update"]);
+  const patched = buildRequest({ baseUrl: "https://mautic.example.com", basePath: "", op: patch as CompiledOperation, args: { path: { id: 3 }, body: { tag: "vip" } }, auth: m.auth, credentials: { username: "u", password: "p" } });
+  assert.equal((patched.init.headers as Record<string, string>)["content-type"], "application/merge-patch+json");
+  assert.equal(patched.init.body, JSON.stringify({ tag: "vip" }));
+  assert.equal(ops.find((o) => o.method === "patch" && o.path === "/api/v2/campaigns/{id}")?.effect, "outward");
   const health = byId.get(m.healthOperation ?? "");
   assert.equal(health?.effect, "read");
   assert.equal(health?.path, "/api/v2/tags");
@@ -272,4 +281,64 @@ test("CF-NC-2: Nextcloud WebDAV file paths may span folders (x-multi-segment); t
   // single-segment params keep refusing "/" (the user segment cannot climb)
   assert.throws(() => url("notes.md", "../admin"), /single segment/u);
   assert.throws(() => url("notes.md", "a/b"), /single segment/u);
+});
+
+test("0.6.2 WebDAV: PROPFIND reads (Depth at most 1), MKCOL/COPY create, MOVE is the destructive class; Destination stays under the user root; never overwrite", () => {
+  const nc = app("nextcloud");
+  const ops = compile(nc.spec, nc.labels).operations;
+  const by = (method: string, path: string) => {
+    const o = ops.find((x) => x.method === method && x.path === path);
+    assert.ok(o, `${method} ${path}`);
+    return o;
+  };
+  const FILE = "/remote.php/dav/files/{user}/{path}";
+  const req = (op: CompiledOperation, header: Record<string, unknown> = {}, path: Record<string, unknown> = { user: "henry", path: "Docs/a b.txt" }) =>
+    buildRequest({ baseUrl: "https://cloud.example.com/nc", basePath: nc.basePathOverride ?? "", op, args: { path, header }, auth: { type: "basic" }, credentials: { username: "u", password: "p" } });
+  const h = (r: ReturnType<typeof buildRequest>) => r.init.headers as Record<string, string>;
+  const propfind = by("propfind", FILE);
+  assert.deepEqual([propfind.effect, propfind.crud], ["read", ["read"]]);
+  assert.equal(req(propfind).init.method, "PROPFIND");
+  assert.equal(h(req(propfind)).Depth, "1");
+  assert.equal(h(req(propfind, { Depth: "infinity" })).Depth, "1", "no infinite listing");
+  assert.equal(h(req(propfind, { Depth: "0" })).Depth, "0");
+  assert.deepEqual(by("mkcol", FILE).crud, ["create"]);
+  const copy = by("copy", FILE);
+  assert.deepEqual([copy.effect, copy.crud], ["write", ["create"]]);
+  const move = by("move", FILE);
+  assert.deepEqual([move.effect, move.crud, move.holdFamily], ["destructive", ["update", "delete"], "destructive"]);
+  for (const op of [copy, move]) {
+    const r = req(op, { Destination: "Archive/2026/a b.txt", Overwrite: "T" });
+    assert.equal(r.url.toString(), "https://cloud.example.com/nc/remote.php/dav/files/henry/Docs/a%20b.txt");
+    assert.equal(h(r).Destination, "https://cloud.example.com/nc/remote.php/dav/files/henry/Archive/2026/a%20b.txt", "same origin, prefix and user root");
+    assert.equal(h(r).Overwrite, "F", "never overwrite, even when the caller asks");
+    assert.equal(r.init.method, op.method.toUpperCase());
+    // a full URL is refused too ("https://" has an empty segment): the caller never names a host
+    for (const bad of ["../other/x", "/abs", "Archive/../../x", "https://evil.example/x", "a\\b", ""]) {
+      assert.throws(() => req(op, { Destination: bad }), /argument_invalid|relative path|segment|required/u, JSON.stringify(bad));
+    }
+    assert.throws(() => req(op, {}), /Destination is required/u);
+    // the user in the Destination is the source's user (one segment, no climbing)
+    assert.throws(() => req(op, { Destination: "x" }, { user: "../admin", path: "a" }), /single segment/u);
+  }
+  // trash restore keeps its default name under the trash root
+  const restore = by("move", "/remote.php/dav/trashbin/{user}/trash/{item}");
+  assert.equal(h(req(restore, {}, { user: "henry", item: "a.txt.d123" })).Destination, "https://cloud.example.com/nc/remote.php/dav/trashbin/henry/restore/restored");
+});
+
+test("CF-CT-1: plain application/json is preferred; else the first declared JSON type is sent; a non-JSON-only body stays unsupported", async () => {
+  const { isJsonType } = await import("../src/sources/catalog/http.ts");
+  for (const t of ["application/json", "application/merge-patch+json", "application/vnd.api+json", "application/ld+json; charset=utf-8"]) assert.ok(isJsonType(t), t);
+  for (const t of ["text/json", "application/jsonx", "application/xml", "application/json-seq+x"]) assert.ok(!isJsonType(t), t);
+  const spec = {
+    openapi: "3.0.3",
+    paths: {
+      "/a/{id}": { patch: { operationId: "a", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "application/vnd.api+json": { schema: { type: "object" } }, "application/json": { schema: { type: "object" } } } } } },
+      "/b/{id}": { patch: { operationId: "b", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "application/ld+json; charset=utf-8": { schema: { type: "object" } } } } } },
+      "/c": { post: { operationId: "c", requestBody: { required: true, content: { "application/xml": { schema: { type: "object" } } } } } },
+    },
+  };
+  const ops = Object.fromEntries(compile(spec).operations.map((o) => [o.operationId, o]));
+  assert.equal(ops.a?.body?.contentType, "application/json");
+  assert.equal(ops.b?.body?.contentType, "application/ld+json");
+  assert.equal(ops.c, undefined, "an XML-only required body is not offered");
 });
