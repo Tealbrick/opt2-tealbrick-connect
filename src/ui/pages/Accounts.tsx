@@ -396,7 +396,7 @@ function AgentAccess({ account, agents, onChanged }: { account: Account; agents:
               />
             </div>
             {row && row.offerAdds.length > 0 ? (
-              <div className="acc-row acc-offer" role="group" aria-label={`${agent.name}: access offer`}>
+              <div className="acc-row acc-offer">
                 <span className="acc-note">
                   This level now also allows {crudWords(row.offerAdds)}. {agent.name} cannot use it until you accept.
                 </span>

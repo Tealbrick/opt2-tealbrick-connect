@@ -208,7 +208,12 @@ test("re-sync on start: accounts connected before the update get new tool rows o
   let failComposio = true;
   const sources = {
     accounts,
-    catalog: { syncTools: async (s: string) => (calls.push(`catalog:${s}`), 1) },
+    catalog: {
+      syncTools: async (s: string) => {
+        calls.push(`catalog:${s}`);
+        return 1;
+      },
+    },
     composio: {
       syncTools: async (s: string) => {
         calls.push(`composio:${s}`);
@@ -216,7 +221,12 @@ test("re-sync on start: accounts connected before the update get new tool rows o
         return 1;
       },
     },
-    mcp: { syncTools: async (a: { id: string }) => (calls.push(`mcp:${a.id}`), 1) },
+    mcp: {
+      syncTools: async (a: { id: string }) => {
+        calls.push(`mcp:${a.id}`);
+        return 1;
+      },
+    },
   };
   const marker = toolClassMarker(pinned.version);
   const first = await resyncToolClasses(db, sources, marker);
