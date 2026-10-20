@@ -4,6 +4,8 @@
  * Everything here is typed against the frozen contract (`@opt2-tealbrick/spec`).
  */
 
+import { createHash } from "node:crypto";
+
 import { channelSenderId } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, SdkAppDefinition, SdkOpContext, SdkPublicContext } from "@opt2-tealbrick/miniapp-sdk";
 import type { CrudAction, DynamicCatalogEntry, DynamicResolution, DynamicSearchInput, Manifest } from "@opt2-tealbrick/spec/manifest";
@@ -19,7 +21,7 @@ import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/ser
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, isSendTool, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, isInviteTool, isSendTool, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -30,6 +32,7 @@ import { ComposioSource, connectMode } from "./sources/composio/source.ts";
 import { McpError } from "./sources/mcp/client.ts";
 import { OAuthError } from "./sources/mcp/oauth.ts";
 import { McpSource } from "./sources/mcp/source.ts";
+import { resyncToolClasses, toolClassMarker } from "./tool-resync.ts";
 import { ACCOUNT_ARGUMENT, FIRST_CONTACT_SUFFIX, ToolRegistry } from "./tools.ts";
 import { type FetchLike, UpstreamError } from "./util/http.ts";
 import { newId } from "./util/ids.ts";
@@ -116,6 +119,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     throw new Err(code, message, status, details);
   };
   const policies = loadPolicies();
+  // C276a: a policy edit changes tool classes, so it is part of the re-sync marker.
+  const policyDigest = createHash("sha256")
+    .update(JSON.stringify([...policies.values()].sort((a, b) => (a.toolkit < b.toolkit ? -1 : 1))))
+    .digest("hex")
+    .slice(0, 16);
   const toolkitCache = new ToolkitCache();
   let cache: { db: Db; services: Services } | null = null;
   /** One outbound fetch: injected (tests) or pinned-connect (SEC-09), with exact allowlisted test hosts. */
@@ -421,7 +429,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const caller = ctx.caller.id;
           const accountId = account.id;
           const unknown = recipients.filter((r) => !ctx.db.prepare("SELECT 1 FROM connect_tool_contacts WHERE caller = ? AND account = ? AND address = ?").get(caller, accountId, r));
-          if (recipients.length === 0 || unknown.length > 0) {
+          // CF-GC-1: an invite tool with no attendees invites nobody; every other send with no visible recipient fails closed.
+          if ((recipients.length === 0 && !isInviteTool(row)) || unknown.length > 0) {
             const firstName = `${row.name}${FIRST_CONTACT_SUFFIX}`;
             const who = recipients.length === 0 ? "Connect cannot see the recipients of this call" : `${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? ` and ${unknown.length - 5} more` : ""} ${unknown.length === 1 ? "is" : "are"} new to you on ${account.label}`;
             fail("first_contact_required", `${who}. Call the tool ${firstName} with the same arguments; the owner approves this first contact once. Later messages to known people use ${row.name}.`, 409, {
@@ -1498,6 +1507,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const s = services(ctx);
       s.channels.startAll();
       await tetherBuzz(ctx.db, ctx.log);
+      // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
+      const marker = toolClassMarker(env.manifest.artifacts?.find((a) => a.id === "catalog")?.version, policyDigest);
+      void resyncToolClasses(ctx.db, s, marker, ctx.log).catch((e: unknown) => ctx.log.warn("tool re-sync failed", { code: (e as { code?: string }).code ?? "error" }));
       const tick = async () => {
         s.channels.purge();
         ctx.db.prepare("DELETE FROM connect_data_audit WHERE at < ?").run(Date.now() - 90 * 24 * 60 * 60 * 1000);

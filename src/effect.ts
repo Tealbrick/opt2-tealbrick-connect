@@ -142,12 +142,134 @@ export function inferFromName(name: string): ToolClass {
   return classify({ write: true, outward: true, destructive: false });
 }
 
+// ── C276a: per-method / per-verb CRUD ──
+
+const CREATE_VERBS = new Set(["create", "add", "insert"]);
+const UPDATE_VERBS = new Set(["update", "set", "patch", "edit"]);
+const DELETE_VERBS = new Set(["delete", "remove"]);
+const isKnownVerb = (part: string) =>
+  READ_PARTS.has(part) || DESTRUCTIVE_PARTS.has(part) || OUTWARD_PARTS.has(part) || WRITE_PARTS.has(part) || MONEY_PARTS.has(part);
+const CRUD_ORDER: readonly CrudAction[] = ["create", "update", "delete"];
+
+/**
+ * C276a review #17: words that name access, identity, secrets or people-reaching objects. A tool or path that names one keeps
+ * the full [create, update]: creating a user, role, member, invite, share, token or key is never a plain "create".
+ */
+const SENSITIVE_WORDS = new Set([
+  "user", "group", "role", "member", "membership", "permission", "acl", "invite", "invitation", "share", "subadmin", "binding",
+  "token", "key", "secret", "password", "credential", "recovery", "oauth", "authorize", "authorization", "collaborator", "owner",
+  "transactional", "mfa", "totp", "webauthn", "sso", "saml", "provider", "delegate", "delegation", "forwarding", "admin", "notification",
+  "alert", "announcement", "message", "email", "sms", "dm", "call", "comment", "schedule", "import", "export", "layout", "status",
+  "label", "contents", "generate", "change", "replace", "apply", "execute", "run", "trigger", "sync", "upsert", "overwrite", "merge",
+  "protection", "team", "org", "organization", "device", "giftcard", "voucher", "order", "cart", "agent", "conversation",
+  "campaign", "automation", "inbox", "social", "profile", "setting", "webhook", "hook", "integration", "variable",
+  "mirror", "attendee", "recipient", "deployment", "mail",
+]);
+/** Long stems that also match inside one word ("bankimportjobs", "passwordreset"). */
+const SENSITIVE_STEMS = ["import", "password", "permission", "secret", "token", "invit", "credential", "recovery", "membership", "giftcard", "voucher", "sendmail"] as const;
+/** Negating prefixes: un/de/dis/re + a known verb (unassign, unshare, deactivate, disconnect, reassign) is never a narrow write. */
+const NEGATION = /^(?:un|de|dis|re)(.+)$/u;
+
+/** Singular form for matching ("users" → "user", "statuses" → "status", "policies" → "policy"). */
+function singular(part: string): string {
+  if (part.endsWith("ies") && part.length > 4) return `${part.slice(0, -3)}y`;
+  if (/(?:ses|xes|zes|ches|shes)$/u.test(part)) return part.slice(0, -2);
+  if (part.endsWith("s") && !part.endsWith("ss") && part.length > 3) return part.slice(0, -1);
+  return part;
+}
+
+/** True when any word of the text keeps the full CRUD set (sensitive word or stem, negated verb). */
+export function keepsFullCrud(text: string): boolean {
+  return nameParts(text).some((raw) => {
+    const part = singular(raw);
+    if (SENSITIVE_WORDS.has(part) || SENSITIVE_WORDS.has(raw) || SENSITIVE_STEMS.some((stem) => raw.includes(stem))) return true;
+    if (isKnownVerb(part) || DELETE_VERBS.has(part)) return false;
+    const negated = NEGATION.exec(part)?.[1];
+    return negated !== undefined && (isKnownVerb(negated) || ACTION_WORDS.has(negated) || SENSITIVE_WORDS.has(negated));
+  });
+}
+
+/**
+ * Coordinator 2026-10-20 (PR #17): calendar / event / meeting / appointment / booking TOOLS (Composio, MCP) invite attendees but
+ * are not send tools (isSendTool), so no first-contact hold fires for a new external attendee. They keep [create, update].
+ * Names only: catalog paths such as pretix `/events/` are ticketed events, not invitations.
+ */
+const INVITE_OBJECT_WORDS = new Set(["event", "meeting", "appointment", "booking", "calendar"]);
+const namesInviteObject = (name: string) => nameParts(name).some((part) => INVITE_OBJECT_WORDS.has(singular(part)) || part.includes("calendar"));
+
+/** Only plain ASCII names are narrowed: a look-alike letter (Cyrillic "е" in "dеlete") must not hide a verb. */
+const plainName = (name: string) => /^[\x20-\x7e]*$/u.test(name) && name.normalize("NFKC") === name;
+
+/**
+ * C276a: a narrower CRUD set for a write class, kept only when it is safe. `read` and `money` classes never change; the new set
+ * must be a SUBSET of the old one (never a new action: review #17, ADD_AND_REMOVE → [create, delete] would need create where
+ * [update, delete] did not); a destructive class must keep `delete`. Effect and hold family never change (guardrail c), so
+ * outward writes stay held per policy.
+ */
+export function withCrud(cls: ToolClass, crud: readonly CrudAction[] | null): ToolClass {
+  if (!crud || crud.length === 0 || cls.effect === "read" || cls.effect === "money") return cls;
+  const set = CRUD_ORDER.filter((action) => crud.includes(action));
+  if (set.length === 0 || !set.every((action) => cls.crud.includes(action))) return cls;
+  if (cls.effect === "destructive" ? !set.includes("delete") : set.includes("delete")) return cls;
+  return { ...cls, crud: set };
+}
+
+/**
+ * C276a (d): the CRUD a Composio / MCP tool needs, from the verbs of its name: CREATE/ADD/INSERT → create, UPDATE/SET/PATCH/EDIT
+ * → update, DELETE/REMOVE → delete. Any other verb (SEND, POST, PUBLISH, ...) or no verb at all → null (keep classify()'s
+ * [create, update]). Read verbs and the noun words (draft, email, message, ...) do not count as verbs. Review #17: a name that
+ * is not plain ASCII, or that names a sensitive object or a negated verb (keepsFullCrud), is never narrowed.
+ */
+export function crudFromName(name: string): CrudAction[] | null {
+  if (!plainName(name) || keepsFullCrud(name) || namesInviteObject(name)) return null;
+  const verbs = nameParts(name).filter((part) => !NOUN_PARTS.has(part) && !READ_PARTS.has(part) && (isKnownVerb(part) || CREATE_VERBS.has(part) || DELETE_VERBS.has(part)));
+  if (verbs.length === 0) return null;
+  const crud = new Set<CrudAction>();
+  for (const verb of verbs) {
+    if (CREATE_VERBS.has(verb)) crud.add("create");
+    else if (UPDATE_VERBS.has(verb)) crud.add("update");
+    else if (DELETE_VERBS.has(verb)) crud.add("delete");
+    else return null;
+  }
+  return CRUD_ORDER.filter((action) => crud.has(action));
+}
+
+/** Path words that make a POST an action, not a collection create (C276a guardrail a), besides every known verb. */
+const ACTION_WORDS = new Set([
+  "graphql", "rpc", "jsonrpc", "command", "commands", "action", "actions", "bulk", "toggle", "clone", "retry", "resend", "restore",
+  "reset", "rotate", "login", "logout", "auth", "token", "tokens", "webhook", "hooks", "callback", "callbacks", "test", "ping",
+  "plus", "minus", "increment", "decrement", "start", "pause", "resume", "complete", "confirm", "generate", "authorize", "redeem",
+  "transmit", "transact", "distribute", "extend", "reactivate", "migrate", "dispatch", "process", "link", "unlink", "connect",
+  "activate", "assign", "lock", "approve", "change", "replace", "apply",
+]);
+
+/**
+ * True when a path segment names an action: a known verb as written ("send", "publish"; the plural noun "posts" is not the verb
+ * "post"), or an ACTION_WORDS word singular or plural, in any naming style.
+ */
+export function isActionWord(segment: string): boolean {
+  return nameParts(segment).some((raw) => isKnownVerb(raw) || ACTION_WORDS.has(raw) || ACTION_WORDS.has(singular(raw))) || namesMoney(segment);
+}
+
+/**
+ * C276a: the name-based CRUD applied to a class (Composio, MCP). Review #17: an OUTWARD class keeps its set when its name holds
+ * any outward word, also the noun-like ones (create_message, add_comment, create_email): the send is the point of the tool.
+ */
+export function narrowByName(name: string, cls: ToolClass): ToolClass {
+  if (cls.effect === "outward" && nameParts(name).some((part) => OUTWARD_PARTS.has(part) || OUTWARD_PARTS.has(singular(part)))) return cls;
+  return withCrud(cls, crudFromName(name));
+}
+
 /**
  * MCP tool class. Money words always win. X-03: annotations come from an untrusted server, so they may only RAISE a class:
  * `destructiveHint: true` → destructive; `readOnlyHint: false` → never read. `readOnlyHint: true` is believed only when the
  * name inference also says read, or when the owner marked this tool read in Connect (`ownerRead`, op mcp_tool_read_set).
  */
 export function classifyMcpTool(name: string, annotations: Record<string, unknown> | undefined, ownerRead = false): ToolClass {
+  return narrowByName(name, classifyMcpBase(name, annotations, ownerRead));
+}
+
+function classifyMcpBase(name: string, annotations: Record<string, unknown> | undefined, ownerRead: boolean): ToolClass {
   const a = annotations ?? {};
   if (namesMoney(name)) return classify({ write: true, outward: true, destructive: false, money: true });
   if (a.destructiveHint === true) return classify({ write: true, outward: false, destructive: true });
@@ -171,7 +293,16 @@ const SEND_PARTS = new Set(["send", "sends", "reply", "replies", "forward", "for
 /** True for an `outward` dynamic tool that sends to people: first contact applies (X-02, C107). */
 export function isSendTool(tool: { name: string; upstream?: string; effect: Effect }): boolean {
   if (tool.effect !== "outward") return false;
-  return nameParts(tool.upstream ?? tool.name).some((part) => SEND_PARTS.has(part));
+  return nameParts(tool.upstream ?? tool.name).some((part) => SEND_PARTS.has(part)) || isInviteTool(tool);
+}
+
+/**
+ * CF-GC-1 (Coordinator 2026-10-20): an outward tool that names an invite object (event, meeting, appointment, booking,
+ * calendar: GOOGLECALENDAR_CREATE_EVENT, create_meeting) invites its attendees, so it is a send tool for first contact: a new
+ * external attendee is held like a new Gmail recipient. Unlike a mail, an invite with NO attendees reaches nobody and runs.
+ */
+export function isInviteTool(tool: { name: string; upstream?: string; effect: Effect }): boolean {
+  return tool.effect === "outward" && namesInviteObject(tool.upstream ?? tool.name);
 }
 
 /**

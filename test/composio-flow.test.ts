@@ -13,6 +13,7 @@ import type { Json } from "@opt2-tealbrick/spec/sdk";
 import { AccountStore } from "../src/accounts.ts";
 import { type ConnectError, createConnectApp } from "../src/app.ts";
 import { allowedComposioOrigin, ComposioClient } from "../src/sources/composio/client.ts";
+import { classifyComposioTool, loadPolicies } from "../src/sources/composio/policy.ts";
 import { eventCtx, fakeFetch, handlerOf, publicCtx, root, secretsFor, testCtx, testDb } from "./helpers.ts";
 
 const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
@@ -50,6 +51,7 @@ function composioFake() {
     }),
     "POST /api/v3/tools/execute/GMAIL_FETCH_EMAILS": ({ body }) => ({ body: { successful: true, data: { messages: [{ id: "m1" }], echo: body } } }),
     "POST /api/v3/tools/execute/GMAIL_SEND_EMAIL": () => ({ body: { successful: true, data: { id: "sent1" } } }),
+    "POST /api/v3/tools/execute/GOOGLECALENDAR_CREATE_EVENT": () => ({ body: { successful: true, data: { id: "ev1" } } }),
   });
 }
 
@@ -278,4 +280,55 @@ test("X-02: a Gmail send to a new recipient is a held first contact; known recip
   const other = testCtx({ db: s.db, agent: OTHER, ws: WS, keys: { COMPOSIO_API_KEY: KEY }, access: { [work.id]: "read_update" } });
   await assert.rejects(dyn.call("gmail_send_email", { recipient_email: "friend@x.example" }, other), (e: ConnectError) => e.code === "first_contact_required");
   assert.equal(sends(), 2);
+});
+
+test("CF-GC-1: a calendar invite to a NEW external attendee is a held first contact; known attendees and no attendees run", async () => {
+  const s = setup();
+  await connectInbox(s, "Work inbox");
+  const work = new AccountStore(s.db).list().find((a) => a.label === "Work inbox");
+  assert.ok(work);
+  // The real class of the Composio calendar tool (googlecalendar policy): outward, not a send verb in its name.
+  const cls = classifyComposioTool("GOOGLECALENDAR_CREATE_EVENT", loadPolicies(join(root, "policies", "composio")).get("googlecalendar"));
+  assert.equal(cls.effect, "outward");
+  s.db
+    .prepare(
+      `INSERT INTO connect_tools (name, source, service, upstream, title, description, input_schema, crud, effect, hold_family, read_claim, updated_at)
+       VALUES ('googlecalendar_create_event', 'composio', 'gmail', 'GOOGLECALENDAR_CREATE_EVENT', 'Create event', 'Create a calendar event', '{"type":"object"}', ?, ?, ?, 0, 0)`,
+    )
+    .run(JSON.stringify(cls.crud), cls.effect, cls.holdFamily ?? null);
+  const dyn = s.app.dynamic?.tools;
+  assert.ok(dyn);
+  const me = testCtx({ db: s.db, agent: ME, ws: WS, keys: { COMPOSIO_API_KEY: KEY }, access: { [work.id]: "read_update" } });
+  const created = () => s.upstream.calls.filter((c) => c.url.pathname.endsWith("/GOOGLECALENDAR_CREATE_EVENT")).length;
+  assert.deepEqual(await dyn.resolve("googlecalendar_create_event__first_contact", me), {
+    tool: "googlecalendar_create_event__first_contact",
+    crud: cls.crud,
+    effect: "outward",
+    holdFamily: "first_contact",
+  });
+
+  // An invite to a NEW external attendee is held (first contact), nothing is created.
+  await assert.rejects(dyn.call("googlecalendar_create_event", { summary: "Call", attendees: ["stranger@ext.example"] }, me), (e: ConnectError) => {
+    assert.equal(e.code, "first_contact_required");
+    assert.deepEqual((e.details as { recipients: string[] }).recipients, ["stranger@ext.example"]);
+    return true;
+  });
+  assert.equal(created(), 0);
+  // An event with no attendees invites nobody: it runs.
+  await dyn.call("googlecalendar_create_event", { summary: "Focus time" }, me);
+  assert.equal(created(), 1);
+  // The owner approved the first contact once; the attendee is then known and later invites run.
+  await dyn.call("googlecalendar_create_event__first_contact", { summary: "Call", attendees: [{ email: "Friend <friend@ext.example>" }] }, me);
+  assert.equal(created(), 2);
+  await dyn.call("googlecalendar_create_event", { summary: "Follow-up", attendees: [{ email: "friend@ext.example" }] }, me);
+  assert.equal(created(), 3);
+  // A known attendee plus a new one: only the new one is named, nothing is created.
+  await assert.rejects(dyn.call("googlecalendar_create_event", { summary: "x", attendees: ["friend@ext.example", "new@ext.example"] }, me), (e: ConnectError) => {
+    assert.deepEqual((e.details as { recipients: string[] }).recipients, ["new@ext.example"]);
+    return true;
+  });
+  assert.equal(created(), 3);
+  // The hold view of the first-contact form names the attendee (default send view, no throw).
+  const view = await dyn.holdView?.("googlecalendar_create_event__first_contact", { summary: "Call", attendees: ["stranger@ext.example"] }, me);
+  assert.ok(view === null || JSON.stringify(view).includes("stranger@ext.example"));
 });
