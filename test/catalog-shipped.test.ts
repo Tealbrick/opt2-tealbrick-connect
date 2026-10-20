@@ -251,3 +251,25 @@ test("QA INFO (0.6.0): an upstream HTML error page reaches the agent only as its
   assert.equal(plainError("<html><body>no title</body></html>"), "HTML page");
   assert.equal(plainError("Bad <b>request</b>:\n  field   missing"), "Bad request : field missing");
 });
+
+test("CF-NC-2: Nextcloud WebDAV file paths may span folders (x-multi-segment); traversal, backslash and leading / are refused", () => {
+  const nc = app("nextcloud");
+  const ops = compile(nc.spec, nc.labels).operations;
+  const get = ops.find((o) => o.method === "get" && o.path === "/remote.php/dav/files/{user}/{path}");
+  assert.ok(get, "WebDAV download op");
+  assert.equal(get.parameters.find((p) => p.name === "path")?.multiSegment, true);
+  assert.notEqual(get.parameters.find((p) => p.name === "user")?.multiSegment, true, "user stays one segment");
+  const url = (path: unknown, user: unknown = "henry") =>
+    buildRequest({ baseUrl: "https://cloud.example.com", basePath: nc.basePathOverride ?? "", op: get, args: { path: { user, path } }, auth: { type: "basic" }, credentials: { username: "u", password: "p" } }).url.toString();
+  assert.equal(url("Documents/Q3 report/notes.md"), "https://cloud.example.com/remote.php/dav/files/henry/Documents/Q3%20report/notes.md");
+  assert.equal(url("notes.md"), "https://cloud.example.com/remote.php/dav/files/henry/notes.md");
+  assert.equal(url("Photos/"), "https://cloud.example.com/remote.php/dav/files/henry/Photos", "one trailing / (a folder) is dropped");
+  // a "%2F" typed inside a name stays part of the name, it never becomes a separator
+  assert.equal(url("a%2Fb/c.txt"), "https://cloud.example.com/remote.php/dav/files/henry/a%252Fb/c.txt");
+  for (const bad of ["../secret.txt", "Documents/../../etc", "a/./b", "a//b", "/abs/path", "a\\b", "%2e%2e/x", "", "Docs/%2E/x"]) {
+    assert.throws(() => url(bad), /argument_invalid|relative path|segment/u, JSON.stringify(bad));
+  }
+  // single-segment params keep refusing "/" (the user segment cannot climb)
+  assert.throws(() => url("notes.md", "../admin"), /single segment/u);
+  assert.throws(() => url("notes.md", "a/b"), /single segment/u);
+});

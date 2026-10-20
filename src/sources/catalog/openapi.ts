@@ -21,6 +21,8 @@ export interface Parameter {
   in: "path" | "query" | "header";
   required: boolean;
   schema: Record<string, unknown>;
+  /** CF-NC-2: a path param that may span "/" (OpenAPI `allowReserved: true` or the v1 overlay flag `x-multi-segment: true`) */
+  multiSegment?: boolean;
 }
 
 export interface CompiledOperation extends ToolClass {
@@ -219,7 +221,8 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
           const schema = inline(doc, swagger ? swaggerParamSchema(p) : (p.schema ?? {})) ?? {};
           // A header with a const/default is filled in at call time (http.ts headerDefault), so the agent may omit it.
           const filled = location === "header" && headerDefault({ in: location, schema }) !== undefined;
-          parameters.push({ name: String(p.name), in: location, required: location === "path" || (p.required === true && !filled), schema });
+          const multiSegment = location === "path" && (p.allowReserved === true || p["x-multi-segment"] === true);
+          parameters.push({ name: String(p.name), in: location, required: location === "path" || (p.required === true && !filled), schema, ...(multiSegment ? { multiSegment: true } : {}) });
         } else if (location === "body") {
           body = { contentType: "application/json", required: p.required === true, schema: inline(doc, p.schema ?? {}) ?? OPEN };
         } else if (location === "formData") {

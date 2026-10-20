@@ -77,6 +77,26 @@ function segment(value: unknown, name: string): string {
   return encodeURIComponent(text);
 }
 
+/**
+ * CF-NC-2: a multi-segment path value (a file path below a WebDAV root: "Documents/Q3 report/notes.md"). Split on "/", every
+ * segment checked like a single one and percent-encoded on its own, joined with "/". Refused: a leading "/", empty, "." and
+ * ".." segments (also percent-encoded dots), backslashes. One trailing "/" (a folder) is dropped. A "%2F" typed inside a name
+ * stays part of that name ("%252F"), so it never becomes a separator.
+ */
+function segments(value: unknown, name: string): string {
+  if (value === undefined || value === null || (typeof value !== "string" && typeof value !== "number")) {
+    throw new CatalogCallError("argument_invalid", `Path parameter ${name} is missing or not a string.`);
+  }
+  const text = String(value);
+  if (!text || text.startsWith("/") || text.includes("\\")) throw new CatalogCallError("argument_invalid", `Path parameter ${name} must be a relative path without backslashes.`);
+  const parts = (text.endsWith("/") ? text.slice(0, -1) : text).split("/");
+  for (const part of parts) {
+    const dots = part.replace(/%2e/giu, ".");
+    if (!part || dots === "." || dots === "..") throw new CatalogCallError("argument_invalid", `Path parameter ${name} has an empty, "." or ".." segment.`);
+  }
+  return parts.map((part) => encodeURIComponent(part)).join("/");
+}
+
 export function buildRequest(input: {
   baseUrl: string;
   basePath: string;
@@ -91,7 +111,8 @@ export function buildRequest(input: {
   const pathArgs = groups("path");
   const queryArgs = groups("query");
   const headerArgs = groups("header");
-  const path = input.op.path.replace(/\{([^}]+)\}/gu, (_m, name: string) => segment(pathArgs[name], name));
+  const multi = new Set(input.op.parameters.filter((p) => p.in === "path" && p.multiSegment).map((p) => p.name));
+  const path = input.op.path.replace(/\{([^}]+)\}/gu, (_m, name: string) => (multi.has(name) ? segments(pathArgs[name], name) : segment(pathArgs[name], name)));
   const url = new URL(base.origin);
   url.pathname = `${prefix}${path}`;
   const headers: Record<string, string> = { accept: "application/json" };
