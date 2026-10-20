@@ -165,7 +165,7 @@ test("Mautic: 168 exposed ops (v2 PATCH back since CF-CT-1), outward/destructive
     for (const o of ops) acc[key(o)] = (acc[key(o)] ?? 0) + 1;
     return acc;
   };
-  assert.deepEqual(count((o) => o.effect), { read: 67, write: 42, outward: 30, destructive: 29 });
+  assert.deepEqual(count((o) => o.effect), { read: 67, write: 33, outward: 39, destructive: 29 });
   assert.deepEqual(count((o) => o.method), { get: 67, post: 40, patch: 32, delete: 29 });
   const byId = new Map(ops.map((o) => [o.operationId, o]));
   for (const id of m.labels.outward ?? []) {
@@ -174,7 +174,11 @@ test("Mautic: 168 exposed ops (v2 PATCH back since CF-CT-1), outward/destructive
     assert.equal(o.effect, "outward", id);
     assert.equal(o.holdFamily, "outward", id);
   }
-  assert.equal((m.labels.outward ?? []).length, 30);
+  assert.equal((m.labels.outward ?? []).length, 39);
+  // review #20 S2: emails can broadcast, forms email submissions anywhere, pages/focus items publish HTML and redirects
+  for (const k of ["POST /api/v2/emails", "PATCH /api/v2/emails/{id}", "PATCH /api/emails/{id}/edit", "POST /api/v2/forms", "PATCH /api/v2/forms/{id}", "POST /api/v2/pages", "PATCH /api/v2/focus_items/{id}"]) {
+    assert.equal(ops.find((o) => `${o.method.toUpperCase()} ${o.path}` === k)?.effect, "outward", k);
+  }
   for (const o of ops.filter((x) => x.method === "delete")) {
     assert.equal(o.effect, "destructive", o.operationId);
     assert.equal(o.holdFamily, "destructive", o.operationId);
@@ -305,6 +309,7 @@ test("0.6.2 WebDAV: PROPFIND reads (Depth at most 1), MKCOL/COPY create, MOVE is
   const copy = by("copy", FILE);
   assert.deepEqual([copy.effect, copy.crud], ["write", ["create"]]);
   const move = by("move", FILE);
+  for (const op of [copy, by("move", FILE)]) assert.ok(!op.parameters.some((p) => p.name.toLowerCase() === "overwrite"), "Overwrite is not an agent input");
   assert.deepEqual([move.effect, move.crud, move.holdFamily], ["destructive", ["update", "delete"], "destructive"]);
   for (const op of [copy, move]) {
     const r = req(op, { Destination: "Archive/2026/a b.txt", Overwrite: "T" });
@@ -341,4 +346,17 @@ test("CF-CT-1: plain application/json is preferred; else the first declared JSON
   assert.equal(ops.a?.body?.contentType, "application/json");
   assert.equal(ops.b?.body?.contentType, "application/ld+json");
   assert.equal(ops.c, undefined, "an XML-only required body is not offered");
+});
+
+test("review #20 S3: compile and buildRequest agree on JSON types (json-seq and CRLF names are not JSON)", () => {
+  const spec = {
+    openapi: "3.0.3",
+    paths: {
+      "/s": { post: { operationId: "s", requestBody: { required: true, content: { "application/json-seq": { schema: { type: "object" } } } } } },
+      "/x": { post: { operationId: "x", requestBody: { required: true, content: { "application/json\r\nX-Evil: 1": { schema: { type: "object" } } } } } },
+    },
+  };
+  const ops = Object.fromEntries(compile(spec).operations.map((o) => [o.operationId, o]));
+  assert.equal(ops.s, undefined, "json-seq is not offered as JSON");
+  assert.equal(ops.x, undefined, "a CRLF content type is not offered");
 });

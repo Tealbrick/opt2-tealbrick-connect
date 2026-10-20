@@ -257,7 +257,8 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
         if (content) {
           // CF-CT-1: plain application/json first, then the first other JSON type the spec declares (merge-patch+json).
           const types = Object.keys(content);
-          const json = types.find((t) => /^application\/json\b/iu.test(t)) ?? types.find(isJsonType);
+          // Review #20 S3: the same JSON test as buildRequest (isJsonType), so compile and send never disagree.
+          const json = types.find((t) => isJsonType(t) && /^application\/json\s*(?:;|$)/iu.test(t)) ?? types.find(isJsonType);
           const form = types.find((t) => t.toLowerCase().startsWith("application/x-www-form-urlencoded"));
           const chosen = json ?? form;
           if (chosen) {
@@ -270,6 +271,11 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
         }
       }
       if (unsupported) continue;
+      // Review #20 S1: MOVE and COPY always send Overwrite: F (http.ts), so the spec's Overwrite input (which says T replaces
+      // the target) is not offered to the agent.
+      if (method === "move" || method === "copy") {
+        for (let i = parameters.length - 1; i >= 0; i--) if (parameters[i]?.in === "header" && parameters[i]?.name.toLowerCase() === "overwrite") parameters.splice(i, 1);
+      }
 
       const readMethod = READ_METHODS.has(method);
       const readByLabel = method === "post" && (labels.reads ?? []).some((pattern) => patternMatches(pattern, subject));

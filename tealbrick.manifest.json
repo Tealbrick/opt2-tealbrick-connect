@@ -2857,7 +2857,7 @@
     {
       "id": "catalog",
       "version": "0.3.1",
-      "sha256": "96769291000fe996d8d1fbc86bb01922cf71be389fdfdb12fc9c85432a5a4c02",
+      "sha256": "d5b8691f4264abde5006fdc9dce437ba7cf43bb5d9fb9116a7b62bb082bf01e6",
       "url": "https://github.com/Tealbrick/opt2-tealbrick-connect/releases/download/catalog-0.3.1/tealbrick-catalog-0.3.1.json.gz"
     }
   ],
