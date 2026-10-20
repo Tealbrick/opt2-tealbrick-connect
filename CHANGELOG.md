@@ -2,7 +2,7 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Proposed next version: 0.6.0 (new operations and a migration).
 
-## Unreleased (next after 0.6.0; prepared 2026-10-20, not tagged)
+## 0.6.1 (prepared 2026-10-20; tagged after 0.6.0 is stable)
 
 ### Catalog 0.3.0 (15 entries)
 - New: **Frappe CRM and Helpdesk** (`frappe-crm`, 65 ops: read 30, write 21, outward 4 = CRM email, ticket reply, ticket create/update that can mail the customer; destructive 10 = deletes, bulk delete, ticket merge). Token auth `token <key>:<secret>` for a dedicated API user with CRM/Helpdesk roles only. Staged by the Agents lane (provenance in coordination/leads/connect/catalog-staging/frappe-crm).
