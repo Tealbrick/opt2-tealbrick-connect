@@ -148,6 +148,15 @@ export function buildRequest(input: {
   return { url, init: { method: input.op.method.toUpperCase(), headers, body, redirect: "error" }, secrets };
 }
 
+/** QA INFO (0.6.0): an HTML error page reaches the agent only as its <title>; other text loses its tags and extra space. */
+export function plainError(text: string): string {
+  if (/<\s*(?:!doctype|html|head|body)\b/iu.test(text)) {
+    const title = /<title[^>]*>([^<]{0,200})<\/title>/iu.exec(text)?.[1]?.trim();
+    return title ? `HTML page "${title}"` : "HTML page";
+  }
+  return text.replace(/<[^>]{0,500}>/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
 export async function callOperation(input: Parameters<typeof buildRequest>[0] & { fetchImpl?: FetchLike; lookup?: Lookup; allowOrigins?: readonly string[] }): Promise<{ status: number; data: unknown }> {
   await assertEndpointAllowed(input.baseUrl, {
     schemes: ["https:"],
@@ -183,6 +192,9 @@ export async function callOperation(input: Parameters<typeof buildRequest>[0] & 
       data = text.slice(0, 4096);
     }
   } else data = text.slice(0, 64 * 1024);
-  if (!response.ok) throw new CatalogCallError(response.status === 401 || response.status === 403 ? "upstream_unauthorized" : "upstream_error", `Upstream answered ${response.status}: ${String(typeof data === "string" ? data : JSON.stringify(data)).slice(0, 500)}`, response.status);
+  if (!response.ok) {
+    const detail = typeof data === "string" ? plainError(data) : JSON.stringify(data);
+    throw new CatalogCallError(response.status === 401 || response.status === 403 ? "upstream_unauthorized" : "upstream_error", `Upstream answered ${response.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`, response.status);
+  }
   return { status: response.status, data };
 }

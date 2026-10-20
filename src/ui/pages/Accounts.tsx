@@ -124,6 +124,7 @@ export function Accounts() {
                   ownerName={agentName(account.ownerAgent)}
                   agents={agents.data ?? []}
                   onAgentsChanged={agents.reload}
+                  ownerRowsEffective={accounts.data?.ownerRowsEffective === true}
                   dataApps={accounts.data?.dataApps ?? []}
                   callersKnown={callersKnown}
                   onShared={() => accounts.reload()}
@@ -243,6 +244,7 @@ function AccountRow(props: {
   callersKnown: boolean;
   onShared(): Promise<void>;
   onAgentsChanged(): Promise<void>;
+  ownerRowsEffective: boolean;
   onRenamed(): void;
   onDisconnect(): void;
 }) {
@@ -299,7 +301,7 @@ function AccountRow(props: {
       )}
       {error ? <Notice tone="error">{error}</Notice> : null}
       {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
-      {account.status === "connected" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} /> : null}
+      {account.status === "connected" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} ownerRowsEffective={props.ownerRowsEffective} /> : null}
       {account.status === "connected" && account.source === "channel" && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
         <div className="tb-ctas">
@@ -347,7 +349,7 @@ function TestConnection({ id, label }: { id: string; label: string }) {
  * becomes the owner's own only on the owner's click ("Use this access"). When a level now allows more than the owner accepted
  * (an app update widened it), the extra actions are NOT used until the owner clicks "Accept".
  */
-function AgentAccess({ account, agents, onChanged }: { account: Account; agents: AgentInfo[]; onChanged?(): Promise<void> }) {
+function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }: { account: Account; agents: AgentInfo[]; onChanged?(): Promise<void>; ownerRowsEffective?: boolean }) {
   // Levels set in this session win over the (possibly unknown) list shape.
   const [local, setLocal] = useState<Record<string, Picked>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -382,7 +384,11 @@ function AgentAccess({ account, agents, onChanged }: { account: Account; agents:
   return (
     <fieldset className="tb-stack access">
       <legend className="tb-label access-legend">Agent access</legend>
-      <p className="tb-soft access-note">A level you choose here is the agent's own access to this account, also where its Portal grant allows less.</p>
+      <p className="tb-soft access-note">
+        {ownerRowsEffective
+          ? "A level you choose here is the agent's own access to this account, also where its Portal grant allows less."
+          : "A level you choose here is saved as the agent's own access. Above the Portal grant it takes effect after the bridge update to 0.2.4; until then the Portal grant still limits the agent."}
+      </p>
       {error ? <Notice tone="error">{error}</Notice> : null}
       {agents.map((agent) => {
         const row = local[agent.id] === undefined ? agent.rows[account.id] : undefined;
@@ -412,8 +418,9 @@ function AgentAccess({ account, agents, onChanged }: { account: Account; agents:
             {row && row.authority === "bounded" ? (
               <div className="acc-row acc-bounded">
                 <span className="access-note">
-                  {agent.name}'s Portal grant may allow less than this level. If you use this access, {agent.name} can {LEVEL_CRUD[row.level]} on this
-                  account, also where the Portal grant allows less.
+                  {ownerRowsEffective
+                    ? `${agent.name}'s Portal grant may allow less than this level. If you use this access, ${agent.name} can ${LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.`
+                    : `${agent.name}'s Portal grant may allow less than this level. If you use this access, Connect saves it as ${agent.name}'s own access (${LEVEL_CRUD[row.level]}); above the Portal grant it takes effect after the bridge update to 0.2.4.`}
                 </span>
                 <Button size="sm" variant="secondary" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesSet(agent.id, account.id, row.level))}>
                   Use this access
@@ -421,7 +428,9 @@ function AgentAccess({ account, agents, onChanged }: { account: Account; agents:
               </div>
             ) : row && row.authority === "owner" ? (
               <span className="tb-soft access-note">
-                Set in Connect: {agent.name} can {LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.
+                {ownerRowsEffective
+                  ? `Set in Connect: ${agent.name} can ${LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.`
+                  : `Your setting is saved. It takes effect after the bridge update to 0.2.4; until then the Portal grant still limits ${agent.name}.`}
               </span>
             ) : null}
           </div>

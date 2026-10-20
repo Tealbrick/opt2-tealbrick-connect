@@ -101,7 +101,8 @@ export type RelayOutcome = { relay: string; ok: true } | { relay: string; ok: fa
 
 export const servicesSearch = (query: string) => callOp<{ composioKey: boolean; catalogAvailable?: boolean; services: ServiceHit[] }>("services_search", { query });
 /** `callersKnown` false = this Connect build cannot list the installed apps yet (miniapp-sdk < 0.1.32): no share can be made. */
-export const accountsOverview = () => callOp<{ accounts: Account[]; dataApps?: DataApp[]; callersKnown?: boolean }>("accounts_overview", {});
+/** `ownerRowsEffective` false/absent = the workspace bridge does not admit owner rows above the Portal grant yet (QA-CON060-1). */
+export const accountsOverview = () => callOp<{ accounts: Account[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean }>("accounts_overview", {});
 export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null) =>
   callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", {
     account,

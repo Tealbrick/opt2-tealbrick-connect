@@ -244,3 +244,10 @@ test("Umami (catalog 0.3.0): 34 ops, all read; no collection, login, admin or /a
   for (const bad of ["/api/send", "/api/batch", "/api/me", "/api/auth/login", "/api/users", "/api/admin"]) assert.ok(!ops.some((o) => o.path.startsWith(bad)), bad);
   assert.equal(ops.find((o) => o.operationId === u.healthOperation)?.path, "/api/websites");
 });
+
+test("QA INFO (0.6.0): an upstream HTML error page reaches the agent only as its title; other text loses its tags", async () => {
+  const { plainError } = await import("../src/sources/catalog/http.ts");
+  assert.equal(plainError("<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><script>x()</script>secret-ish internals</body></html>"), 'HTML page "502 Bad Gateway"');
+  assert.equal(plainError("<html><body>no title</body></html>"), "HTML page");
+  assert.equal(plainError("Bad <b>request</b>:\n  field   missing"), "Bad request : field missing");
+});

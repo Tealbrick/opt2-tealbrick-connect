@@ -75,6 +75,12 @@ export interface ConnectEnv {
   dataDir?: string;
   /** Exact origins allowed for catalog/MCP base URLs without the public-address check (tests). */
   catalogAllowOrigins?: readonly string[];
+  /**
+   * QA-CON060-1: true when the workspace bridge admits owner rows above the Portal grant (C283 A1 bridge side: bridge 0.2.4 /
+   * 0.1.33+). The app cannot read the bridge version or capability yet (contracts request), so this is false unless set
+   * (tests); the UI and the hints then say an owner setting takes effect only after the bridge update.
+   */
+  bridgeOwnerRows?: boolean;
   allowRelayOrigins?: readonly string[];
   /** Tests: injected chat providers and channel network (production: channelProviders() + pinned fetch + WebSocket). */
   channelProviders?: Map<ChannelServiceId, ChannelProvider>;
@@ -409,7 +415,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const hidden = tools.filter((t) => !t.crud.every((a) => grantCrud.includes(a)));
         if (hidden.length > 0) {
           hints.push(
-            `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant.`,
+            env.bridgeOwnerRows === true
+              ? `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}). They are hidden unless the owner set your access to this account in Connect: ask the owner to set it there or to raise your Connect grant.`
+              : `${hidden.length} ${service} tool${hidden.length === 1 ? " needs" : "s need"} more than your Portal grant allows (need: ${need(hidden, (a) => grantCrud.includes(a)).join(", ")}): ask the owner to raise your Connect grant. An access setting in Connect takes effect only after the bridge update.`,
           );
         }
       }
@@ -1131,7 +1139,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const { callers, dataApps } = dataTargets(ctx);
       const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a)));
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
-      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx) } as unknown as Json;
+      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
