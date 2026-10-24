@@ -12,6 +12,7 @@ import type { CrudAction, DynamicCatalogEntry, DynamicResolution, DynamicSearchI
 import type { Caller, Db, DynamicHandlers, Handler, HandlerSpec, Json, Logger, OpContext, PublicHandler } from "@opt2-tealbrick/spec/sdk";
 
 import { type Account, AccountStore, CONNECTION_KINDS, type ConnectionKind } from "./accounts.ts";
+import { emojiMap, heldKey, pollBuzzActions, purgeBuzzActions, recordBuzzActions } from "./channels/buzz/actions.ts";
 import { BuzzIdentities, WORKSPACE_SENDER } from "./channels/buzz/identity.ts";
 import { parsePubkey } from "./channels/buzz/nostr.ts";
 import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
@@ -26,7 +27,7 @@ import {
   type MessageAction,
 } from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
-import { type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
+import { ACTIONS_EXPIRED_NOTE, type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
@@ -452,6 +453,30 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     if (!Number.isFinite(until) || until > now + ACTIONS_MAX_MS) fail("actions_invalid", "actionsUntil must be a time at most 30 days ahead.");
     // QA-CON23-2: a send that waited for the owner's approval (first contact) past actionsUntil still goes out, as text only
     return { product: product as string, instance: c.id, requestedAccount: String(i.account ?? ""), actions, expiresAt: until, expired: until <= now };
+  };
+  /**
+   * C343a: Buzz buttons = the recipient's signed ✅ / ❌ reaction (src/channels/buzz/actions.ts). One primary and at most
+   * one danger button; the app's token is bound to the `to` it sent to.
+   */
+  const buzzOrigin = (ctx: OpContext, i: Record<string, unknown>): ActionOrigin | undefined => {
+    const origin = actionOrigin(ctx, { ...i, account: i.to });
+    if (origin && !emojiMap(origin.actions)) fail("actions_invalid", "Buzz shows the buttons as reactions: give one primary (✅) and at most one danger (❌) button.");
+    // QA-CON27-1: a key Connect holds (an agent's or the workspace sender's) could sign its own approval: no reactions
+    const key = parsePubkey(String(i.to ?? ""));
+    if (origin && key && heldKey(ctx.db, key))
+      fail("actions_invalid", "This Buzz key belongs to an agent or the workspace sender in Connect, so it cannot approve by reaction. Send to the owner's own Buzz key.");
+    return origin;
+  };
+  /** Sends a Buzz DM, with reaction buttons when the app asked for them (and they have not expired). */
+  const buzzSend = async (ctx: OpContext, s: Services, sender: SenderUsed, i: Record<string, unknown>, to: string) => {
+    const origin = buzzOrigin(ctx, i);
+    const content = origin?.expired ? `${String(i.content ?? "")}\n\n${ACTIONS_EXPIRED_NOTE}` : String(i.content ?? "");
+    const sent = await s.relay.directMessage(sender.key, { to, content, ...relaysArg(i.relays) });
+    if (origin && !origin.expired) {
+      const owner = parsePubkey(to);
+      if (owner) await recordBuzzActions({ db: ctx.db, secrets: s.secrets, now: Date.now }, { sender: sender.key, owner, sent: sent.sent, origin });
+    }
+    return { sent, actions: origin ? (origin.expired ? ("expired" as const) : ("shown" as const)) : undefined };
   };
   const firstContactHint = (ctx: OpContext, op: string): string =>
     ctx.caller.type === "app"
@@ -1128,12 +1153,12 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const i = asInput(input);
           const s = services(ctx);
           const sender = await buzzSender(ctx, s);
-          const sent = await s.relay.directMessage(sender.key, { to: String(i.to ?? ""), content: String(i.content ?? ""), ...relaysArg(i.relays) });
+          const { sent, actions } = await buzzSend(ctx, s, sender, i, String(i.to ?? ""));
           rememberContact(ctx.db, sender.key, sent);
           for (const one of sent.sent) rememberBuzzSent(ctx.db, sender.key, one.id, one.channel);
           ctx.receipt.summary(`First Buzz DM to ${shortKey(sent.to)}${sender.kind === "workspace" ? " as the workspace sender" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), to: sent.to, channel: sent.channel });
-          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays };
+          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays, ...(actions ? { actions } : {}) };
         }),
       holdView: (input) => {
         const i = asInput(input);
@@ -1152,11 +1177,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const sender = await buzzSender(ctx, s);
           const known = ctx.db.prepare("SELECT 1 FROM connect_buzz_contacts WHERE agent = ? AND pubkey = ?").get(sender.key, to);
           if (!known) fail("buzz_first_contact_required", firstContactHint(ctx, "buzz_dm_first"), 409);
-          const sent = await s.relay.directMessage(sender.key, { to: to as string, content: String(i.content ?? ""), ...relaysArg(i.relays) });
+          const { sent, actions } = await buzzSend(ctx, s, sender, i, String(i.to ?? ""));
           for (const one of sent.sent) rememberBuzzSent(ctx.db, sender.key, one.id, one.channel);
           ctx.receipt.summary(`Buzz DM to ${shortKey(sent.to)}${sender.kind === "workspace" ? " as the workspace sender" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), to: sent.to, channel: sent.channel });
-          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays };
+          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays, ...(actions ? { actions } : {}) };
         }),
       redact: (input) => `Buzz DM to ${shortKey(String(asInput(input).to ?? ""))}`,
     },
@@ -1652,7 +1677,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     onStart: async (ctx) => {
       const s = services(ctx);
       // IN-2: button clicks are relayed with the start context (app-initiated calls, C85)
-      s.channels.setActionRelay(actionRelay((product, op, input, opts) => ctx.callApp(product, op, input, opts)));
+      const relayClick = actionRelay((product, op, input, opts) => ctx.callApp(product, op, input, opts));
+      s.channels.setActionRelay(relayClick);
       s.channels.startAll();
       await tetherBuzz(ctx.db, ctx.log);
       // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
@@ -1662,6 +1688,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         s.channels.purge();
         ctx.db.prepare("DELETE FROM connect_data_audit WHERE at < ?").run(Date.now() - 90 * 24 * 60 * 60 * 1000);
         await runDueBuzzPosts(ctx.db, s.relay, ctx.log);
+        // C343a: the owner's ✅ / ❌ reactions on Buzz alerts with buttons
+        await pollBuzzActions({ db: ctx.db, secrets: s.secrets, reader: s.relay, relay: relayClick, now: Date.now, log: ctx.log });
+        await purgeBuzzActions({ db: ctx.db, secrets: s.secrets, now: Date.now }, INBOX_RETENTION_MS);
       };
       const timer = setInterval(() => void tick().catch((e: unknown) => ctx.log.warn("scheduler tick failed", { code: (e as { code?: string }).code ?? "error" })), 15_000);
       timer.unref();
