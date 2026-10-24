@@ -1,4 +1,4 @@
-import { Button, Card, EmptyState, Select, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { Button, Card, EmptyState, Field, Select, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { type FormEvent, useMemo, useState } from "react";
 
 import { ConfirmDialog, KindBadge, LoadError, Notice, PageHead, ServiceTile, StatusLabel } from "../components.tsx";
@@ -15,11 +15,17 @@ import {
   agentsList,
   catalogAccountTest,
   type DataApp,
+  type DataLease,
   dataAccessLog,
+  databaseAccountConnect,
+  dataLeaseRevoke,
+  dataLeasesList,
   type McpToolRow,
   mcpToolReadSet,
   mcpToolsList,
   type ShareLevel,
+  type ShareRoute,
+  type SslMode,
   scopesAcceptOffer,
   scopesSet,
   toolsRefresh,
@@ -33,6 +39,22 @@ const SHARE_OPTIONS: { value: ShareLevel; label: string }[] = [
   { value: "shared", label: "Share messages (read only)" },
 ];
 
+// C336 RQ-3: a database is shared as a list of tables (available) or as a short lease on the read-only credential (shared).
+const DB_SHARE_OPTIONS: { value: ShareLevel; label: string }[] = [
+  { value: "none", label: "Not shared" },
+  { value: "available", label: "Table names only" },
+  { value: "shared", label: "Allow read-only access" },
+];
+const ROUTE_OPTIONS: { value: ShareRoute; label: string }[] = [
+  { value: "direct", label: "Directly, with a short lease" },
+  { value: "via_observer", label: "Only through Observer" },
+];
+const SSL_OPTIONS: { value: SslMode; label: string }[] = [
+  { value: "verify-full", label: "Encrypted, certificate checked" },
+  { value: "require", label: "Encrypted, certificate not checked" },
+  { value: "disable", label: "Not encrypted" },
+];
+
 // C276 (1): each level is named by its CRUD set, never a bare "Update".
 const LEVEL_OPTIONS: { value: Picked; label: string }[] = [
   { value: "none", label: "None" },
@@ -44,6 +66,7 @@ const LEVEL_OPTIONS: { value: Picked; label: string }[] = [
 export function Accounts() {
   const accounts = useLoad(accountsOverview);
   const access = useLoad(dataAccessLog);
+  const leases = useLoad(dataLeasesList);
   const agents = useLoad(agentsList);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -67,9 +90,10 @@ export function Accounts() {
     setError(null);
     try {
       await accountDisconnect(confirm.id);
-      setNotice(`“${confirm.label}” is disconnected. Agents lose access to it at once.`);
+      setNotice(confirm.source === "database" ? `“${confirm.label}” is disconnected. Its stored password is removed and every share and lease of it has ended.` : `“${confirm.label}” is disconnected. Agents lose access to it at once.`);
       setConfirm(null);
       await accounts.reload();
+      if (confirm.source === "database") void leases.reload();
     } catch (e) {
       setError(errorText(e));
       setConfirm(null);
@@ -84,6 +108,7 @@ export function Accounts() {
     .filter((a) => a.source === "channel" && a.status === "connected")
     .reduce((n, a) => n + (a.shares ?? []).filter((x) => x.instance === null).length, 0);
   const callersKnown = accounts.data?.callersKnown !== false;
+  const hasDatabase = (accounts.data?.accounts ?? []).some((a) => a.source === "database" && a.status === "connected");
 
   return (
     <section className="app-page" aria-label="Accounts">
@@ -103,7 +128,7 @@ export function Accounts() {
           Loading accounts.
         </p>
       ) : null}
-      {accounts.data && groups.length === 0 ? <EmptyState title="No accounts are connected yet.">Open Services to connect one.</EmptyState> : null}
+      {accounts.data && groups.length === 0 ? <EmptyState title="No accounts are connected yet.">Open Services to connect one, or add a database below.</EmptyState> : null}
       {agents.error ? <LoadError message={`Agents couldn’t be loaded: ${agents.error}`} busy={agents.loading} onRetry={() => void agents.reload()} /> : null}
 
       {groups.map(([service, list]) => (
@@ -113,7 +138,7 @@ export function Accounts() {
               <ServiceTile name={service} />
               {service}
             </h2>
-            {list.some((a) => a.status === "connected") ? <RefreshTools service={service} /> : null}
+            {list.some((a) => a.status === "connected" && a.source !== "database") ? <RefreshTools service={service} /> : null}
           </div>
           {list.some((a) => a.source === "mcp" && a.status === "connected") ? <McpTools service={service} /> : null}
           <ul className="cards cards-wide">
@@ -127,7 +152,10 @@ export function Accounts() {
                   ownerRowsEffective={accounts.data?.ownerRowsEffective === true}
                   dataApps={accounts.data?.dataApps ?? []}
                   callersKnown={callersKnown}
-                  onShared={() => accounts.reload()}
+                  onShared={async () => {
+                    await accounts.reload();
+                    void leases.reload();
+                  }}
                   onRenamed={() => {
                     setNotice(null);
                     void accounts.reload();
@@ -140,14 +168,35 @@ export function Accounts() {
         </section>
       ))}
 
-      {accounts.data && (accounts.data.accounts.some((a) => a.source === "channel") || (access.data?.entries.length ?? 0) > 0) ? (
-        <RecentAccess entries={access.data?.entries ?? null} error={access.error} busy={access.loading} onReload={() => void access.reload()} />
+      {accounts.data ? (
+        <AddDatabase
+          recommendation={accounts.data.databaseRecommendation ?? DEFAULT_DB_ADVICE}
+          onAdded={(label) => {
+            setError(null);
+            setNotice(`“${label}” is added. Share it with an app below.`);
+            void accounts.reload();
+          }}
+        />
+      ) : null}
+
+      {accounts.data && (hasDatabase || (leases.data?.leases.length ?? 0) > 0) ? (
+        <DataLeases leases={leases.data?.leases ?? null} error={leases.error} busy={leases.loading} onReload={() => void leases.reload()} />
+      ) : null}
+
+      {accounts.data && (accounts.data.accounts.some((a) => a.source === "channel" || a.source === "database") || (access.data?.entries.length ?? 0) > 0) ? (
+        <RecentAccess entries={access.data?.entries ?? null} error={access.error} busy={access.loading} databases={hasDatabase} onReload={() => void access.reload()} />
       ) : null}
 
       <ConfirmDialog
         open={confirm !== null}
-        title="Disconnect this account?"
-        body={<p>“{confirm?.label}” will be disconnected. Agents lose access to it at once. You can connect it again later.</p>}
+        title={confirm?.source === "database" ? "Disconnect this database?" : "Disconnect this account?"}
+        body={
+          confirm?.source === "database" ? (
+            <p>“{confirm.label}” will be disconnected. Connect removes the stored password and ends every share and lease of it. You can add it again later.</p>
+          ) : (
+            <p>“{confirm?.label}” will be disconnected. Agents lose access to it at once. You can connect it again later.</p>
+          )
+        }
         confirmLabel="Disconnect"
         busy={busy}
         onConfirm={() => void disconnect()}
@@ -294,15 +343,16 @@ function AccountRow(props: {
           <h3>{account.label}</h3>
           <div className="tb-row acct-tags">
             <StatusLabel status={account.status} />
-            <KindBadge kind={account.kind} />
+            {account.source === "database" ? null : <KindBadge kind={account.kind} />}
             {account.kind === "as_itself" && props.ownerName ? <span className="tb-muted">{props.ownerName}</span> : null}
           </div>
         </div>
       )}
       {error ? <Notice tone="error">{error}</Notice> : null}
       {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
-      {account.status === "connected" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} ownerRowsEffective={props.ownerRowsEffective} /> : null}
-      {account.status === "connected" && account.source === "channel" && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
+      {account.source === "database" && account.endpoint ? <p className="tb-soft">{account.endpoint} (Postgres). Agents never see this account; only the apps you share it with.</p> : null}
+      {account.status === "connected" && account.source !== "database" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} ownerRowsEffective={props.ownerRowsEffective} /> : null}
+      {account.status === "connected" && (account.source === "channel" || account.source === "database") && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
         <div className="tb-ctas">
           <Button size="sm" onClick={() => setEditing(true)} aria-label={`Rename ${account.label}`}>
@@ -460,11 +510,12 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
   const [picked, setPicked] = useState<Record<string, string>>({});
   const share = (app: DataApp) => account.shares?.find((x) => x.product === app.product);
 
-  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null) => {
+  const isDb = account.source === "database";
+  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null, route?: ShareRoute) => {
     setBusy(app.product);
     setError(null);
     try {
-      await accountAppShare(account.id, app.product, level, includeHistory, instance);
+      await accountAppShare(account.id, app.product, level, includeHistory, instance, isDb ? (route ?? "direct") : undefined);
       await onChanged();
     } catch (e) {
       setError(`${app.name}: ${errorText(e)}`);
@@ -492,14 +543,15 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
         const target = listed ? instances.find((i) => i.instance === bound?.instance) : (instances.find((i) => i.instance === pick) ?? instances[0]);
         const includeHistory = listed ? (bound?.includeHistory ?? false) : false;
         const isBusy = busy === app.product;
-        const options = SHARE_OPTIONS.map((o) => (o.value !== "none" && !target ? { ...o, disabled: true } : o));
+        const route: ShareRoute = bound?.route ?? "direct";
+        const options = (isDb ? DB_SHARE_OPTIONS : SHARE_OPTIONS).map((o) => (o.value !== "none" && !target ? { ...o, disabled: true } : o));
         const where = target?.ownInfra ? " (your own server)" : "";
         const setLevel = (v: ShareLevel) => {
           if (v === level) return;
           if (v === "none") return void change(app, "none", false, null);
           if (!target) return;
           // the same instance keeps its history choice; another instance is a new share (history unticked)
-          void change(app, v, target.instance === bound?.instance ? includeHistory : false, target.instance);
+          void change(app, v, target.instance === bound?.instance ? includeHistory : false, target.instance, target.instance === bound?.instance ? route : "direct");
         };
         return (
           <div key={app.product} className="acc-row">
@@ -516,13 +568,25 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
                   onValueChange={(v) => {
                     if (listed && level !== "none") {
                       // moving a live share to another instance is a new share: history starts unticked
-                      if (v !== bound?.instance) void change(app, level, false, v);
+                      if (v !== bound?.instance) void change(app, level, false, v, "direct");
                     } else setPicked((p) => ({ ...p, [app.product]: v }));
                   }}
                 />
               </>
             ) : null}
-            {level === "shared" && listed ? (
+            {isDb && app.product === "knowledge" && level !== "none" && listed ? (
+              <>
+                <span className="tb-soft">How {app.name} reaches it</span>
+                <Select
+                  aria-label={`How ${app.name} reaches ${account.label}`}
+                  options={ROUTE_OPTIONS}
+                  value={route}
+                  disabled={isBusy}
+                  onValueChange={(v) => v !== route && void change(app, level, false, bound?.instance ?? null, v as ShareRoute)}
+                />
+              </>
+            ) : null}
+            {!isDb && level === "shared" && listed ? (
               <label className="tb-row">
                 <input
                   type="checkbox"
@@ -534,11 +598,11 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
                 <span className="tb-soft">Include the last 30 days</span>
               </label>
             ) : null}
-            {unlisted || unknown ? null : <p className="tb-soft acc-note">{shareSentence(level, includeHistory, bound?.setAt)}</p>}
+            {unlisted || unknown ? null : <p className="tb-soft acc-note">{isDb ? dbShareSentence(level, route, app.name) : shareSentence(level, includeHistory, bound?.setAt)}</p>}
             {legacy && callersKnown ? <p className="tb-soft acc-note">Share again — this app must be chosen again after the update.</p> : null}
             {unlisted ? <p className="tb-soft acc-note">This app instance was removed; it can no longer read.</p> : null}
             {!callersKnown ? <p className="tb-soft acc-note">Sharing with apps needs the next Connect update.</p> : null}
-            {callersKnown && instances.length === 0 && !unlisted ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share this account with it.`}</p> : null}
+            {callersKnown && instances.length === 0 && !unlisted ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share ${isDb ? "this database" : "this account"} with it.`}</p> : null}
             {target?.ownInfra ? (
               <p className="tb-soft acc-note">{`This ${app.name} runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server.`}</p>
             ) : null}
@@ -567,6 +631,14 @@ function instanceLabel(i: { instance: string; name: string; provider: string | n
   return `${i.name} · ${where} · …${i.instance.slice(-6)}`;
 }
 
+/** One plain sentence per level and route for a database: what the app really gets (C336). */
+function dbShareSentence(level: ShareLevel, route: ShareRoute, app: string): string {
+  if (level === "none") return "This app sees nothing of this database. Pick a level to share; you can revoke it at any time.";
+  if (route === "via_observer") return `${app} gets nothing from this database. Only Observer reads it, and only if you share it with Observer directly. You can change this at any time.`;
+  if (level === "available") return "This app sees the names of the tables and views, their columns and types, and about how many rows each holds. It sees no values. You can stop sharing at any time.";
+  return `This app may ask Connect for a short lease (up to 15 minutes) on the read-only user you stored. It then connects to your database itself and can read the tables it names. Connect lists every lease below. Stopping the share or changing it ends the open leases in Connect; the password stays valid in your database until you change it there.`;
+}
+
 /** One plain sentence per sharing level: what the app really gets (S3-3). */
 function shareSentence(level: ShareLevel, includeHistory: boolean, setAt: string | undefined): string {
   if (level === "available") return "This app sees the name and message count of every conversation of this bot, for the whole log Connect holds, and no message text. You can stop sharing at any time.";
@@ -582,6 +654,7 @@ const ACCESS_OPS: Record<string, string> = {
   data_accounts_list: "Listed the shared accounts",
   data_catalog: "Read names and counts",
   data_pull: "Read messages",
+  data_lease: "Leased database access",
 };
 const REFUSED_TEXT: Record<string, string> = {
   not_found: "Not shared with this app",
@@ -601,7 +674,7 @@ function accessWhen(iso: string): string {
  * C230 R3 (S3-2): which app asked Connect for chat data, newest first, the last 100 calls. The owner only. No message text.
  * A refusal repeated within a minute is one line with a count.
  */
-function RecentAccess({ entries, error, busy, onReload }: { entries: AccessEntry[] | null; error: string | null; busy: boolean; onReload(): void }) {
+function RecentAccess({ entries, error, busy, databases = false, onReload }: { entries: AccessEntry[] | null; error: string | null; busy: boolean; databases?: boolean; onReload(): void }) {
   return (
     <section className="tb-stack" aria-labelledby="recent-access">
       <div className="group-head">
@@ -610,7 +683,11 @@ function RecentAccess({ entries, error, busy, onReload }: { entries: AccessEntry
           Refresh
         </Button>
       </div>
-      <p className="tb-soft">The last 100 times an app asked Connect for the messages of your chat accounts. Connect keeps this record for 90 days.</p>
+      <p className="tb-soft">
+        {databases
+          ? "The last 100 times an app asked Connect for the messages of your chat accounts or for access to your databases. Connect keeps this record for 90 days."
+          : "The last 100 times an app asked Connect for the messages of your chat accounts. Connect keeps this record for 90 days."}
+      </p>
       {error ? <LoadError message={error} busy={busy} onRetry={onReload} /> : null}
       {entries === null ? (
         error ? null : (
@@ -619,7 +696,7 @@ function RecentAccess({ entries, error, busy, onReload }: { entries: AccessEntry
           </p>
         )
       ) : entries.length === 0 ? (
-        <EmptyState title="No app has asked for your chat messages yet." />
+        <EmptyState title={databases ? "No app has asked for your data yet." : "No app has asked for your chat messages yet."} />
       ) : (
         <Table>
           <thead>
@@ -637,12 +714,200 @@ function RecentAccess({ entries, error, busy, onReload }: { entries: AccessEntry
               <tr key={e.id}>
                 <td className="num">{accessWhen(e.at)}</td>
                 <td>{e.app ?? (e.callerType === "app" ? "Unverified app" : e.callerType === "agent" ? "An agent" : e.callerType)}</td>
-                <td>{ACCESS_OPS[e.op] ?? e.op}</td>
+                <td>
+                  {ACCESS_OPS[e.op] ?? e.op}
+                  {e.leaseId ? <span className="tb-soft">{` · lease ends ${accessWhen(e.leaseExpiresAt ?? e.at)} · ${tablesText(e.datasets ?? [])}`}</span> : null}
+                </td>
                 <td>{e.account ?? ""}</td>
                 <td className="num">{e.op === "data_pull" && e.ok ? e.rows : ""}</td>
                 <td>
                   <Tag status={e.ok ? "live" : "default"}>{e.ok ? "Served" : `Refused: ${REFUSED_TEXT[e.outcome] ?? e.outcome}`}</Tag>
                   {e.repeats > 0 ? <span className="tb-soft">{` and ${e.repeats} more in the same minute`}</span> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </section>
+  );
+}
+
+/** Shown when an older Connect answers without the text. The server sends the same advice. */
+const DEFAULT_DB_ADVICE = "Use a dedicated read-only database user: SELECT on the tables you want to share and nothing else (no INSERT, UPDATE, DELETE, no REPLICATION, not a superuser).";
+
+const EMPTY_DB_FORM = { label: "", host: "", port: "5432", database: "", user: "", password: "", sslmode: "verify-full" as SslMode };
+
+/**
+ * C336 RQ-3: the owner adds a Postgres database for apps. The form goes to Connect once; the password is sealed there and
+ * never shown again. Connect refuses a private address, a superuser and a replication role, and reads table and column names
+ * only. Agents never see a database account.
+ */
+function AddDatabase({ recommendation, onAdded }: { recommendation: string; onAdded(label: string): void }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY_DB_FORM);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (key: keyof typeof EMPTY_DB_FORM, value: string) => setForm((f) => ({ ...f, [key]: value }));
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const port = form.port.trim() === "" ? 5432 : Number(form.port);
+    if (!form.label.trim() || !form.host.trim() || !form.database.trim() || !form.user.trim() || !form.password) return setError("Fill in the name, host, database, user and password.");
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return setError("The port must be a number from 1 to 65535.");
+    setBusy(true);
+    setError(null);
+    try {
+      await databaseAccountConnect({ label: form.label.trim(), host: form.host.trim(), port, database: form.database.trim(), user: form.user.trim(), password: form.password, sslmode: form.sslmode });
+      const label = form.label.trim();
+      setForm(EMPTY_DB_FORM);
+      setOpen(false);
+      onAdded(label);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="tb-stack" aria-labelledby="add-database">
+      <div className="group-head">
+        <h2 id="add-database">Databases</h2>
+        {open ? null : (
+          <Button size="sm" onClick={() => setOpen(true)}>
+            Add a database
+          </Button>
+        )}
+      </div>
+      <p className="tb-soft">Let an app such as Knowledge read tables of your Postgres database. Agents never see a database. You choose which app gets which tables.</p>
+      {open ? (
+        <Card as="div" className="acct">
+         <form className="tb-stack" aria-label="Add a database" onSubmit={submit}>
+          <Notice>{recommendation} Connect refuses a superuser or a replication role, and it connects only to public addresses.</Notice>
+          {error ? <Notice tone="error">{error}</Notice> : null}
+          <Field label="Name">
+            <TextInput value={form.label} onChange={(e) => set("label", e.target.value)} maxLength={60} disabled={busy} />
+          </Field>
+          <Field label="Host">
+            <TextInput value={form.host} onChange={(e) => set("host", e.target.value)} autoComplete="off" disabled={busy} />
+          </Field>
+          <Field label="Port">
+            <TextInput value={form.port} onChange={(e) => set("port", e.target.value)} inputMode="numeric" disabled={busy} />
+          </Field>
+          <Field label="Database">
+            <TextInput value={form.database} onChange={(e) => set("database", e.target.value)} autoComplete="off" disabled={busy} />
+          </Field>
+          <Field label="User">
+            <TextInput value={form.user} onChange={(e) => set("user", e.target.value)} autoComplete="off" disabled={busy} />
+          </Field>
+          <Field label="Password">
+            <TextInput type="password" value={form.password} onChange={(e) => set("password", e.target.value)} autoComplete="new-password" disabled={busy} />
+          </Field>
+          <p className="tb-hint">Connect stores the password sealed and never shows it again.</p>
+          <Field label="Encryption">
+            <Select aria-label="Encryption of the database connection" options={SSL_OPTIONS} value={form.sslmode} onValueChange={(v) => set("sslmode", v)} disabled={busy} />
+          </Field>
+          {form.sslmode === "verify-full" ? null : <Notice>{form.sslmode === "disable" ? "The password and the data travel without encryption." : "The connection is encrypted, but Connect does not check who answers."} Use this only when your database cannot present a valid certificate.</Notice>}
+          <div className="tb-ctas">
+            <Button type="submit" variant="primary" disabled={busy}>
+              Add database
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => {
+                setOpen(false);
+                setForm(EMPTY_DB_FORM);
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+         </form>
+        </Card>
+      ) : null}
+    </section>
+  );
+}
+
+const tablesText = (datasets: string[]): string => (datasets.length <= 3 ? datasets.join(", ") : `${datasets.slice(0, 3).join(", ")} and ${datasets.length - 3} more`);
+const LEASE_STATE: Record<DataLease["state"], string> = { active: "Active", revoked: "Ended by you", expired: "Expired" };
+
+/**
+ * C336 RQ-3: every lease an app asked for, newest first. v0 is honest about what a lease is: the read-only password you stored,
+ * handed to the app for a few minutes. "End lease" ends it in Connect and in this list; the password itself stays valid in the
+ * database until the owner changes it there.
+ */
+function DataLeases({ leases, error, busy, onReload }: { leases: DataLease[] | null; error: string | null; busy: boolean; onReload(): void }) {
+  const [ending, setEnding] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const end = async (lease: DataLease) => {
+    setEnding(lease.id);
+    setFailure(null);
+    try {
+      await dataLeaseRevoke(lease.id);
+      onReload();
+    } catch (e) {
+      setFailure(errorText(e));
+    } finally {
+      setEnding(null);
+    }
+  };
+  return (
+    <section className="tb-stack" aria-labelledby="data-leases">
+      <div className="group-head">
+        <h2 id="data-leases">Database leases</h2>
+        <Button size="sm" disabled={busy} onClick={onReload}>
+          Refresh
+        </Button>
+      </div>
+      <p className="tb-soft">
+        A lease gives an app the read-only password you stored, for at most 15 minutes. Ending a lease marks it ended in Connect, but the password stays valid in your
+        database. To cut access at once, change that user’s password in your database and add the database again.
+      </p>
+      {error ? <LoadError message={error} busy={busy} onRetry={onReload} /> : null}
+      {failure ? <Notice tone="error">{failure}</Notice> : null}
+      {leases === null ? (
+        error ? null : (
+          <p className="tb-soft" role="status">
+            Loading leases.
+          </p>
+        )
+      ) : leases.length === 0 ? (
+        <EmptyState title="No app has asked for a lease yet." />
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <th>Given</th>
+              <th>App</th>
+              <th>Database</th>
+              <th>Tables</th>
+              <th>Ends</th>
+              <th>State</th>
+              <th>
+                <span className="tb-sr">Action</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {leases.map((l) => (
+              <tr key={l.id}>
+                <td className="num">{accessWhen(l.issuedAt)}</td>
+                <td>{l.app}</td>
+                <td>{l.accountLabel}</td>
+                <td>{tablesText(l.datasets)}</td>
+                <td className="num">{accessWhen(l.expiresAt)}</td>
+                <td>
+                  <Tag status={l.state === "active" ? "live" : "default"}>{LEASE_STATE[l.state]}</Tag>
+                </td>
+                <td>
+                  {l.state === "active" ? (
+                    <Button size="sm" disabled={ending === l.id} onClick={() => void end(l)} aria-label={`End the lease of ${l.app} on ${l.accountLabel}`}>
+                      End lease
+                    </Button>
+                  ) : null}
                 </td>
               </tr>
             ))}

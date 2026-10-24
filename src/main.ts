@@ -10,6 +10,7 @@ import { defineApp, startApp, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 
 import { createConnectApp } from "./app.ts";
+import { defaultDatabaseDrivers } from "./data/pg-driver.ts";
 
 const root = join(import.meta.dirname, "..");
 const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
@@ -23,6 +24,7 @@ const running = await startApp(
       buzzRelays: process.env.CONNECT_BUZZ_RELAYS ?? null,
       // C133: the old single-relay setting is no longer read; only its presence is reported (clear owner error).
       oldBuzzRelaySettingPresent: Boolean(process.env.CONNECT_BUZZ_RELAY_URL?.trim()),
+      databaseDrivers: defaultDatabaseDrivers(),
       ErrorClass: TbError,
     }),
   ),
