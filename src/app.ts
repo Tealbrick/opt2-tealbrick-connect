@@ -449,8 +449,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     if (new Set(actions.map((a) => a.value)).size !== actions.length) fail("actions_invalid", "Each button needs its own value.");
     const now = Date.now();
     const until = i.actionsUntil === undefined ? now + ACTIONS_DEFAULT_MS : Date.parse(String(i.actionsUntil));
-    if (!Number.isFinite(until) || until <= now || until > now + ACTIONS_MAX_MS) fail("actions_invalid", "actionsUntil must be a future time at most 30 days ahead.");
-    return { product: product as string, instance: c.id, requestedAccount: String(i.account ?? ""), actions, expiresAt: until };
+    if (!Number.isFinite(until) || until > now + ACTIONS_MAX_MS) fail("actions_invalid", "actionsUntil must be a time at most 30 days ahead.");
+    // QA-CON23-2: a send that waited for the owner's approval (first contact) past actionsUntil still goes out, as text only
+    return { product: product as string, instance: c.id, requestedAccount: String(i.account ?? ""), actions, expiresAt: until, expired: until <= now };
   };
   const firstContactHint = (ctx: OpContext, op: string): string =>
     ctx.caller.type === "app"

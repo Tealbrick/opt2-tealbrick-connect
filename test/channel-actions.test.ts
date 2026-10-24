@@ -208,7 +208,14 @@ test("channel_dm / channel_dm_first: only a verified companion app may add butto
   await assert.rejects(run("channel_dm_first", { ...base, actions: [] }), isCode("actions_invalid"));
   await assert.rejects(run("channel_dm_first", { ...base, actions: [{ label: "A", value: "has space" }] }), isCode("actions_invalid"));
   await assert.rejects(run("channel_dm_first", { ...base, actions: [actions[0], actions[0]] }), isCode("actions_invalid"));
-  await assert.rejects(run("channel_dm_first", { ...base, actions, actionsUntil: "2020-01-01T00:00:00Z" }), isCode("actions_invalid"));
+  await assert.rejects(run("channel_dm_first", { ...base, actions, actionsUntil: "not a time" }), isCode("actions_invalid"));
+  await assert.rejects(run("channel_dm_first", { ...base, actions, actionsUntil: "2099-01-01T00:00:00Z" }), isCode("actions_invalid"));
+  // QA-CON23-2: buttons that expired while the send waited for approval → the text goes alone, with a note
+  const late = (await run("channel_dm_first", { ...base, actions, actionsUntil: "2020-01-01T00:00:00Z" })) as { actions: string };
+  assert.equal(late.actions, "expired");
+  assert.equal(w.sent.at(-1)?.actions, undefined);
+  assert.match(String(w.sent.at(-1)?.text), /buttons of this message expired/u);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_channel_actions").get()?.n, 0);
   const out = (await run("channel_dm_first", { ...base, actions })) as { actions: string };
   assert.equal(out.actions, "shown");
   const plain = (await run("channel_dm", base)) as Record<string, unknown>;
@@ -386,4 +393,62 @@ test("slack socket: an interactive envelope is acked and reaches the action sink
   assert.deepEqual(socket.sent, ['{"envelope_id":"e1"}', '{"envelope_id":"e2"}', '{"envelope_id":"e3"}']);
   abort.abort();
   await running;
+});
+
+test("telegram: the poll asks for callback_query updates only when an action sink is given (QA-CON23-1)", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const run = async (withSink: boolean) => {
+    const abort = new AbortController();
+    const net: ChannelNet = {
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+        const method = String(input).split("/").at(-1) ?? "";
+        if (method === "getUpdates") {
+          bodies.push(JSON.parse(String(init?.body ?? "{}")));
+          abort.abort();
+        }
+        return new Response(JSON.stringify({ ok: true, result: method === "getWebhookInfo" ? { url: "" } : [] }), { headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+      webSocket: () => {
+        throw new Error("no ws");
+      },
+      now: () => 0,
+      sleep: async () => undefined,
+    };
+    const inbound = telegramProvider.inbound as Extract<ChannelProvider["inbound"], { kind: "socket" | "poll" }>;
+    await inbound.run({ bot_token: "123456:AAfaketesttoken" }, net, { botId: "999", botName: "bot" }, () => {}, abort.signal, withSink ? () => {} : undefined);
+  };
+  await run(true);
+  await run(false);
+  assert.deepEqual(bodies[0]?.allowed_updates, ["message", "channel_post", "edited_message", "edited_channel_post", "callback_query"]);
+  assert.deepEqual(bodies[1]?.allowed_updates, ["message", "channel_post", "edited_message", "edited_channel_post"]);
+});
+
+test("telegram poll: a callback_query update reaches the action sink, not the message sink", async () => {
+  const abort = new AbortController();
+  const clicks: InboundAction[] = [];
+  const messages: unknown[] = [];
+  let n = 0;
+  const net: ChannelNet = {
+    fetch: (async (input: string | URL) => {
+      const method = String(input).split("/").at(-1) ?? "";
+      if (method === "getUpdates" && ++n > 1) abort.abort();
+      const result =
+        method === "getWebhookInfo"
+          ? { url: "" }
+          : n === 1
+            ? [{ update_id: 1, callback_query: { id: "cbq1", from: { id: 42, is_bot: false }, message: { message_id: 7, date: 1, chat: { id: 42, type: "private" }, text: "Post?" }, data: VALUE_A } }]
+            : [];
+      return new Response(JSON.stringify({ ok: true, result }), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch,
+    webSocket: () => {
+      throw new Error("no ws");
+    },
+    now: () => 0,
+    sleep: async () => undefined,
+  };
+  const inbound = telegramProvider.inbound as Extract<ChannelProvider["inbound"], { kind: "socket" | "poll" }>;
+  await inbound.run({ bot_token: "123456:AAfaketesttoken" }, net, { botId: "999", botName: "bot" }, (m) => messages.push(m), abort.signal, (a) => clicks.push(a));
+  assert.equal(clicks.length, 1);
+  assert.equal(clicks[0]?.ackId, "cbq1");
+  assert.equal(messages.length, 0);
 });

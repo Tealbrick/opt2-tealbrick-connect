@@ -1497,7 +1497,7 @@
           "actionsUntil": {
             "type": "string",
             "maxLength": 40,
-            "description": "Until when a click is relayed (ISO time, at most 30 days ahead; default 24 hours)."
+            "description": "Until when a click is relayed (ISO time, at most 30 days ahead; default 24 hours). Already passed when the send runs (after a long approval wait): the text goes alone with a note, actions expired."
           }
         },
         "required": [
@@ -1523,9 +1523,10 @@
             "type": "string",
             "enum": [
               "shown",
-              "unsupported"
+              "unsupported",
+              "expired"
             ],
-            "description": "Only when buttons were asked for."
+            "description": "Only when buttons were asked for. expired: actionsUntil passed before the send ran (it waited for approval); the text went alone with a note."
           }
         }
       },
@@ -1600,7 +1601,7 @@
           "actionsUntil": {
             "type": "string",
             "maxLength": 40,
-            "description": "Until when a click is relayed (ISO time, at most 30 days ahead; default 24 hours)."
+            "description": "Until when a click is relayed (ISO time, at most 30 days ahead; default 24 hours). Already passed when the send runs (after a long approval wait): the text goes alone with a note, actions expired."
           }
         },
         "required": [
@@ -1626,9 +1627,10 @@
             "type": "string",
             "enum": [
               "shown",
-              "unsupported"
+              "unsupported",
+              "expired"
             ],
-            "description": "Only when buttons were asked for."
+            "description": "Only when buttons were asked for. expired: actionsUntil passed before the send ran (it waited for approval); the text went alone with a note."
           }
         }
       },

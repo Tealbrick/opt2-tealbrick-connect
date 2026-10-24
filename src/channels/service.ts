@@ -60,7 +60,12 @@ export interface ActionOrigin {
   requestedAccount: string;
   actions: readonly MessageAction[];
   expiresAt: number;
+  /** actionsUntil passed before the send ran (it waited for approval): the text goes alone, with a note */
+  expired?: boolean;
 }
+
+/** The line added to a message whose buttons expired before it was sent. */
+export const ACTIONS_EXPIRED_NOTE = "(The buttons of this message expired before it was sent. Use the app that sent it.)";
 
 /** IN-2: what the sending app answered for one click. `final` = the decision is made (or can never be made from here). */
 export interface RelayOutcome {
@@ -400,15 +405,16 @@ export class ChannelHub {
     account: Account,
     agent: string,
     input: { person: string; text: string; first: boolean; origin?: ActionOrigin },
-  ): Promise<{ messageId: string; conversation: string; actions?: "shown" | "unsupported" }> {
+  ): Promise<{ messageId: string; conversation: string; actions?: "shown" | "unsupported" | "expired" }> {
     const provider = this.provider(account.service);
     const known = this.#knownPerson(account, input.person);
     if (!input.first && !known) throw new ChannelError("channel_first_contact_required", "You have not written to this person before. Use channel_dm_first; the owner approves first contact.", 409);
-    const text = this.#checkText(provider, input.text);
+    const expired = input.origin?.expired === true;
+    const text = this.#checkText(provider, expired ? `${input.text}\n\n${ACTIONS_EXPIRED_NOTE}` : input.text);
     const creds = await this.#creds(account);
     const conversation = known ?? (await provider.openDirect(creds, this.#d.net, { personId: input.person })).conversation;
     // IN-2: buttons only where the provider can answer a click (Slack, Telegram); elsewhere the text goes alone
-    const origin = input.origin && provider.actionDone ? input.origin : undefined;
+    const origin = input.origin && !expired && provider.actionDone ? input.origin : undefined;
     const out = await provider.send(creds, this.#d.net, { conversation, text, ...(origin ? { actions: origin.actions } : {}) });
     await this.#recordSent(account, conversation, out.messageId, agent);
     if (origin) {
@@ -424,7 +430,7 @@ export class ChannelHub {
     this.#d.db
       .prepare("INSERT OR IGNORE INTO connect_channel_contacts (account_id, person_id, conversation, first_sent_at) VALUES (?, ?, ?, ?)")
       .run(account.id, input.person, conversation, Date.now());
-    return { messageId: out.messageId, conversation, ...(input.origin ? { actions: origin ? ("shown" as const) : ("unsupported" as const) } : {}) };
+    return { messageId: out.messageId, conversation, ...(input.origin ? { actions: expired ? ("expired" as const) : origin ? ("shown" as const) : ("unsupported" as const) } : {}) };
   }
 
   // ── button clicks (IN-2) ──
