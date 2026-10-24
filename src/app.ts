@@ -1408,14 +1408,14 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const row = s.tools.get(name);
         if (row?.source !== "mcp") fail("tool_unknown", "No MCP tool with that name is connected.", 404);
         const tool = row as NonNullable<typeof row>;
-        const confirmed = ownerReadOf(ctx.db, name);
-        if (i.read === true && !tool.readClaim && !confirmed) fail("tool_not_read_only", notConfirmableText(tool), 409);
+        // QA-CONNECT22-3: confirming needs the server's CURRENT read-only claim (stored at the last tool sync), also for a tool
+        // the owner confirmed before; an earlier confirmation never stands in for it
+        if (i.read === true && !tool.readClaim) fail("tool_not_read_only", notConfirmableText(tool), 409);
         if (i.read === true) ctx.db.prepare("INSERT INTO connect_tool_owner_reads (name, set_at) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET set_at = excluded.set_at").run(name, Date.now());
         else ctx.db.prepare("DELETE FROM connect_tool_owner_reads WHERE name = ?").run(name);
         // Re-class at once from the stored facts: owner read → read; withdrawn → the name inference (server hint not trusted).
         const cls = classifyMcpTool(tool.upstream, i.read === true ? { readOnlyHint: true } : undefined, i.read === true);
         s.tools.setClass(name, cls);
-        if (i.read !== true) ctx.db.prepare("UPDATE connect_tools SET read_claim = 1 WHERE name = ? AND effect != 'read'").run(name);
         return { name, effect: cls.effect, ownerConfirmedRead: i.read === true };
       });
     },
