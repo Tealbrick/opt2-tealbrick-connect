@@ -84,11 +84,44 @@ export function mentionList(ids: Iterable<string>): string[] {
 
 export type InboundSink = (message: InboundMessage) => void;
 
+/**
+ * IN-2: one button under a message. `value` is opaque to Connect (the sending app signs it); ≤ 64 ASCII characters, the
+ * Telegram callback_data limit. Only a companion app (workspace sender) attaches buttons; an agent cannot.
+ */
+export interface MessageAction {
+  label: string;
+  value: string;
+  style: "primary" | "danger";
+}
+export const MAX_ACTIONS = 3;
+export const ACTION_LABEL_MAX = 30;
+export const ACTION_VALUE = /^[A-Za-z0-9._:-]{1,64}$/u;
+
+/** IN-2: a click on a button of a message the bot sent, as the provider reports it (untrusted until the hub matched it). */
+export interface InboundAction {
+  conversation: string;
+  /** the message the button belongs to */
+  messageId: string;
+  /** the provider user id of the person who clicked */
+  clickerId: string;
+  /** the provider marks the clicker as a bot */
+  clickerIsBot?: true;
+  value: string;
+  /** what `actionDone` needs to answer this click (Telegram callback_query id); null when the provider needs none */
+  ackId: string | null;
+  /** the message text as the provider shows it now (for the final edit), cleaned */
+  text: string;
+}
+
+export type ActionSink = (action: InboundAction) => void;
+
 export interface SendInput {
   conversation: string;
   text: string;
   /** reply in this thread (Slack thread_ts, Teams reply-to activity id, Telegram/Discord message id) */
   threadId?: string | null;
+  /** IN-2: buttons; only providers with `actionDone` show them (the hub checks the list first) */
+  actions?: readonly MessageAction[];
 }
 
 export interface ChannelProvider {
@@ -117,6 +150,16 @@ export interface ChannelProvider {
   edit(creds: ChannelCredentials, net: ChannelNet, input: { conversation: string; messageId: string; text: string }): Promise<void>;
   delete(creds: ChannelCredentials, net: ChannelNet, input: { conversation: string; messageId: string }): Promise<void>;
   react(creds: ChannelCredentials, net: ChannelNet, input: { conversation: string; messageId: string; emoji: string }): Promise<void>;
+  /**
+   * IN-2: answers a click. `final` = the decision is made: remove the buttons and add `notice` as a status line to the
+   * message (`text` = the message text without buttons). Not final: only the clicker sees `notice`; the buttons stay.
+   * A provider without it never shows buttons (Teams, Discord: text only).
+   */
+  actionDone?(
+    creds: ChannelCredentials,
+    net: ChannelNet,
+    input: { conversation: string; messageId: string; clickerId: string; ackId: string | null; text: string; notice: string; final: boolean },
+  ): Promise<void>;
   /** Open (or reuse) the direct conversation with one person; returns its conversation id. */
   openDirect(creds: ChannelCredentials, net: ChannelNet, input: { personId: string }): Promise<{ conversation: string }>;
   /**
@@ -126,7 +169,11 @@ export interface ChannelProvider {
    * returns the messages it carries; the app exposes it on a manifest public route.
    */
   inbound:
-    | { kind: "socket" | "poll"; run(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity, sink: InboundSink, signal: AbortSignal): Promise<void> }
+    | {
+        kind: "socket" | "poll";
+        /** `actions` (IN-2): button clicks, for providers with `actionDone`; absent = clicks are dropped */
+        run(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity, sink: InboundSink, signal: AbortSignal, actions?: ActionSink): Promise<void>;
+      }
     | {
         kind: "webhook";
         verifyWebhook(

@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { applyLevelCrud, LEVEL_CRUD_ENV, parseLevelCrud } from "@opt2-tealbrick/conformance";
 import { defineApp, startApp, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json, OpContext } from "@opt2-tealbrick/spec/sdk";
@@ -21,7 +22,9 @@ import { SenderStore } from "./src/senders.ts";
 import { classifyComposioTool, loadPolicies } from "./src/sources/composio/policy.ts";
 import { entrySchema, ToolRegistry, toolName } from "./src/tools.ts";
 
-const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "tealbrick.manifest.json"), "utf8")) as Manifest;
+// A21 (conformance >= 0.1.25, C283b/C283c): the suite simulates an app update that widens or narrows an access level
+// through TBCONF_LEVEL_CRUD; the harness serves the manifest with that change applied (absent or malformed = unchanged).
+const manifest = applyLevelCrud(JSON.parse(readFileSync(join(import.meta.dirname, "tealbrick.manifest.json"), "utf8")) as Manifest, parseLevelCrud(process.env[LEVEL_CRUD_ENV]));
 /** Sentinel `sendAt` of the capsAgent setup step in tealbrick-conformance.json. */
 const CONFORMANCE_SEND_AT = "conformance:in-one-hour";
 const TEST_RELAY = "wss://relay.conformance.example";

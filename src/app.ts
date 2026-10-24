@@ -15,9 +15,18 @@ import { type Account, AccountStore, CONNECTION_KINDS, type ConnectionKind } fro
 import { BuzzIdentities, WORKSPACE_SENDER } from "./channels/buzz/identity.ts";
 import { parsePubkey } from "./channels/buzz/nostr.ts";
 import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
-import { ChannelError, type ChannelNet, type ChannelProvider, type ChannelService as ChannelServiceId } from "./channels/provider.ts";
+import {
+  ACTION_LABEL_MAX,
+  ACTION_VALUE,
+  ChannelError,
+  type ChannelNet,
+  type ChannelProvider,
+  type ChannelService as ChannelServiceId,
+  MAX_ACTIONS,
+  type MessageAction,
+} from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
-import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
+import { type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
@@ -39,6 +48,36 @@ import { newId } from "./util/ids.ts";
 import { NetPolicyError } from "./util/net-policy.ts";
 import { pinnedFetch } from "./util/pinned-fetch.ts";
 import { scrubSecrets } from "./util/redact.ts";
+
+/** IN-2: buttons work for this long when the app names no `actionsUntil`, and never longer than the max. */
+const ACTIONS_DEFAULT_MS = 24 * 3600 * 1000;
+const ACTIONS_MAX_MS = 30 * 24 * 3600 * 1000;
+/** IN-2: the op a click is relayed to, per sending product (each one is a Connect companion in the manifest). */
+export const ACTION_CALLBACKS: Readonly<Record<string, string>> = { inbox: "item_decide_dm" };
+/** Refusals of the app that end the buttons (the decision is made, or can never be made from this message). */
+const FINAL_REFUSALS = new Set(["token_used", "token_expired", "token_invalid", "token_locked", "already_decided", "item_expired", "item_not_found", "stale_version", "buttons_off", "decide_in_inbox"]);
+
+/** IN-2: relays one click to the sending app through the start context's callApp and turns the answer into a notice. */
+export function actionRelay(callApp: (product: string, op: string, input: Json, opts?: { idempotencyKey?: string }) => Promise<unknown>, now: () => number = Date.now): ActionRelay {
+  return async (product, input, idempotencyKey) => {
+    const op = ACTION_CALLBACKS[product];
+    if (!op) return { final: false, notice: "This button cannot be used from the chat." };
+    try {
+      const r = (await callApp(product, op, input as unknown as Json, { idempotencyKey })) as { status?: string; output?: { response?: string } };
+      if (r?.status !== "ok") return { final: false, notice: "Could not decide now. Open Operator Inbox." };
+      const at = new Date(now()).toISOString().slice(11, 16);
+      const verb = r.output?.response === "approve" ? "Approved" : r.output?.response === "deny" ? "Denied" : "Answered";
+      return { final: true, notice: `${verb} by you at ${at} UTC.` };
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      const message = error instanceof Error ? error.message.slice(0, 200) : "";
+      if (typeof code === "string" && FINAL_REFUSALS.has(code)) return { final: true, notice: message || "This button no longer works. Open Operator Inbox." };
+      if (code === "wrong_person") return { final: false, notice: "Only the person this alert went to can decide here." };
+      if (code === "no_grant" || code === "grant_stale" || code === "app_not_found") return { final: false, notice: "Open Operator Inbox in the Portal to decide." };
+      return { final: false, notice: "Could not decide now. Try again, or open Operator Inbox." };
+    }
+  };
+}
 
 export const PRODUCT_SCOPE = "account";
 /** Characters of a Buzz post a hold view shows (a hold view over 16 000 characters is refused by the SDK). */
@@ -386,6 +425,33 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       // fall through
     }
     return fail("cursor_invalid", "cursor is not one this op returned.");
+  };
+  /**
+   * IN-2: buttons on a DM (`actions`, `actionsUntil`). Only a companion app with a verified product attaches them (it signs
+   * the values; Connect only relays a click back to it). An agent is refused. Absent = no buttons.
+   */
+  const actionOrigin = (ctx: OpContext, i: Record<string, unknown>): ActionOrigin | undefined => {
+    if (i.actions === undefined && i.actionsUntil === undefined) return undefined;
+    const c = ctx.caller;
+    const product = c.type === "app" && typeof c.product === "string" && c.product !== "" ? c.product : null;
+    if (c.type !== "app") fail("actions_apps_only", "Only a companion app can add buttons to a message.", 403);
+    if (product === null) fail("caller_unverified", "The calling app has no verified product, so it cannot add buttons.", 403);
+    const list = Array.isArray(i.actions) ? i.actions : [];
+    if (list.length < 1 || list.length > MAX_ACTIONS) fail("actions_invalid", `Give 1 to ${MAX_ACTIONS} buttons.`);
+    const actions: MessageAction[] = list.map((raw) => {
+      const a = raw as Record<string, unknown>;
+      const label = typeof a.label === "string" ? a.label.trim() : "";
+      const value = typeof a.value === "string" ? a.value : "";
+      if (!label || label.length > ACTION_LABEL_MAX) fail("actions_invalid", `A button label has 1 to ${ACTION_LABEL_MAX} characters.`);
+      if (!ACTION_VALUE.test(value)) fail("actions_invalid", "A button value has 1 to 64 characters: letters, digits, . _ : -");
+      return { label, value, style: a.style === "danger" ? "danger" : "primary" };
+    });
+    if (new Set(actions.map((a) => a.value)).size !== actions.length) fail("actions_invalid", "Each button needs its own value.");
+    const now = Date.now();
+    const until = i.actionsUntil === undefined ? now + ACTIONS_DEFAULT_MS : Date.parse(String(i.actionsUntil));
+    if (!Number.isFinite(until) || until > now + ACTIONS_MAX_MS) fail("actions_invalid", "actionsUntil must be a time at most 30 days ahead.");
+    // QA-CON23-2: a send that waited for the owner's approval (first contact) past actionsUntil still goes out, as text only
+    return { product: product as string, instance: c.id, requestedAccount: String(i.account ?? ""), actions, expiresAt: until, expired: until <= now };
   };
   const firstContactHint = (ctx: OpContext, op: string): string =>
     ctx.caller.type === "app"
@@ -992,7 +1058,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const { account, ...sender } = chatSender(ctx, s, i.account);
           ctx.receipt.summary(`First ${account.service} DM via ${account.label}${sender.kind === "workspace" ? " (workspace sender)" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), service: account.service, account: account.label, person: String(i.person ?? "").slice(-60) });
-          return s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: true });
+          const origin = actionOrigin(ctx, i);
+          return s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: true, ...(origin ? { origin } : {}) });
         }),
       holdView: (input) => {
         const i = asInput(input);
@@ -1009,7 +1076,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           ctx.receipt.summary(`${account.service} DM via ${account.label}${sender.kind === "workspace" ? " (workspace sender)" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), service: account.service, account: account.label });
           try {
-            return await s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: false });
+            const origin = actionOrigin(ctx, i);
+            return await s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: false, ...(origin ? { origin } : {}) });
           } catch (error) {
             if (error instanceof ChannelError && error.code === "channel_first_contact_required") fail(error.code, firstContactHint(ctx, "channel_dm_first"), 409);
             throw error;
@@ -1583,6 +1651,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     publicRoutes: { [COMPOSIO_CALLBACK_PATH]: composioCallback, [MCP_CALLBACK_PATH]: mcpCallback, [TEAMS_WEBHOOK_PATH]: teamsWebhook },
     onStart: async (ctx) => {
       const s = services(ctx);
+      // IN-2: button clicks are relayed with the start context (app-initiated calls, C85)
+      s.channels.setActionRelay(actionRelay((product, op, input, opts) => ctx.callApp(product, op, input, opts)));
       s.channels.startAll();
       await tetherBuzz(ctx.db, ctx.log);
       // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
