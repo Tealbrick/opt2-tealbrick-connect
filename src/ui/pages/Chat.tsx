@@ -10,7 +10,8 @@ type Service = ChannelProviderInfo["service"];
 
 const NAMES: Record<Service, string> = { slack: "Slack", teams: "Microsoft Teams", telegram: "Telegram", discord: "Discord" };
 const HELP: Record<Service, string> = {
-  slack: "Create a Slack app with Socket Mode on, install it, then paste the bot token (xoxb-…) and the app-level token (xapp-…, scope connections:write).",
+  slack:
+    "Create a Slack app with Socket Mode and Interactivity on, install it, then paste the bot token (xoxb-…) and the app-level token (xapp-…, scope connections:write). Interactivity lets you use the Approve and Deny buttons of Operator Inbox alerts.",
   teams: "Create a single-tenant Azure Bot. Set its messaging endpoint to your workspace door: https://<bridge>/p/connect/inbound/teams.",
   telegram: "Create a bot with @BotFather and paste its token. People must start a chat with the bot before it can message them.",
   discord: "Create a bot in the Discord developer portal, invite it to your server, paste its token.",

@@ -10,6 +10,7 @@
  * Errors: Slack `ok:false` codes map to stable `ChannelError` codes; tokens are scrubbed from every message.
  */
 import {
+  type ActionSink,
   type BotIdentity,
   type ChannelCredentials,
   ChannelError,
@@ -17,8 +18,10 @@ import {
   type ChannelProvider,
   type Conversation,
   cleanInboundText,
+  type InboundAction,
   type InboundMessage,
   type InboundSink,
+  type MessageAction,
   mentionList,
   scrub,
 } from "../provider.ts";
@@ -49,6 +52,10 @@ const EVENT_ID = /^Ev[A-Za-z0-9]{2,40}$/u;
 const EMOJI = /^:?([a-z0-9_+'-]{1,100}(?:::skin-tone-[2-6])?):?$/u;
 const CURSOR = /^[A-Za-z0-9=+/_-]{1,512}$/u;
 const SLACK_ERROR = /^[a-z0-9_.-]{1,64}$/u;
+/** Slack: a section block holds at most 3000 characters; the full text stays in the message `text`. */
+const SECTION_MAX = 3000;
+const ACTION_ID = /^tb_act_[0-2]$/u;
+const ACTION_TS = /^[0-9]{1,12}\.[0-9]{1,8}$/u;
 const SCOPE_LIST = /^[a-z:._-]{1,64}(?:,[a-z:._-]{1,64}){0,9}$/u;
 
 /** The Slack app manifest the owner pastes at api.slack.com/apps → "Create New App" → "From an app manifest". */
@@ -86,6 +93,8 @@ export const SLACK_APP_MANIFEST = {
     event_subscriptions: {
       bot_events: ["message.channels", "message.groups", "message.im", "app_mention"],
     },
+    // IN-2: button clicks (Approve / Deny on an Operator Inbox alert) arrive as Socket Mode `interactive` envelopes
+    interactivity: { is_enabled: true },
   },
 } as const;
 
@@ -94,6 +103,7 @@ const METHOD_SCOPE: Record<string, string> = {
   "chat.postMessage": "chat:write",
   "chat.update": "chat:write",
   "chat.delete": "chat:write",
+  "chat.postEphemeral": "chat:write",
   "reactions.add": "reactions:write",
   "conversations.open": "im:write",
   "conversations.list": "channels:read,groups:read",
@@ -114,6 +124,50 @@ export function escapeSlackText(text: string): string {
 
 function decodeSlackText(text: string): string {
   return text.replace(/&lt;/gu, "<").replace(/&gt;/gu, ">").replace(/&amp;/gu, "&");
+}
+
+/** IN-2: the message as a section block plus one actions block (button i has action_id tb_act_<i>). */
+export function actionBlocks(escapedText: string, actions: readonly MessageAction[]): unknown[] {
+  return [
+    { type: "section", text: { type: "mrkdwn", text: escapedText.length > SECTION_MAX ? `${escapedText.slice(0, SECTION_MAX - 1)}…` : escapedText } },
+    {
+      type: "actions",
+      block_id: "tb_actions",
+      elements: actions.map((a, i) => ({ type: "button", action_id: `tb_act_${i}`, text: { type: "plain_text", text: a.label, emoji: false }, value: a.value, style: a.style })),
+    },
+  ];
+}
+
+/**
+ * IN-2: one Socket Mode `interactive` payload → the click, or null. Only `block_actions` on a message, from this team,
+ * by a user (U…/W…), on one of OUR buttons (action_id tb_act_<n>) are read; everything else is ignored.
+ */
+export function parseSlackAction(payload: unknown, bot: BotIdentity): { key: string; action: InboundAction } | null {
+  const p = asRecord(payload);
+  if (p?.type !== "block_actions") return null;
+  if (typeof bot.workspace !== "string" || asRecord(p.team)?.id !== bot.workspace) return null;
+  const user = asRecord(p.user)?.id;
+  if (typeof user !== "string" || !USER_ID.test(user) || user === bot.botId) return null;
+  const container = asRecord(p.container);
+  const channel = asRecord(p.channel)?.id ?? container?.channel_id;
+  const message = asRecord(p.message);
+  const ts = message?.ts ?? container?.message_ts;
+  if (typeof channel !== "string" || !CONVERSATION_ID.test(channel) || typeof ts !== "string" || !TS.test(ts)) return null;
+  const actions = Array.isArray(p.actions) ? p.actions : [];
+  const a = asRecord(actions[0]);
+  if (actions.length !== 1 || !a || typeof a.action_id !== "string" || !ACTION_ID.test(a.action_id) || typeof a.value !== "string") return null;
+  const actionTs = typeof a.action_ts === "string" && ACTION_TS.test(a.action_ts) ? a.action_ts : "";
+  return {
+    key: `action:${channel}:${ts}:${user}:${actionTs}`,
+    action: {
+      conversation: channel,
+      messageId: ts,
+      clickerId: user,
+      value: a.value.slice(0, 200),
+      ackId: null,
+      text: cleanInboundText(decodeSlackText(typeof message?.text === "string" ? message.text : "")).trim(),
+    },
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -363,6 +417,7 @@ function runSocket(
   sink: InboundSink,
   dedupe: ReplayGuard,
   signal: AbortSignal,
+  actions?: ActionSink,
 ): Promise<SocketEnd> {
   return new Promise((resolve) => {
     let hello = false;
@@ -412,6 +467,14 @@ function runSocket(
         hello = true;
       } else if (envelope.type === "disconnect") {
         finish("disconnect");
+      } else if (envelope.type === "interactive" && actions) {
+        const parsed = parseSlackAction(envelope.payload, bot);
+        if (!parsed || !dedupe.firstSeen(parsed.key)) return;
+        try {
+          actions(parsed.action);
+        } catch {
+          // a sink failure never drops the connection
+        }
       } else if (envelope.type === "events_api") {
         const parsed = parseSlackEvent(envelope.payload, bot, net.now);
         if (!parsed) return;
@@ -461,7 +524,7 @@ async function pause(net: ChannelNet, ms: number, signal: AbortSignal): Promise<
  * Socket Mode loop: `apps.connections.open` (app token) → wss URL → socket. A `disconnect` envelope reconnects at
  * once; a dropped socket or failed open reconnects after a capped, jittered backoff. A rejected app token throws.
  */
-async function runSocketMode(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity, sink: InboundSink, signal: AbortSignal): Promise<void> {
+async function runSocketMode(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity, sink: InboundSink, signal: AbortSignal, actions?: ActionSink): Promise<void> {
   const token = appToken(creds);
   const dedupe = new ReplayGuard(SLACK_EVENT_DEDUPE_TTL_MS, SLACK_EVENT_DEDUPE_MAX_ENTRIES, net.now);
   let failures = 0;
@@ -480,7 +543,7 @@ async function runSocketMode(creds: ChannelCredentials, net: ChannelNet, bot: Bo
       await pause(net, backoffMs(failures), signal);
       continue;
     }
-    const end = await runSocket(url, net, bot, sink, dedupe, signal);
+    const end = await runSocket(url, net, bot, sink, dedupe, signal, actions);
     if (end.reason === "abort" || signal.aborted) return;
     if (end.hello) failures = 0;
     if (end.reason === "disconnect" && end.hello) continue;
@@ -557,11 +620,12 @@ export const slackProvider: ChannelProvider = {
       const channel = conversationId(input.conversation);
       const text = outboundText(input.text);
       const threadTs = input.threadId == null ? undefined : messageTs(input.threadId, "thread id");
+      const blocks = input.actions?.length ? JSON.stringify(actionBlocks(text, input.actions)) : undefined;
       const body = await slackCall(
         net,
         token,
         "chat.postMessage",
-        { channel, text, thread_ts: threadTs, mrkdwn: true, parse: "none", link_names: false, unfurl_links: false },
+        { channel, text, thread_ts: threadTs, mrkdwn: true, parse: "none", link_names: false, unfurl_links: false, blocks },
         creds,
       );
       if (typeof body.ts !== "string" || !TS.test(body.ts)) {
@@ -598,6 +662,26 @@ export const slackProvider: ChannelProvider = {
       await slackCall(net, token, "reactions.add", { channel, timestamp, name }, creds, { okErrors: ["already_reacted"] });
     }),
 
+  actionDone: (creds, net, input) =>
+    withScrub(creds, async () => {
+      const token = botToken(creds);
+      const channel = conversationId(input.conversation);
+      const notice = escapeSlackText(input.notice.slice(0, 300));
+      if (!input.final) {
+        if (!USER_ID.test(input.clickerId)) return;
+        await slackCall(net, token, "chat.postEphemeral", { channel, user: input.clickerId, text: notice, parse: "none", link_names: false }, creds);
+        return;
+      }
+      const ts = messageTs(input.messageId);
+      const text = escapeSlackText(input.text.slice(0, SECTION_MAX - 1) || " ");
+      // the buttons go: the message keeps its text and gets the decision as a context line
+      const blocks = [
+        { type: "section", text: { type: "mrkdwn", text } },
+        { type: "context", elements: [{ type: "mrkdwn", text: notice }] },
+      ];
+      await slackCall(net, token, "chat.update", { channel, ts, text: `${text}\n\n${notice}`, blocks: JSON.stringify(blocks), parse: "none", link_names: false }, creds);
+    }),
+
   openDirect: (creds, net, input) =>
     withScrub(creds, async () => {
       const token = botToken(creds);
@@ -616,6 +700,6 @@ export const slackProvider: ChannelProvider = {
   reports: { edits: true, deletions: true },
   inbound: {
     kind: "socket",
-    run: (creds, net, bot, sink, signal) => withScrub(creds, () => runSocketMode(creds, net, bot, sink, signal)),
+    run: (creds, net, bot, sink, signal, actions) => withScrub(creds, () => runSocketMode(creds, net, bot, sink, signal, actions)),
   },
 };

@@ -5,6 +5,7 @@
  * long-running inbound workers (socket / long-poll) plus webhook delivery (Teams, via a manifest public route).
  * Credentials: SDK app secrets (`account:<id>`), never the database; never logged.
  */
+import { createHash } from "node:crypto";
 import type { AppSecrets } from "@opt2-tealbrick/miniapp-sdk";
 import type { Db, Logger } from "@opt2-tealbrick/spec/sdk";
 
@@ -16,7 +17,9 @@ import {
   ChannelError,
   type ChannelNet,
   type ChannelProvider,
+  type InboundAction,
   type InboundMessage,
+  type MessageAction,
   type ChannelService as ServiceId,
 } from "./provider.ts";
 
@@ -49,6 +52,27 @@ export interface ChannelDeps {
   log?: Logger;
 }
 
+/** IN-2: who sent a message with buttons, and until when a click may be relayed. */
+export interface ActionOrigin {
+  product: string;
+  instance: string;
+  /** the `account` input of the send (the app binds its token to it) */
+  requestedAccount: string;
+  actions: readonly MessageAction[];
+  expiresAt: number;
+}
+
+/** IN-2: what the sending app answered for one click. `final` = the decision is made (or can never be made from here). */
+export interface RelayOutcome {
+  final: boolean;
+  notice: string;
+}
+export type ActionRelay = (product: string, input: { token: string; clicker: { service: string; id: string }; account: string }, idempotencyKey: string) => Promise<RelayOutcome>;
+
+/** A `busy` click older than this is taken as lost (the app never answered) and the message opens again. */
+export const ACTION_BUSY_MS = 2 * 60_000;
+const hashValue = (v: string) => createHash("sha256").update(v).digest("base64url");
+
 type BotRow = BotIdentity & { settings: Record<string, string>; inboundState: string; inboundDetail: string; unmatchedChanges: number };
 
 function parseMentions(value: unknown): string[] {
@@ -68,6 +92,7 @@ export function isChannelService(value: string): value is ServiceId {
 export class ChannelHub {
   readonly #d: ChannelDeps;
   readonly #workers = new Map<string, AbortController>();
+  #relay: ActionRelay | null = null;
 
   constructor(deps: ChannelDeps) {
     this.#d = deps;
@@ -371,20 +396,95 @@ export class ChannelHub {
     return this.send(account, agent, { conversation: row.conversation, text: input.text, threadId });
   }
 
-  async directMessage(account: Account, agent: string, input: { person: string; text: string; first: boolean }): Promise<{ messageId: string; conversation: string }> {
+  async directMessage(
+    account: Account,
+    agent: string,
+    input: { person: string; text: string; first: boolean; origin?: ActionOrigin },
+  ): Promise<{ messageId: string; conversation: string; actions?: "shown" | "unsupported" }> {
     const provider = this.provider(account.service);
     const known = this.#knownPerson(account, input.person);
     if (!input.first && !known) throw new ChannelError("channel_first_contact_required", "You have not written to this person before. Use channel_dm_first; the owner approves first contact.", 409);
     const text = this.#checkText(provider, input.text);
     const creds = await this.#creds(account);
     const conversation = known ?? (await provider.openDirect(creds, this.#d.net, { personId: input.person })).conversation;
-    const out = await provider.send(creds, this.#d.net, { conversation, text });
+    // IN-2: buttons only where the provider can answer a click (Slack, Telegram); elsewhere the text goes alone
+    const origin = input.origin && provider.actionDone ? input.origin : undefined;
+    const out = await provider.send(creds, this.#d.net, { conversation, text, ...(origin ? { actions: origin.actions } : {}) });
     await this.#recordSent(account, conversation, out.messageId, agent);
+    if (origin) {
+      const now = this.#d.net.now();
+      this.#d.db
+        .prepare(
+          `INSERT OR REPLACE INTO connect_channel_actions (account_id, conversation, message_id, product, instance, requested_account, value_hashes, expires_at, state, result, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?)`,
+        )
+        .run(account.id, conversation, out.messageId, origin.product, origin.instance, origin.requestedAccount, JSON.stringify(origin.actions.map((a) => hashValue(a.value))), origin.expiresAt, now, now);
+    }
     this.#rememberConversation(account.id, conversation, `Direct: ${input.person.slice(-24)}`, "direct");
     this.#d.db
       .prepare("INSERT OR IGNORE INTO connect_channel_contacts (account_id, person_id, conversation, first_sent_at) VALUES (?, ?, ?, ?)")
       .run(account.id, input.person, conversation, Date.now());
-    return { messageId: out.messageId, conversation };
+    return { messageId: out.messageId, conversation, ...(input.origin ? { actions: origin ? ("shown" as const) : ("unsupported" as const) } : {}) };
+  }
+
+  // ── button clicks (IN-2) ──
+
+  /** The app wires the relay at start (it needs the start context's callApp). Until then a click is answered "not ready". */
+  setActionRelay(relay: ActionRelay | null): void {
+    this.#relay = relay;
+  }
+
+  /**
+   * One click. Relayed only when it hits a message we sent with buttons, with one of its buttons, before expiry, while
+   * the message is open; the first click that ends in a decision closes it. The clicker always gets an answer.
+   */
+  async action(account: Account, a: InboundAction): Promise<void> {
+    if (a.clickerIsBot) return;
+    const provider = this.provider(account.service);
+    const done = provider.actionDone;
+    if (!done) return;
+    const creds = await this.#creds(account);
+    const answer = async (notice: string, final: boolean) => {
+      try {
+        await done(creds, this.#d.net, { conversation: a.conversation, messageId: a.messageId, clickerId: a.clickerId, ackId: a.ackId, text: a.text, notice, final });
+      } catch (error) {
+        this.#d.log?.warn("channel action answer failed", { service: account.service, code: (error as { code?: string }).code ?? "error" });
+      }
+    };
+    const db = this.#d.db;
+    const now = this.#d.net.now();
+    const row = db.prepare("SELECT * FROM connect_channel_actions WHERE account_id = ? AND conversation = ? AND message_id = ?").get(account.id, a.conversation, a.messageId);
+    const hash = hashValue(a.value);
+    if (!row || !(JSON.parse(String(row.value_hashes)) as string[]).includes(hash)) return answer("This button does not work here.", false);
+    if (row.state === "done") return answer(row.result ? String(row.result) : "This was already decided.", false);
+    const key = [account.id, a.conversation, a.messageId] as const;
+    if (Number(row.expires_at) <= now) {
+      const notice = "This button expired. Open Operator Inbox to decide.";
+      db.prepare("UPDATE connect_channel_actions SET state = 'done', result = ?, updated_at = ? WHERE account_id = ? AND conversation = ? AND message_id = ?").run(notice, now, ...key);
+      return answer(notice, true);
+    }
+    const claimed = db
+      .prepare(
+        "UPDATE connect_channel_actions SET state = 'busy', updated_at = ? WHERE account_id = ? AND conversation = ? AND message_id = ? AND (state = 'open' OR (state = 'busy' AND updated_at < ?))",
+      )
+      .run(now, ...key, now - ACTION_BUSY_MS).changes;
+    if (claimed !== 1) return answer("This is being handled.", false);
+    let outcome: RelayOutcome;
+    try {
+      outcome = this.#relay
+        ? await this.#relay(String(row.product), { token: a.value, clicker: { service: account.service, id: a.clickerId }, account: String(row.requested_account) }, `dm-act-${account.id}-${a.messageId}-${hash.slice(0, 16)}`)
+        : { final: false, notice: "Connect is starting. Try again in a moment." };
+    } catch {
+      outcome = { final: false, notice: "Could not decide now. Try again, or open Operator Inbox." };
+    }
+    const notice = outcome.notice.slice(0, 300);
+    db.prepare("UPDATE connect_channel_actions SET state = ?, result = ?, updated_at = ? WHERE account_id = ? AND conversation = ? AND message_id = ? AND state = 'busy'").run(
+      outcome.final ? "done" : "open",
+      outcome.final ? notice : null,
+      this.#d.net.now(),
+      ...key,
+    );
+    return answer(notice, outcome.final);
   }
 
   #ownMessage(account: Account, conversation: string, messageId: string): void {
@@ -437,7 +537,17 @@ export class ChannelHub {
         try {
           this.#setState(account.id, "running");
           const creds = await this.#creds(account);
-          await inbound.run(creds, this.#d.net, bot, (m) => void this.ingest(account, m), controller.signal);
+          await inbound.run(
+            creds,
+            this.#d.net,
+            bot,
+            (m) => void this.ingest(account, m),
+            controller.signal,
+            (a) =>
+              void this.action(account, a).catch((error: unknown) =>
+                this.#d.log?.warn("channel action failed", { service: account.service, code: (error as { code?: string }).code ?? "error" }),
+              ),
+          );
           if (controller.signal.aborted) break;
           attempt = 0;
         } catch (error) {
@@ -469,5 +579,6 @@ export class ChannelHub {
 
   purge(now = Date.now()): void {
     this.#d.db.prepare("DELETE FROM connect_channel_inbox WHERE received_at < ?").run(now - INBOX_RETENTION_MS);
+    this.#d.db.prepare("DELETE FROM connect_channel_actions WHERE expires_at < ?").run(now - INBOX_RETENTION_MS);
   }
 }
