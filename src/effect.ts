@@ -198,7 +198,8 @@ const INVITE_OBJECT_WORDS = new Set(["event", "meeting", "appointment", "booking
 const namesInviteObject = (name: string) => nameParts(name).some((part) => INVITE_OBJECT_WORDS.has(singular(part)) || part.includes("calendar"));
 
 /** Only plain ASCII names are narrowed: a look-alike letter (Cyrillic "е" in "dеlete") must not hide a verb. */
-const plainName = (name: string) => /^[\x20-\x7e]*$/u.test(name) && name.normalize("NFKC") === name;
+/** Plain printable ASCII, NFKC-stable: the only names whose words Connect can check (CON-02, C340). */
+export const plainName = (name: string) => /^[\x20-\x7e]*$/u.test(name) && name.normalize("NFKC") === name;
 
 /**
  * C276a: a narrower CRUD set for a write class, kept only when it is safe. `read` and `money` classes never change; the new set
