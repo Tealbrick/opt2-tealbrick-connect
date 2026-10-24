@@ -95,6 +95,8 @@ test("X-03: a server's readOnlyHint does not lower a tool; the owner can confirm
     { name: "sendEmail", annotations: { readOnlyHint: true } },
     { name: "createPayment", annotations: { readOnlyHint: true } },
     { name: "frobnicate", annotations: { readOnlyHint: true } },
+    { name: "list_and_refund_charges", annotations: { readOnlyHint: true } },
+    { name: "tidy_notes", annotations: { readOnlyHint: true, destructiveHint: true } },
   ];
   const server = fakeServer({ extraTools: lying });
   const db = testDb();
@@ -103,7 +105,7 @@ test("X-03: a server's readOnlyHint does not lower a tool; the owner can confirm
   const out = (await handlerOf(app, "mcp_account_connect")({ label: "Notes", url: URL_, headers: { Authorization: "Bearer good" } }, person)) as { account: { id: string; service: string } };
   const classes = () => Object.fromEntries(db.prepare("SELECT upstream, effect FROM connect_tools").all().map((r) => [r.upstream, r.effect]));
   // fires: the claims are not believed
-  assert.deepEqual(classes(), { search_notes: "read", send_digest: "outward", delete_note: "destructive", sendEmail: "outward", createPayment: "money", frobnicate: "outward" });
+  assert.deepEqual(classes(), { search_notes: "read", send_digest: "outward", delete_note: "destructive", sendEmail: "outward", createPayment: "money", frobnicate: "outward", list_and_refund_charges: "money", tidy_notes: "destructive" });
   const names = Object.fromEntries(db.prepare("SELECT upstream, name FROM connect_tools").all().map((r) => [r.upstream, String(r.name)]));
   const dyn = app.dynamic?.tools;
   assert.ok(dyn);
@@ -117,8 +119,13 @@ test("X-03: a server's readOnlyHint does not lower a tool; the owner can confirm
   assert.deepEqual([claim[names.sendEmail ?? ""], claim[names.frobnicate ?? ""], claim[names.createPayment ?? ""], claim[names.search_notes ?? ""], claim[names.send_digest ?? ""]], [true, true, false, false, false]);
 
   // fires: no claim, or money → the owner cannot mark it read
-  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.send_digest, read: true }, person), (e: ConnectError) => e.code === "tool_not_read_only");
-  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.createPayment, read: true }, person), (e: ConnectError) => e.code === "tool_not_read_only");
+  const refusal = (message: RegExp) => (e: ConnectError) => e.code === "tool_not_read_only" && message.test(e.message);
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.send_digest, read: true }, person), refusal(/^The server does not say this tool is read-only/u));
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.createPayment, read: true }, person), refusal(/^Connect treats every tool whose name can move money/u));
+  // C331 demo gap 4: the server DOES say read-only here; the refusal names the real reason (money name, destructive hint)
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.list_and_refund_charges, read: true }, person), refusal(/Money tools are always held, so this one cannot be marked read\. Only a tool that only reads money records/u));
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.tidy_notes, read: true }, person), refusal(/^The server marks this tool as destructive/u));
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.search_notes, read: true }, person), refusal(/^This tool is already treated as read-only\.$/u));
 
   // quiet: the owner confirms frobnicate as read → a READ agent may call it; a refresh keeps the confirmation
   assert.deepEqual(await handlerOf(app, "mcp_tool_read_set")({ name: names.frobnicate, read: true }, person), { name: names.frobnicate, effect: "read", ownerConfirmedRead: true });
@@ -133,4 +140,82 @@ test("X-03: a server's readOnlyHint does not lower a tool; the owner can confirm
   await assert.rejects(dyn.call(names.frobnicate ?? "", {}, reader), (e: ConnectError) => e.code === "scope_denied");
   const again = (await handlerOf(app, "mcp_tools_list")({ service: out.account.service }, person)) as { tools: { name: string; unverifiedReadClaim: boolean }[] };
   assert.equal(again.tools.find((t) => t.name === names.frobnicate)?.unverifiedReadClaim, true);
+});
+
+test("C331 D4b: the owner may confirm a READ of money records per tool; spoofed hints and name tricks stay money", async () => {
+  const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
+  const extra = [
+    { name: "stripe_list_charges", annotations: { readOnlyHint: true } as Record<string, unknown> },
+    { name: "get_refund", annotations: { readOnlyHint: true } },
+    // spoofed: read-only claimed together with destructive, or no claim at all
+    { name: "list_payouts", annotations: { readOnlyHint: true, destructiveHint: true } },
+    { name: "list_refunds", annotations: {} },
+    // name tricks: a second action, a money verb, a singular before more words, a compound money word, a look-alike letter
+    { name: "list_and_refund_charges", annotations: { readOnlyHint: true } },
+    { name: "list_charges_then_capture", annotations: { readOnlyHint: true } },
+    { name: "listChargesAndPay", annotations: { readOnlyHint: true } },
+    { name: "list_charges_refund", annotations: { readOnlyHint: true } },
+    { name: "refund_list_charges", annotations: { readOnlyHint: true } },
+    { name: "list_paymentintents", annotations: { readOnlyHint: true } },
+    { name: "create_charge", annotations: { readOnlyHint: true } },
+    { name: "list_payouts_initiate", annotations: { readOnlyHint: true } },
+    { name: "get_charges_retry", annotations: { readOnlyHint: true } },
+    { name: "initiate_list_charges", annotations: { readOnlyHint: true } },
+    { name: "list_charg\u0435s_and_pay", annotations: { readOnlyHint: true } },
+  ];
+  const server = fakeServer({ extraTools: extra });
+  const db = testDb();
+  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), fetchImpl: server.impl, catalogAllowOrigins: ["https://mcp.example.com"] });
+  const person = testCtx({ db, person: true });
+  const out = (await handlerOf(app, "mcp_account_connect")({ label: "Payments", url: URL_, headers: { Authorization: "Bearer good" } }, person)) as { account: { id: string; service: string } };
+  const classes = () => Object.fromEntries(db.prepare("SELECT upstream, effect FROM connect_tools").all().map((r) => [r.upstream, r.effect]));
+  const names = Object.fromEntries(db.prepare("SELECT upstream, name FROM connect_tools").all().map((r) => [r.upstream, String(r.name)]));
+  const dyn = app.dynamic?.tools;
+  assert.ok(dyn);
+  const reader = testCtx({ db, access: { [out.account.id]: "read" } });
+
+  // never automatic: every money name is money until the owner confirms
+  for (const t of extra) if (t.name !== "list_charg\u0435s_and_pay") assert.equal(classes()[t.name], "money", t.name);
+  await assert.rejects(dyn.call(names.stripe_list_charges ?? "", {}, reader), (e: ConnectError) => e.code === "scope_denied");
+
+  // only the two record reads are offered for confirmation
+  const listed = (await handlerOf(app, "mcp_tools_list")({ service: out.account.service }, person)) as { tools: { name: string; unverifiedReadClaim: boolean }[] };
+  const offered = listed.tools.filter((t) => t.unverifiedReadClaim).map((t) => t.name).sort();
+  assert.deepEqual(offered, [names.get_refund, names.stripe_list_charges].sort());
+
+  const refusal = (message: RegExp) => (e: ConnectError) => e.code === "tool_not_read_only" && message.test(e.message);
+  for (const trick of ["list_and_refund_charges", "list_charges_then_capture", "listChargesAndPay", "list_charges_refund", "refund_list_charges", "list_paymentintents", "create_charge", "list_payouts_initiate", "get_charges_retry", "initiate_list_charges"]) {
+    await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names[trick], read: true }, person), refusal(/^Connect treats every tool whose name can move money/u), trick);
+  }
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.list_payouts, read: true }, person), refusal(/^The server does not say this tool is read-only, or also marks it destructive/u));
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.list_refunds, read: true }, person), refusal(/^The server does not say this tool is read-only, or also marks it destructive/u));
+
+  // the owner confirms one tool: it becomes read for a READ agent; the other record read stays money
+  assert.deepEqual(await handlerOf(app, "mcp_tool_read_set")({ name: names.stripe_list_charges, read: true }, person), { name: names.stripe_list_charges, effect: "read", ownerConfirmedRead: true });
+  assert.equal(classes().stripe_list_charges, "read");
+  assert.equal(classes().get_refund, "money", "per tool");
+  await dyn.call(names.stripe_list_charges ?? "", {}, reader);
+
+  // the server drops its read-only claim: the next refresh makes it money again, the confirmation does not carry over
+  const claimed = extra[0];
+  assert.ok(claimed);
+  claimed.annotations = {};
+  await handlerOf(app, "tools_refresh")({ service: out.account.service }, person);
+  assert.equal(classes().stripe_list_charges, "money");
+  await assert.rejects(dyn.call(names.stripe_list_charges ?? "", {}, reader), (e: ConnectError) => e.code === "scope_denied");
+  // QA-CONNECT22-3: the earlier confirmation never stands in for the server's current claim
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.stripe_list_charges, read: true }, person), refusal(/^The server does not say this tool is read-only/u));
+  assert.equal(classes().stripe_list_charges, "money");
+
+  // the claim comes back: the stored confirmation applies again; withdrawn → money
+  claimed.annotations = { readOnlyHint: true };
+  await handlerOf(app, "tools_refresh")({ service: out.account.service }, person);
+  assert.equal(classes().stripe_list_charges, "read");
+  await handlerOf(app, "mcp_tool_read_set")({ name: names.stripe_list_charges, read: false }, person);
+  assert.equal(classes().stripe_list_charges, "money");
+  // QA-CONNECT22-3: withdraw, the server drops the claim, then confirm through the owner API → refused (no forged claim)
+  claimed.annotations = {};
+  await handlerOf(app, "tools_refresh")({ service: out.account.service }, person);
+  await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.stripe_list_charges, read: true }, person), refusal(/^The server does not say this tool is read-only/u));
+  assert.equal(classes().stripe_list_charges, "money");
 });

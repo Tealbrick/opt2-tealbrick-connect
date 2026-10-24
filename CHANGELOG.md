@@ -1,6 +1,16 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.2 (catalog 0.3.1, CF-CT-1, WebDAV).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.3 (catalog 0.3.1; C331 demo gaps).
+
+## 0.6.3 (prepared 2026-10-24; normal path)
+
+C331 (10): gaps found while building the DEV second-brain demo (coordination/leads/demo/DEMO.md gaps 4, 5, 6). No migration, no catalog change; one owner-confirmed class change (D4b). Tool classes re-sync on start (`c331-2`).
+
+- **Gap 4, refusal text:** `mcp_tool_read_set` named the wrong reason for a money-named tool ("The server does not say this tool is read-only" although the server did, e.g. `stripe_list_charges` with `readOnlyHint: true`). The refusal now says the real reason: a money name (money tools are always held, CORE §7), the server's `destructiveHint`, a tool that is already read, or no read-only claim. Classes from names and hints are unchanged (X-03: a server's claims only raise a class).
+- **D4b (Coordinator OK 2026-10-24), money records:** the owner may confirm READ, per tool, for an MCP tool the server marks read-only (no `destructiveHint`) whose name only reads money records: at most one payment-vendor word, a read verb, then only record nouns, read verbs and record qualifiers, all from allow-lists (`stripe_list_charges`, `get_refund`, `list_charges_by_customer`). Never automatic: until the owner confirms, the tool is money (always held). Anything else with a money word stays money: a second action or connector word (`list_and_refund_charges`, `list_charges_then_capture`, `listChargesAndPay`), a money verb (`create_charge`, `refund_list_charges`), a singular before more words (`list_charges_refund`, `get_charge_status`), a compound word (`list_paymentintents`), any word outside the allow-lists (`list_payouts_initiate`, `get_charges_retry`, `initiate_list_charges`). Confirming needs the server's current read-only claim, also through the owner API and also for a tool confirmed before (QA-CONNECT22-3).
+- **QA-CONNECT22-1 (C340):** an MCP tool name that is not plain ASCII (a look-alike letter, a zero-width character) is a money tool (always held) and can never be confirmed read. A refresh where the server no longer claims read-only makes it money again. The confirm card says "Reading moves no money"; every confirm and withdraw is a receipt (`mcp_tool_read_set`).
+- **Gap 5, Accounts > Agent access:** an owner-set READ level said "takes effect after a future bridge update" although READ calls work at once. For READ it now says "<agent> can read this account now where its Portal grant includes read"; the future-bridge text stays for the higher levels while the bridge does not admit owner rows.
+- **Gap 6, Accounts heading:** a custom MCP server's group was headed by its internal service id ("mcp_acme_data_sources__282ebac3", derived from the host). It is now headed by the account label (several accounts on one server: the first label plus a count). Other services keep their name; element ids are unchanged.
 
 ## 0.6.2 (prepared 2026-10-20; normal path, 24 h soak)
 
