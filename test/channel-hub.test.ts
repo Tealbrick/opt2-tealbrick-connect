@@ -8,7 +8,7 @@ import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 import { AccountStore } from "../src/accounts.ts";
 import { type ConnectError, createConnectApp } from "../src/app.ts";
 import { ChannelError, type ChannelNet, type ChannelProvider, type InboundMessage, type InboundSink } from "../src/channels/provider.ts";
-import { eventCtx, handlerOf, root, secretsFor, testCtx, testDb } from "./helpers.ts";
+import { eventCtx, handlerOf, publicCtx, root, secretsFor, testCtx, testDb } from "./helpers.ts";
 
 const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
 const AGENT = "agt_01CHANAGENT000000000000000";
@@ -156,18 +156,46 @@ test("quality audit R2: a message the database cannot store is logged, counted a
   const msg: InboundMessage = { conversation: "chan-1", conversationType: "channel", messageId: "20", threadId: null, senderId: "u1", senderName: "Ann", text: "secret text", sentAt: 1 };
   db.exec("CREATE TRIGGER r2_fail BEFORE INSERT ON connect_channel_inbox BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;");
   assert.throws(() => w.deliver(msg), /disk I\/O error/u, "the provider learns it was not stored (Slack: no ack; Telegram: offset stays)");
+  assert.throws(() => w.deliver(msg), "the redelivery fails too");
   assert.throws(() => w.deliver({ ...msg, messageId: "21" }));
-  assert.equal(lines.length, 2);
+  assert.equal(lines.length, 3, "every failure is logged");
   assert.equal(lines[0]?.msg, "channel inbound message could not be stored");
-  assert.deepEqual([lines[1]?.fields?.account, lines[1]?.fields?.failed], [account.id, 2]);
+  assert.deepEqual(lines.map((l) => l.fields?.notStored), [1, 1, 2], "QA-CON25-1: messages are counted, not attempts");
+  assert.equal(lines[2]?.fields?.account, account.id);
   assert.ok(!JSON.stringify(lines).includes("secret text"), "metadata only, never the text");
-  const listed = (await handlerOf(app, "channel_accounts")({}, person)) as { accounts: { id: string; bot: { detail: string; notStored: number } | null }[] };
-  const bot = listed.accounts.find((a) => a.id === account.id)?.bot;
-  assert.equal(bot?.notStored, 2);
-  assert.match(bot?.detail ?? "", /^2 incoming messages could not be stored since the last start/u);
-  // the database recovers: the redelivered message is stored
+  const bot = async () => ((await handlerOf(app, "channel_accounts")({}, person)) as { accounts: { id: string; bot: { detail: string; notStored: number } | null }[] }).accounts.find((a) => a.id === account.id)?.bot;
+  assert.equal((await bot())?.notStored, 2);
+  assert.match((await bot())?.detail ?? "", /^2 incoming messages could not be stored yet/u);
+  // the database recovers: each stored redelivery leaves the count, the notice goes with the last one (QA-CON25-1)
   db.exec("DROP TRIGGER r2_fail");
   w.deliver(msg);
+  assert.equal((await bot())?.notStored, 1);
+  assert.match((await bot())?.detail ?? "", /^1 incoming message could not be stored yet/u);
+  w.deliver({ ...msg, messageId: "21" });
+  assert.deepEqual([(await bot())?.notStored, (await bot())?.detail], [0, ""]);
   const inbox = (await handlerOf(app, "channel_inbox")({}, testCtx({ db, agent: AGENT, access: { [account.id]: "read" } }))) as { messages: { text: string }[] };
-  assert.deepEqual(inbox.messages.map((m) => m.text), ["secret text"]);
+  assert.deepEqual(inbox.messages.map((m) => m.text), ["secret text", "secret text"]);
+});
+
+test("QA-CON25-2: a Teams webhook message the database cannot store answers 503 (Bot Framework sends it again); stored → 200", async () => {
+  const base = fakeWorld().provider;
+  const teams: ChannelProvider = {
+    ...base,
+    service: "teams",
+    inbound: {
+      kind: "webhook",
+      verifyWebhook: async () => ({ messages: [{ conversation: "chan-1", conversationType: "channel", messageId: "t1", threadId: null, senderId: "u1", senderName: "Ann", text: "from teams", sentAt: 1 }] }),
+    },
+  } as ChannelProvider;
+  const w = fakeWorld();
+  const db = testDb();
+  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), channelProviders: new Map([["teams", teams]]), channelNet: w.net });
+  await app.events?.agentAdded?.({ id: AGENT as `agt_${string}`, name: AGENT, mode: "free", status: "active" }, eventCtx(db));
+  const person = testCtx({ db, person: true });
+  await handlerOf(app, "channel_account_connect")({ service: "teams", label: "Teams", agent: AGENT, credentials: { bot_token: "123:ok" } }, person);
+  const post = () => app.publicRoutes?.["/inbound/teams"]?.(new Request("https://bridge.example.com/p/connect/inbound/teams", { method: "POST", body: "{}" }), publicCtx(db));
+  db.exec("CREATE TRIGGER r2_fail BEFORE INSERT ON connect_channel_inbox BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;");
+  assert.equal((await post())?.status, 503);
+  db.exec("DROP TRIGGER r2_fail");
+  assert.equal((await post())?.status, 200);
 });

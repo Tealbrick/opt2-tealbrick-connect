@@ -21,7 +21,7 @@ import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/ser
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -1735,6 +1735,8 @@ function ownerReadOf(db: Db, name: string): boolean {
  * `destructiveHint`; otherwise the server makes no read-only claim.
  */
 function notConfirmableText(tool: { upstream: string; effect: string }): string {
+  // QA-CONNECT22-5: a name with characters Connect cannot check is money (C340); say that, not "it names money"
+  if (!plainName(tool.upstream)) return "This tool's name has characters Connect cannot check (only plain letters, digits and punctuation are checked), so it is treated as a money tool and cannot be marked read.";
   if (namesMoney(tool.upstream) && !readsMoneyRecords(tool.upstream))
     return "Connect treats every tool whose name can move money (a charge, payment, refund or transfer) as a money tool. Money tools are always held, so this one cannot be marked read. Only a tool that only reads money records, such as list_charges, can be confirmed.";
   if (tool.effect === "read") return "This tool is already treated as read-only.";

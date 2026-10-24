@@ -219,3 +219,31 @@ test("C331 D4b: the owner may confirm a READ of money records per tool; spoofed 
   await assert.rejects(handlerOf(app, "mcp_tool_read_set")({ name: names.stripe_list_charges, read: true }, person), refusal(/^The server does not say this tool is read-only/u));
   assert.equal(classes().stripe_list_charges, "money");
 });
+
+test("QA-CONNECT22-4/5: withdraw then confirm again without a refresh; names with control or invisible characters are money and say why", async () => {
+  const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
+  const c = (code: number) => String.fromCharCode(code);
+  // tab, newline, bell, zero-width space (distinct sanitized names: same-name tools would replace each other)
+  const odd = [`list${c(9)}files`, `search_docs${c(10)}`, `list_${c(7)}notes`, `find${c(0x200b)}pages`];
+  const extra = [{ name: "stripe_list_charges", annotations: { readOnlyHint: true } }, ...odd.map((name) => ({ name, annotations: { readOnlyHint: true } }))];
+  const server = fakeServer({ extraTools: extra });
+  const db = testDb();
+  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), fetchImpl: server.impl, catalogAllowOrigins: ["https://mcp.example.com"] });
+  const person = testCtx({ db, person: true });
+  await handlerOf(app, "mcp_account_connect")({ label: "Payments", url: URL_, headers: { Authorization: "Bearer good" } }, person);
+  const nameOf = (upstream: string) => String(db.prepare("SELECT name FROM connect_tools WHERE upstream = ?").get(upstream)?.name);
+  const effect = (upstream: string) => String(db.prepare("SELECT effect FROM connect_tools WHERE upstream = ?").get(upstream)?.effect);
+  const set = (upstream: string, read: boolean) => handlerOf(app, "mcp_tool_read_set")({ name: nameOf(upstream), read }, person);
+
+  // QA-CONNECT22-4: confirm → withdraw → confirm again, no refresh in between: the stored current claim still allows it
+  await set("stripe_list_charges", true);
+  await set("stripe_list_charges", false);
+  assert.equal(effect("stripe_list_charges"), "money");
+  assert.deepEqual(await set("stripe_list_charges", true), { name: nameOf("stripe_list_charges"), effect: "read", ownerConfirmedRead: true });
+
+  // QA-CONNECT22-4/5: control and invisible characters in a name → money, never confirmable, and the refusal names the reason
+  for (const upstream of odd) {
+    assert.equal(effect(upstream), "money", JSON.stringify(upstream));
+    await assert.rejects(set(upstream, true), (e: ConnectError) => e.code === "tool_not_read_only" && /^This tool's name has characters Connect cannot check/u.test(e.message), JSON.stringify(upstream));
+  }
+});

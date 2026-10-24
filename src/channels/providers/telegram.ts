@@ -36,8 +36,9 @@ const SERVICE = "Telegram";
 export const TELEGRAM_MAX_TEXT = 4096;
 export const TELEGRAM_POLL_TIMEOUT_S = 25;
 const TOKEN_SHAPE = /^[0-9]+:[A-Za-z0-9_-]+$/u;
-/** Quality audit R2: how often one update whose message could not be stored is fetched again before it is passed. */
-export const TELEGRAM_SINK_TRIES = 5;
+/** Quality audit R2: how often one update whose message could not be stored is fetched again before it is passed. QA INFO: 10
+ *  tries with the capped backoff (1 s doubling to 60 s) ride out a database outage of about 4 minutes. */
+export const TELEGRAM_SINK_TRIES = 10;
 const CHAT_ID_SHAPE = /^(-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{3,31})$/u;
 const USER_ID_SHAPE = /^[0-9]{1,20}$/u;
 const MESSAGE_ID_SHAPE = /^[0-9]{1,12}$/u;
