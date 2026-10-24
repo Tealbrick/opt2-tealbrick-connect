@@ -864,6 +864,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
      * place it appears (manifest `secretOutput`: idempotency none, no receipt, no stored output). The audit line and the log
      * line name the lease, account, datasets, expiry and caller, never the credential. v0: the lease is the owner's sealed
      * credential plus the expiry Connect records (no per-lease database role yet).
+     * Spec 0.1.68 M-OP-12: receipt true (input digest + redacted summary, never the output). An agent or person caller is
+     * refused `no_access`; the spec's code for this refusal is `secret_output_app_only`, to be used when the spec pin moves
+     * (the code stays `no_access` until then, like the other data ops).
      */
     async data_lease(input, ctx) {
       return audited("data_lease", ctx, input, async (note) =>
@@ -882,6 +885,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           note.leaseId = row.id;
           note.leaseExpiresAt = row.expiresAt;
           note.rows = datasets.length;
+          // M-OP-12: the receipt (input digest + this redacted summary) audits the issuance; it never holds the output.
+          // Only the account label the owner typed, the app, the table names the app asked for, the lease id and its end.
+          ctx.receipt.summary(`Database lease for ${DATA_APPS[product] ?? product}: ${datasets.length === 1 ? "1 table" : `${datasets.length} tables`} of “${account.label}” until ${grant.expiresAt}`);
+          ctx.receipt.meta({ account: account.id, lease: row.id, datasets, expiresAt: grant.expiresAt });
           return grant as unknown as Json;
         }),
       );

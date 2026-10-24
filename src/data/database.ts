@@ -269,8 +269,14 @@ export class DatabaseAccountStore {
   async dsn(account: Pick<DbAccount, "id" | "kind">): Promise<DbDsn> {
     const raw = await this.#secrets.get(secretName(account.id));
     if (!raw) throw new DataError("database_credentials_missing", "The database has no stored credentials; connect it again.", 409);
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return parseDsn(parsed, account.kind);
+    // a JSON.parse error quotes a piece of its source text: the sealed DSN must never reach an error message
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+      return parseDsn(parsed, account.kind);
+    } catch {
+      throw new DataError("database_credentials_invalid", "The stored database credentials cannot be read; connect it again.", 409);
+    }
   }
 
   /** Seal removed, row kept as `revoked` (the owner's list hides it). */

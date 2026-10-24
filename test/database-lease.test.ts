@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
+import { validateManifest } from "@opt2-tealbrick/manifest";
 import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json, Logger } from "@opt2-tealbrick/spec/sdk";
 
@@ -128,9 +129,14 @@ const DATASETS = ["public.customers", "public.orders"];
 
 // ── manifest ──
 
-test("manifest: data_lease follows M-OP-11 (read, idempotency none, no receipt, agent audience, not dynamic) and the owner ops are person ops", () => {
+test("manifest: the SDK's own validator accepts it (description length, rules), as startApp will", () => {
+  const result = validateManifest(manifest);
+  assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
+});
+
+test("manifest: data_lease follows M-OP-12 (read, idempotency none, receipt true, agent audience, not dynamic) and the owner ops are person ops", () => {
   const op = manifest.operations.find((o) => o.id === "data_lease");
-  assert.deepEqual([op?.audience, op?.crud, op?.effect, op?.idempotency, op?.receipt, op?.scopeType, op?.dynamic, op?.holdFamily], ["agent", ["read"], "read", "none", false, undefined, undefined, undefined]);
+  assert.deepEqual([op?.audience, op?.crud, op?.effect, op?.idempotency, op?.receipt, op?.scopeType, op?.dynamic, op?.holdFamily], ["agent", ["read"], "read", "none", true, undefined, undefined, undefined]);
   const input = op?.input as unknown as { properties: { datasets: { minItems: number; maxItems: number }; ttlS: { maximum: number } } };
   assert.deepEqual([input.properties.datasets.minItems, input.properties.datasets.maxItems, input.properties.ttlS.maximum], [1, 50, 900]);
   for (const id of ["database_account_connect", "data_leases_list", "data_lease_revoke"]) assert.equal(manifest.operations.find((o) => o.id === id)?.audience, "person", id);
@@ -386,7 +392,7 @@ test("data_lease: ttl above 900 or not a whole number is refused, the default is
   // outside the catalog (also when mixed with a real one) and a name the catalog left out
   const missing = await refusal(t.lease(id, ["public.customers", "public.secrets"]));
   assert.deepEqual([missing.code, missing.httpStatus], ["dataset_not_found", 404]);
-  assert.match(missing.message, /public\.secrets/u);
+  assert.doesNotMatch(missing.message, /public\.secrets/u, "a fixed message: the requested names are not echoed");
   assert.equal((await refusal(t.lease(id, ["public.dotted"]))).code, "dataset_not_found");
   assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 2, "only the two good leases were recorded");
   // duplicates collapse
@@ -441,8 +447,65 @@ test("the password appears nowhere but the data_lease answer: records, audit, ow
   assert.ok(!dump(t.db).includes(CANARY), "database (records, audit, shares, leases)");
   for (const r of [...t.receipts.summary, ...t.receipts.meta.map((m) => JSON.stringify(m))]) assert.ok(!r.includes(CANARY), "receipt");
   assert.ok(t.receipts.summary.length >= 2);
+  // M-OP-12: data_lease has a receipt (summary + meta set by the handler; the SDK adds the input digest). No credential, host or user in it.
+  const lease = t.ctx.knowledge.receipts;
+  assert.ok(lease.summary.length >= 1, "every issued lease writes a receipt summary");
+  assert.match(lease.summary[0] ?? "", /^Database lease for Knowledge: 2 tables of “Shop DB” until \d{4}-/u);
+  assert.deepEqual(Object.keys((lease.meta[0] ?? {}) as object).sort(), ["account", "datasets", "expiresAt", "lease"]);
+  for (const r of [...lease.summary, ...lease.meta.map((m) => JSON.stringify(m))]) for (const secret of [CANARY, "db.example.com", "readonly", PUBLIC_IP]) assert.ok(!r.includes(secret), `lease receipt has no ${secret}`);
   for (const l of t.logs) assert.ok(!JSON.stringify(l).includes(CANARY), `log line: ${l.msg}`);
   assert.ok(t.logs.some((l) => l.msg === "data_lease" && l.fields?.lease === granted.leaseId), "the lease is logged by id");
+});
+
+test("every error on the lease path has a code and a fixed message: no DSN, host, user or password in it", async () => {
+  const HOST = "db.example.com";
+  const clean = (e: { message: string; details?: unknown; stack?: string }): void => {
+    const text = `${e.message} ${JSON.stringify(e.details ?? {})} ${e.stack ?? ""}`;
+    for (const secret of [CANARY, HOST, "readonly", PUBLIC_IP, "5432", "shop"]) assert.ok(!text.includes(secret), `error text has no ${secret}: ${text.slice(0, 120)}`);
+  };
+  const fail = async (p: Promise<unknown>) => {
+    try {
+      await p;
+    } catch (e) {
+      clean(e as Error);
+      const { code, message, httpStatus } = e as { code: string; message: string; httpStatus: number };
+      return { code, message, httpStatus };
+    }
+    throw new Error("expected a refusal");
+  };
+  const t = await setup();
+  const id = await t.connect();
+  await t.share(id, "knowledge", "shared");
+  // the driver throws a message full of the DSN: no code, then a hostile code, then a real one
+  t.fake.state.failWith = new Error(`FATAL: password authentication failed for user "readonly" at ${HOST}:5432 db shop password=${CANARY} ${PUBLIC_IP}`);
+  const bare = await fail(t.lease(id, DATASETS));
+  assert.deepEqual([bare.code, bare.httpStatus], ["database_unreachable", 502]);
+  assert.equal(bare.message, "Connect could not read the database. Check the address, the user and the TLS setting, then try again.");
+  t.fake.state.failWith = Object.assign(new Error(`${CANARY} ${HOST}`), { code: "ECONNREFUSED" });
+  assert.equal((await fail(t.lease(id, DATASETS))).message, "Connect could not read the database (ECONNREFUSED). Check the address, the user and the TLS setting, then try again.");
+  t.fake.state.failWith = Object.assign(new Error("x"), { code: `${CANARY}@${HOST}` });
+  assert.equal((await fail(t.lease(id, DATASETS))).message, bare.message, "a code that is not on the allow list is dropped");
+  t.fake.state.failWith = null;
+  // a catalog that does not hold the dataset: fixed text, the caller's names are not echoed
+  const missing = await fail(t.lease(id, ["public.nothing"]));
+  assert.deepEqual([missing.code, missing.message], ["dataset_not_found", "A requested dataset is not in the catalog of this database. Read data_catalog and ask again."]);
+  // the sealed DSN is damaged: a JSON error would quote it; the answer is fixed
+  await secretsFor(t.db).put(`db:${id}`, `{"host":"${HOST}","port":5432,"database":"shop","user":"readonly","password":"${CANARY}`);
+  for (const run of [() => t.lease(id, DATASETS), () => t.op("data_catalog", { account: id }, t.ctx.knowledge)]) {
+    const r = await fail(run());
+    assert.deepEqual([r.code, r.httpStatus, r.message], ["database_credentials_invalid", 409, "The stored database credentials cannot be read; connect it again."]);
+  }
+  await secretsFor(t.db).delete(`db:${id}`);
+  assert.equal((await fail(t.lease(id, DATASETS))).code, "database_credentials_missing");
+  // the host now fails DNS, or answers a private address: the policy text names a reason, never the host
+  const dns = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: t.fake.driver }, databaseLookup: async () => { throw new Error(`getaddrinfo ENOTFOUND ${HOST}`); } });
+  await secretsFor(t.db).put(`db:${id}`, JSON.stringify({ host: HOST, port: 5432, database: "shop", user: "readonly", password: CANARY, sslmode: "verify-full" }));
+  const lookup = await (async () => { try { await handlerOf(dns, "data_lease")({ account: id, datasets: DATASETS } as Json, t.ctx.knowledge); } catch (e) { clean(e as Error); return e as { code: string; message: string }; } throw new Error("expected a refusal"); })();
+  assert.deepEqual([lookup.code, lookup.message], ["endpoint_not_allowed", "Endpoint is not allowed (dns_lookup_failed)."]);
+  // an unexpected failure inside Connect (the lease record cannot be written) is a fixed lease_failed
+  t.db.exec("ALTER TABLE connect_data_leases RENAME TO connect_data_leases_gone");
+  const broken = await fail(t.lease(id, DATASETS));
+  assert.deepEqual([broken.code, broken.httpStatus, broken.message], ["lease_failed", 500, "The lease could not be issued."]);
 });
 
 test("a lease whose audit line cannot be written is withheld and ended (nothing leaves unrecorded)", async () => {

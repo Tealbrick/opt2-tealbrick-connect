@@ -4,7 +4,7 @@
  * database. See `database.ts` for what is stored and what Connect reads.
  */
 import { normalizeLabel } from "../accounts.ts";
-import { type Lookup, resolvePublicHost } from "../util/net-policy.ts";
+import { type Lookup, NetPolicyError, resolvePublicHost } from "../util/net-policy.ts";
 import {
   checkRole,
   DATASET_ID,
@@ -53,6 +53,20 @@ export interface LeaseGrant {
   expiresAt: string;
 }
 
+/**
+ * Every error that leaves the database path has a code and a FIXED message. A DataError (fixed texts in this module and in
+ * `database.ts`) and a NetPolicyError (its reason is one of a short list, never the host) pass; anything else (a SQLite error,
+ * a JSON error, a bug) becomes `fallback`. No DSN, host, user or password reaches an error message (QA, M-OP-12).
+ */
+async function sealed<T>(fallback: { code: string; message: string; status: number }, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof DataError || error instanceof NetPolicyError) throw error;
+    throw new DataError(fallback.code, fallback.message, fallback.status);
+  }
+}
+
 export class DatabaseService {
   readonly #d: DatabaseServiceDeps;
 
@@ -79,7 +93,11 @@ export class DatabaseService {
    * Add a database: validates the form, checks the host against the address policy, connects once to check that the role is
    * not a superuser and has no replication, then seals the DSN. Nothing is stored when any step fails.
    */
-  async connect(input: { kind: DatabaseKind; label: string; fields: Record<string, unknown> }): Promise<DbAccount> {
+  connect(input: { kind: DatabaseKind; label: string; fields: Record<string, unknown> }): Promise<DbAccount> {
+    return sealed({ code: "database_connect_failed", message: "The database could not be added.", status: 500 }, () => this.#connect(input));
+  }
+
+  async #connect(input: { kind: DatabaseKind; label: string; fields: Record<string, unknown> }): Promise<DbAccount> {
     const dsn = parseDsn(input.fields, input.kind);
     const label = normalizeLabel(input.label);
     const driver = this.#driver(input.kind);
@@ -89,7 +107,11 @@ export class DatabaseService {
   }
 
   /** Table and column names, types, approximate row counts. Metadata only. */
-  async catalog(account: DbAccount): Promise<DbTable[]> {
+  catalog(account: DbAccount): Promise<DbTable[]> {
+    return sealed({ code: "catalog_failed", message: "The table list could not be read.", status: 500 }, () => this.#catalog(account));
+  }
+
+  async #catalog(account: DbAccount): Promise<DbTable[]> {
     const { target } = await this.#target(account);
     return withSession(this.#driver(account.kind), target, (session) => readCatalog(account.kind, session));
   }
@@ -117,12 +139,16 @@ export class DatabaseService {
    * v0 lease: the owner's sealed read-only credential, handed to the calling app with an expiry that Connect records. Only
    * datasets that exist in the catalog now. The record holds no credential.
    */
-  async lease(input: { account: DbAccount; product: string; instance: string; datasets: readonly string[]; ttlS: number; now?: number }): Promise<{ grant: LeaseGrant; row: LeaseRow }> {
+  lease(input: { account: DbAccount; product: string; instance: string; datasets: readonly string[]; ttlS: number; now?: number }): Promise<{ grant: LeaseGrant; row: LeaseRow }> {
+    return sealed({ code: "lease_failed", message: "The lease could not be issued.", status: 500 }, () => this.#lease(input));
+  }
+
+  async #lease(input: { account: DbAccount; product: string; instance: string; datasets: readonly string[]; ttlS: number; now?: number }): Promise<{ grant: LeaseGrant; row: LeaseRow }> {
     const { dsn, target } = await this.#target(input.account);
     const tables = await withSession(this.#driver(input.account.kind), target, (session) => readCatalog(input.account.kind, session));
     const known = new Set(tables.map((t) => t.dataset));
     const missing = input.datasets.filter((d) => !known.has(d));
-    if (missing.length > 0) throw new DataError("dataset_not_found", `Not in the catalog of this database: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " and more" : ""}.`, 404);
+    if (missing.length > 0) throw new DataError("dataset_not_found", "A requested dataset is not in the catalog of this database. Read data_catalog and ask again.", 404);
     const row = this.#d.leases.issue({
       account: input.account.id,
       product: input.product,

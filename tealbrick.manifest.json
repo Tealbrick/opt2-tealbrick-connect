@@ -2018,7 +2018,7 @@
     {
       "id": "data_lease",
       "title": "Lease read-only access to shared database tables",
-      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). A short lease on the owner's read-only database credential, for an account the owner shared with the calling app at level shared with route direct, and only for datasets (schema.table) that exist in data_catalog now. The answer carries the connection fields INCLUDING THE PASSWORD: use them at once with your own connection, connect to checkedAddress (checked against the public-address policy just now) with TLS name host, keep nothing after expiresAt (at most 900 seconds), and never log, store or pass on the password. The answer is never stored or replayed by Connect (idempotency none, no receipt). An account that is not shared with the calling app, or is shared through Observer, answers not_found.",
+      "description": "APPS ONLY (agents are refused: no_access). The app is identified by its verified product. A short lease on the owner's read-only database credential, for an account shared with the calling app at level shared, route direct, and only for datasets (schema.table) in data_catalog now. The answer carries the connection fields INCLUDING THE PASSWORD: connect to checkedAddress (checked against the public-address policy just now) with TLS name host, keep nothing after expiresAt (at most 900 seconds), never log, store or pass on the password. Connect does not store or replay the answer; the receipt keeps the input digest and a redacted summary only. Not shared, or shared through Observer: not_found. Every error has a code and a fixed message.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2122,7 +2122,7 @@
       ],
       "effect": "read",
       "idempotency": "none",
-      "receipt": false,
+      "receipt": true,
       "audience": "agent"
     },
     {
