@@ -209,6 +209,8 @@ test("C331 D4b: only a pure read of money records may be confirmed; an owner con
     "list_and_refund_charges", "list_charges_then_capture", "listChargesAndPay", "list_charges_refund", "refund_list_charges", "stripe_charge_list",
     "list_refunds_for_charge", "get_charge_status", "list_paymentintents", "create_charge", "charge_customer", "list_pay", "pay_list",
     "list_charges_delete", "list_charges_to_customer", "list_charg\u0435s",
+    // QA-CONNECT22-2: the tail and the prefix are allow-lists
+    "list_payouts_initiate", "get_charges_retry", "list_charges_v2", "initiate_list_charges", "acme_list_charges", "stripe_acme_list_charges",
   ]) {
     assert.equal(readsMoneyRecords(name), false, name);
     assert.equal(mcpReadClaimUnverified(name, { readOnlyHint: true }), false, name);
@@ -217,4 +219,13 @@ test("C331 D4b: only a pure read of money records may be confirmed; an owner con
   // spoofed hints: no claim, or read-only together with destructive
   assert.equal(mcpReadClaimUnverified("list_charges", undefined), false);
   assert.equal(mcpReadClaimUnverified("list_charges", { readOnlyHint: true, destructiveHint: true }), false);
+});
+
+test("QA-CONNECT22-1 (C340): a name that is not plain ASCII is money, whatever it claims or the owner confirmed", () => {
+  for (const name of ["list_charg\u0435s", "d\u0435lete_all_customers", "list\u200b_notes", "search_notes\u200d", "\uff4c\uff49\uff53\uff54_notes"]) {
+    assert.equal(classifyMcpTool(name, { readOnlyHint: true }).effect, "money", JSON.stringify(name));
+    assert.equal(classifyMcpTool(name, { readOnlyHint: true }, true).effect, "money", `${JSON.stringify(name)}: an owner row never lowers it`);
+    assert.equal(mcpReadClaimUnverified(name, { readOnlyHint: true }), false, JSON.stringify(name));
+  }
+  assert.equal(classifyMcpTool("search_notes", { readOnlyHint: true }).effect, "read", "a plain read name is unchanged");
 });
