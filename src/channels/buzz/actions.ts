@@ -8,6 +8,9 @@
  * (`e` tag) is one of this alert's events; its content is exactly ✅ or ❌; it is not older than the alert; the alert is
  * open and not expired. The first valid reaction decides: a later one, a removed one or a text reply changes nothing.
  * The earliest second holding both ✅ and ❌ is ambiguous: nothing is decided and the owner is sent to Operator Inbox.
+ *
+ * QA-CON27-1: a recipient key that Connect itself holds (an agent's or the workspace sender's, connect_buzz_identities)
+ * never takes reactions: the agent could sign its own approval. Refused at send (the app sends text only) and at poll.
  */
 import type { AppSecrets } from "@opt2-tealbrick/miniapp-sdk";
 import type { Db, Logger } from "@opt2-tealbrick/spec/sdk";
@@ -24,6 +27,13 @@ export const BUZZ_SKEW_S = 60;
 /** At most this many reactions are read per channel and poll. */
 export const BUZZ_REACTIONS_MAX = 100;
 const secretName = (id: string) => `buzz-actions:${id}`;
+/** Open alerts are read in pages of this size, all of them per tick (QA-CON27-4). */
+const PAGE = 50;
+
+/** True when `pubkey` (hex) is a key Connect holds: an agent's or the workspace sender's Buzz identity. */
+export function heldKey(db: Db, pubkey: string): boolean {
+  return db.prepare("SELECT 1 FROM connect_buzz_identities WHERE pubkey = ? LIMIT 1").get(pubkey) !== undefined;
+}
 
 /** What the hub needs from the relay client (BuzzRelay): read and reply as the sender. */
 export interface BuzzReader {
@@ -100,17 +110,26 @@ export async function recordBuzzActions(
 }
 
 const REPLY_EXPIRED = "These reactions expired. Decide in Operator Inbox.";
+const REPLY_HELD_KEY = "This alert went to a key that Connect holds for an agent or the workspace, so a reaction cannot decide it. Decide in Operator Inbox.";
 const REPLY_AMBIGUOUS = "Both ✅ and ❌ arrived at the same time, so nothing was decided. Decide in Operator Inbox.";
 
-/** One poll over the open Buzz alerts (the 15 s scheduler tick). Never throws: a problem is logged and retried next tick. */
+/** One poll over ALL open Buzz alerts (the 15 s scheduler tick), page by page. Never throws: a problem is logged and retried next tick. */
 export async function pollBuzzActions(d: BuzzActionsDeps): Promise<void> {
-  const rows = d.db.prepare("SELECT * FROM connect_buzz_actions WHERE state = 'open' ORDER BY created_at ASC LIMIT 20").all();
-  for (const r of rows) {
-    try {
-      await pollOne(d, r);
-    } catch (error) {
-      d.log?.warn("buzz action poll failed", { alert: String(r.id).slice(0, 16), code: (error as { code?: string }).code ?? "error" });
+  let after = { at: -1, id: "" };
+  for (;;) {
+    const rows = d.db
+      .prepare("SELECT * FROM connect_buzz_actions WHERE state = 'open' AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC LIMIT ?")
+      .all(after.at, after.at, after.id, PAGE);
+    for (const r of rows) {
+      try {
+        await pollOne(d, r);
+      } catch (error) {
+        d.log?.warn("buzz action poll failed", { alert: String(r.id).slice(0, 16), code: (error as { code?: string }).code ?? "error" });
+      }
     }
+    const last = rows.at(-1);
+    if (rows.length < PAGE || !last) return;
+    after = { at: Number(last.created_at), id: String(last.id) };
   }
 }
 
@@ -133,11 +152,14 @@ async function pollOne(d: BuzzActionsDeps, r: Record<string, unknown>): Promise<
     if (done === 1) await reply(result);
   };
   if (Number(r.expires_at) <= d.now()) return close(REPLY_EXPIRED);
+  // the key became an agent's or the sender's after the send: never decide with it
+  if (heldKey(d.db, String(r.owner_pubkey))) return close(REPLY_HELD_KEY);
   const eventIds = new Set(sent.map((s) => s.id));
   const events: NostrEvent[] = [];
   for (const channel of new Set(sent.map((s) => s.channel))) {
     const ids = sent.filter((s) => s.channel === channel).map((s) => s.id);
-    const filter = { kinds: [KIND_REACTION], "#h": [channel], "#e": ids, since: Math.floor(Number(r.sent_at) / 1000) - BUZZ_SKEW_S, limit: BUZZ_REACTIONS_MAX };
+    // authors: only the recipient's reactions are asked for (QA-CON27-3); decideFrom checks the key again
+    const filter = { kinds: [KIND_REACTION], authors: [String(r.owner_pubkey)], "#h": [channel], "#e": ids, since: Math.floor(Number(r.sent_at) / 1000) - BUZZ_SKEW_S, limit: BUZZ_REACTIONS_MAX };
     events.push(...(await d.reader.query(sender, [filter])).events);
   }
   const emoji = decideFrom(events, { eventIds, owner: String(r.owner_pubkey), sentAtS: Math.floor(Number(r.sent_at) / 1000) });

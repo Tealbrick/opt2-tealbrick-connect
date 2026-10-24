@@ -12,7 +12,7 @@ import type { CrudAction, DynamicCatalogEntry, DynamicResolution, DynamicSearchI
 import type { Caller, Db, DynamicHandlers, Handler, HandlerSpec, Json, Logger, OpContext, PublicHandler } from "@opt2-tealbrick/spec/sdk";
 
 import { type Account, AccountStore, CONNECTION_KINDS, type ConnectionKind } from "./accounts.ts";
-import { emojiMap, pollBuzzActions, purgeBuzzActions, recordBuzzActions } from "./channels/buzz/actions.ts";
+import { emojiMap, heldKey, pollBuzzActions, purgeBuzzActions, recordBuzzActions } from "./channels/buzz/actions.ts";
 import { BuzzIdentities, WORKSPACE_SENDER } from "./channels/buzz/identity.ts";
 import { parsePubkey } from "./channels/buzz/nostr.ts";
 import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
@@ -461,6 +461,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
   const buzzOrigin = (ctx: OpContext, i: Record<string, unknown>): ActionOrigin | undefined => {
     const origin = actionOrigin(ctx, { ...i, account: i.to });
     if (origin && !emojiMap(origin.actions)) fail("actions_invalid", "Buzz shows the buttons as reactions: give one primary (✅) and at most one danger (❌) button.");
+    // QA-CON27-1: a key Connect holds (an agent's or the workspace sender's) could sign its own approval: no reactions
+    const key = parsePubkey(String(i.to ?? ""));
+    if (origin && key && heldKey(ctx.db, key))
+      fail("actions_invalid", "This Buzz key belongs to an agent or the workspace sender in Connect, so it cannot approve by reaction. Send to the owner's own Buzz key.");
     return origin;
   };
   /** Sends a Buzz DM, with reaction buttons when the app asked for them (and they have not expired). */

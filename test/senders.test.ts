@@ -322,4 +322,7 @@ test("C343a buzz_dm(_first) with actions: verified apps only; ✅/❌ shape; rec
   assert.equal(late.actions, "expired");
   assert.match(String(s.w.events.at(-1)?.content), /^late alert\n\n\(The buttons of this message expired/u);
   assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM connect_buzz_actions").get()?.n, 1);
+  // QA-CON27-1: a key Connect holds (here an agent's identity) cannot take reaction buttons
+  const agentKey = (s.db.prepare("SELECT pubkey FROM connect_buzz_identities WHERE agent <> ? LIMIT 1").get(WORKSPACE_SENDER) ?? s.db.prepare("SELECT pubkey FROM connect_buzz_identities LIMIT 1").get()) as { pubkey: string };
+  await assert.rejects(s.run("buzz_dm_first", { to: npubEncode(agentKey.pubkey), content: "self", actions }, inbox), (e: ConnectError) => e.code === "actions_invalid" && /belongs to an agent/u.test(e.message));
 });

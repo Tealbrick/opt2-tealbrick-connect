@@ -46,16 +46,18 @@ function world(initial: NostrEvent[] = []) {
       return {};
     },
   };
+  let delay = 0;
   const relay = async (product: string, input: unknown, key: string) => {
     relayed.push({ product, input, key });
+    if (delay) await new Promise((r) => setTimeout(r, delay));
     if (outcome instanceof Error) throw outcome;
     return outcome;
   };
   const deps = () => ({ db, secrets, reader, relay, now: () => now });
-  const record = () =>
+  const record = (id = ALERT_ID) =>
     recordBuzzActions(
       { db, secrets, now: () => now },
-      { sender: SENDER, owner: OWNER, sent: [{ id: ALERT_ID, channel: CHANNEL }], origin: { product: "inbox", instance: "ins_01INBOX", requestedAccount: "npub1owner", actions: BUTTONS, expiresAt: NOW + 3600_000 } },
+      { sender: SENDER, owner: OWNER, sent: [{ id, channel: CHANNEL }], origin: { product: "inbox", instance: "ins_01INBOX", requestedAccount: "npub1owner", actions: BUTTONS, expiresAt: NOW + 3600_000 } },
     );
   return {
     db,
@@ -73,6 +75,9 @@ function world(initial: NostrEvent[] = []) {
     },
     setOutcome: (o: RelayOutcome | Error) => {
       outcome = o;
+    },
+    slow: (ms: number) => {
+      delay = ms;
     },
     state: () => (db.prepare("SELECT state FROM connect_buzz_actions").get() as { state: string } | undefined)?.state,
   };
@@ -129,7 +134,7 @@ test("poll: the first valid ✅ is relayed once with the sealed value; the alert
   assert.equal(w.state(), "done");
   assert.deepEqual(w.replies, ["Approved by you at 10:00 UTC."]);
   assert.equal(await w.secrets.get(`buzz-actions:${ALERT_ID}`), null, "values removed after the decision");
-  assert.deepEqual(w.queries[0], { kinds: [7], "#h": [CHANNEL], "#e": [ALERT_ID], since: NOW_S - 60, limit: 100 });
+  assert.deepEqual(w.queries[0], { kinds: [7], authors: [OWNER], "#h": [CHANNEL], "#e": [ALERT_ID], since: NOW_S - 60, limit: 100 });
   // after the decision: a later ❌ (or the same ✅ again) is never read
   w.set([react(BUZZ_APPROVE), react(BUZZ_DENY, { at: NOW_S + 30 })]);
   await w.poll();
@@ -192,4 +197,40 @@ test("poll: a final refusal of the app closes the alert with its text; a transie
   t.setOutcome(new Error("boom"));
   await t.poll();
   assert.equal(t.state(), "open");
+});
+
+test("QA-CON27-1: an alert whose recipient key Connect holds (an agent's, the sender's) never decides by reaction", async () => {
+  const w = world([react(BUZZ_APPROVE)]);
+  await w.record();
+  w.db.prepare("INSERT INTO connect_buzz_identities (agent, pubkey, display_name, created_at) VALUES ('agt_01X', ?, 'Agent', 0)").run(OWNER);
+  await w.poll();
+  assert.equal(w.relayed.length, 0);
+  assert.equal(w.state(), "done");
+  assert.match(w.replies[0] ?? "", /key that Connect holds/u);
+});
+
+test("QA-CON27-4: every open alert is polled, not only the oldest 20", async () => {
+  const w = world([]);
+  const ids = Array.from({ length: 61 }, (_, n) => n.toString(16).padStart(64, "c"));
+  for (const id of ids) await w.record(id);
+  w.set(ids.map((id) => react(BUZZ_APPROVE, { target: id })));
+  await w.poll();
+  assert.equal(w.relayed.length, 61);
+  assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connect_buzz_actions WHERE state = 'done'").get()?.n, 61);
+});
+
+test("QA-CON27-5: claim guard — two polls at once relay one reaction once", async () => {
+  const w = world([react(BUZZ_APPROVE)]);
+  await w.record();
+  w.slow(30);
+  await Promise.all([w.poll(), w.poll(), w.poll()]);
+  assert.equal(w.relayed.length, 1);
+  assert.equal(w.state(), "done");
+  assert.equal(w.replies.length, 1);
+});
+
+test("QA-CON27-5: the target is the LAST e tag (NIP-25)", () => {
+  const two = (first: string, last: string) => signEvent(OWNER_SK, { kind: 7, created_at: NOW_S + 5, tags: [["e", first], ["e", last], ["h", CHANNEL]], content: BUZZ_APPROVE });
+  assert.equal(decideFrom([two(ALERT_ID, OTHER_EVENT)], alert), null, "alert only in a leading e tag");
+  assert.equal(decideFrom([two(OTHER_EVENT, ALERT_ID)], alert), BUZZ_APPROVE, "alert as the last e tag");
 });
