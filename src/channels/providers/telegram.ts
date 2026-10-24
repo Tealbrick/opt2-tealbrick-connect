@@ -36,6 +36,9 @@ const SERVICE = "Telegram";
 export const TELEGRAM_MAX_TEXT = 4096;
 export const TELEGRAM_POLL_TIMEOUT_S = 25;
 const TOKEN_SHAPE = /^[0-9]+:[A-Za-z0-9_-]+$/u;
+/** Quality audit R2: how often one update whose message could not be stored is fetched again before it is passed. QA INFO: 10
+ *  tries with the capped backoff (1 s doubling to 60 s) ride out a database outage of about 4 minutes. */
+export const TELEGRAM_SINK_TRIES = 10;
 const CHAT_ID_SHAPE = /^(-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{3,31})$/u;
 const USER_ID_SHAPE = /^[0-9]{1,20}$/u;
 const MESSAGE_ID_SHAPE = /^[0-9]{1,12}$/u;
@@ -336,6 +339,8 @@ async function run(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity,
   let offset: number | undefined;
   let webhookChecked = false;
   let attempts = 0;
+  // Quality audit R2: tries per update whose message could not be stored (the offset stays on it until TELEGRAM_SINK_TRIES)
+  const sinkTries = new Map<number, number>();
   while (!signal.aborted) {
     try {
       if (!webhookChecked) {
@@ -355,14 +360,21 @@ async function run(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity,
       for (const update of result) {
         const id = asRecord(update)?.update_id;
         if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
-        if (offset === undefined || id + 1 > offset) offset = id + 1;
         const message = parseTelegramUpdate(update, bot, net.now());
-        if (!message) continue;
-        try {
-          sink(message);
-        } catch {
-          // The sink never breaks the poll loop.
+        if (message) {
+          try {
+            sink(message);
+            sinkTries.delete(id);
+          } catch {
+            // Quality audit R2: not stored (the hub logged and counted it). The offset stays on this update, so the next
+            // getUpdates returns it again after a backoff; after TELEGRAM_SINK_TRIES tries it is passed (counted each time).
+            const tries = (sinkTries.get(id) ?? 0) + 1;
+            sinkTries.set(id, tries);
+            if (tries < TELEGRAM_SINK_TRIES) throw new ChannelError("channel_inbound_not_stored", "An incoming Telegram message could not be stored; it is fetched again.", 503);
+            sinkTries.delete(id);
+          }
         }
+        if (offset === undefined || id + 1 > offset) offset = id + 1;
       }
       attempts = 0;
     } catch (error) {

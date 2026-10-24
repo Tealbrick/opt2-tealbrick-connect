@@ -198,7 +198,8 @@ const INVITE_OBJECT_WORDS = new Set(["event", "meeting", "appointment", "booking
 const namesInviteObject = (name: string) => nameParts(name).some((part) => INVITE_OBJECT_WORDS.has(singular(part)) || part.includes("calendar"));
 
 /** Only plain ASCII names are narrowed: a look-alike letter (Cyrillic "е" in "dеlete") must not hide a verb. */
-const plainName = (name: string) => /^[\x20-\x7e]*$/u.test(name) && name.normalize("NFKC") === name;
+/** Plain printable ASCII, NFKC-stable: the only names whose words Connect can check (CON-02, C340). */
+export const plainName = (name: string) => /^[\x20-\x7e]*$/u.test(name) && name.normalize("NFKC") === name;
 
 /**
  * C276a: a narrower CRUD set for a write class, kept only when it is safe. `read` and `money` classes never change; the new set
@@ -266,12 +267,15 @@ export function narrowByName(name: string, cls: ToolClass): ToolClass {
  * name inference also says read, or when the owner marked this tool read in Connect (`ownerRead`, op mcp_tool_read_set).
  */
 export function classifyMcpTool(name: string, annotations: Record<string, unknown> | undefined, ownerRead = false): ToolClass {
+  // QA-CONNECT22-1 (C340): a name that is not plain ASCII (a look-alike letter, a zero-width character) hides its words: money
+  if (!plainName(name)) return classify({ write: true, outward: true, destructive: false, money: true });
   return narrowByName(name, classifyMcpBase(name, annotations, ownerRead));
 }
 
 function classifyMcpBase(name: string, annotations: Record<string, unknown> | undefined, ownerRead: boolean): ToolClass {
   const a = annotations ?? {};
-  if (namesMoney(name)) return classify({ write: true, outward: true, destructive: false, money: true });
+  // C331 D4b (Coordinator OK 2026-10-24): a money name stays money, except a READ of money records the owner confirmed per tool
+  if (namesMoney(name)) return ownerRead && readsMoneyRecords(name) ? classify({ write: false, outward: false, destructive: false }) : classify({ write: true, outward: true, destructive: false, money: true });
   if (a.destructiveHint === true) return classify({ write: true, outward: false, destructive: true });
   if (ownerRead) return classify({ write: false, outward: false, destructive: false });
   const inferred = inferFromName(name);
@@ -280,9 +284,58 @@ function classifyMcpBase(name: string, annotations: Record<string, unknown> | un
   return inferred;
 }
 
-/** X-03: the server claims read-only but Connect classes the tool higher; the owner can confirm it as read. */
+/**
+ * X-03: the server claims read-only but Connect classes the tool higher; the owner can confirm it as read. C331 D4b: a money name
+ * qualifies only when it reads money records (readsMoneyRecords); every other money name stays money whatever the server says.
+ */
 export function mcpReadClaimUnverified(name: string, annotations: Record<string, unknown> | undefined): boolean {
-  return annotations?.readOnlyHint === true && annotations.destructiveHint !== true && !namesMoney(name) && inferFromName(name).effect !== "read";
+  if (!plainName(name) || annotations?.readOnlyHint !== true || annotations.destructiveHint === true) return false;
+  if (namesMoney(name)) return readsMoneyRecords(name);
+  return inferFromName(name).effect !== "read";
+}
+
+/** C331 D4b: money words that are records after a read verb ("list_charges"); a singular only as the last and only money word ("get_refund"). */
+const MONEY_RECORD_PLURALS = new Set(["charges", "payments", "payouts", "refunds", "purchases", "transfers", "withdrawals", "deposits"]);
+const MONEY_RECORD_SINGULARS = new Set(["charge", "payment", "payout", "refund", "purchase", "transfer", "withdrawal", "deposit"]);
+/** QA-CONNECT22-2: the only service words allowed before the read verb (payment and finance vendors; any other stays money). */
+const MONEY_RECORD_PREFIX = new Set([
+  "stripe", "paypal", "square", "adyen", "braintree", "chargebee", "paddle", "mollie", "recurly", "gocardless", "plaid", "wise",
+  "revolut", "quickbooks", "xero", "shopify", "woocommerce", "lemonsqueezy", "mcp",
+]);
+
+/**
+ * QA-CONNECT22-2: the only words allowed after the read verb besides money record nouns and read verbs (an allow-list: any
+ * other word, e.g. "initiate", "retry", "and", keeps the tool money). Words that qualify which records are read.
+ */
+const MONEY_RECORD_TAIL = new Set([
+  "all", "by", "for", "of", "per", "recent", "latest", "last", "open", "paid", "unpaid", "failed", "succeeded", "pending", "refunded",
+  "customer", "customers", "account", "accounts", "invoice", "invoices", "subscription", "subscriptions", "balance", "balances",
+  "id", "ids", "detail", "details", "summary", "history", "total", "totals", "page", "item", "items", "line", "lines", "date", "dates",
+  "month", "year", "range", "metadata",
+]);
+
+/**
+ * C331 D4b (Coordinator OK 2026-10-24): true only for a name that READS money records and can do nothing else, so the owner may
+ * confirm it read (per tool, never automatic). Fail closed: plain ASCII; at most ONE service word before the first verb, from
+ * MONEY_RECORD_PREFIX ("stripe_list_charges"); the first verb is a read verb; after it only read verbs, money
+ * record nouns and MONEY_RECORD_TAIL words (QA-CONNECT22-2: an allow-list), and every money word is a record noun (a plural, or
+ * one singular that is the last word and the only money word: "list_charges_refund" stays money). Compound money words
+ * ("paymentintents", "chargeandrefund") stay money.
+ */
+export function readsMoneyRecords(name: string): boolean {
+  if (!plainName(name)) return false;
+  const parts = nameParts(name);
+  const lead = parts.findIndex((part) => READ_PARTS.has(part));
+  if (lead < 0 || lead > 1) return false;
+  const isMoneyWord = (part: string) => MONEY_PARTS.has(part) || MONEY_STEMS.some((stem) => part.includes(stem));
+  if (!parts.slice(0, lead).every((part) => MONEY_RECORD_PREFIX.has(part))) return false;
+  const rest = parts.slice(lead + 1);
+  const isRecordNoun = (part: string) => MONEY_RECORD_PLURALS.has(part) || MONEY_RECORD_SINGULARS.has(part);
+  if (!rest.every((part) => isRecordNoun(part) || READ_PARTS.has(part) || MONEY_RECORD_TAIL.has(part))) return false;
+  const money = rest.filter(isMoneyWord);
+  if (money.length === 0 || !money.every(isRecordNoun)) return false;
+  if (money.every((part) => MONEY_RECORD_PLURALS.has(part))) return true;
+  return money.length === 1 && rest.at(-1) === money[0];
 }
 
 // ── X-02: first contact for dynamic send tools ──

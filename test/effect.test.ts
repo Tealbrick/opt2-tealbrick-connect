@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ACCESS_CRUD, classify, classifyMcpTool, inferFromName, isSendTool, levelAllows, levelFor, mcpReadClaimUnverified, recipientsOf } from "../src/effect.ts";
+import { ACCESS_CRUD, classify, classifyMcpTool, inferFromName, isSendTool, levelAllows, levelFor, mcpReadClaimUnverified, readsMoneyRecords, recipientsOf } from "../src/effect.ts";
 import { classifyComposioTool, loadPolicies } from "../src/sources/composio/policy.ts";
 
 test("classify obeys M-OP-2/3/4", () => {
@@ -196,4 +196,36 @@ test("X-02: send tools and their recipients (real Composio argument names)", () 
   assert.deepEqual(recipientsOf({ to: "o@x.example", cc_emails: ["p@x.example"], bcc_emails: ["q@x.example"] }), ["o@x.example", "p@x.example", "q@x.example"], "OUTLOOK_SEND_EMAIL");
   assert.deepEqual(recipientsOf({ toRecipients: [{ emailAddress: { address: "g@x.example" } }] }), ["g@x.example"], "Graph style");
   assert.deepEqual(recipientsOf({ draft_id: "r1", user_id: "me" }), [], "GMAIL_SEND_DRAFT names no recipient");
+});
+
+test("C331 D4b: only a pure read of money records may be confirmed; an owner confirmation is the only way to read", () => {
+  for (const name of ["stripe_list_charges", "list_charges", "listCharges", "get_refund", "stripe_get_charge", "export_payments", "get_payouts_count", "search_transfers"]) {
+    assert.equal(readsMoneyRecords(name), true, name);
+    assert.equal(mcpReadClaimUnverified(name, { readOnlyHint: true }), true, name);
+    assert.equal(classifyMcpTool(name, { readOnlyHint: true }).effect, "money", `${name}: never automatic`);
+    assert.equal(classifyMcpTool(name, { readOnlyHint: true }, true).effect, "read", `${name}: owner confirmed`);
+  }
+  for (const name of [
+    "list_and_refund_charges", "list_charges_then_capture", "listChargesAndPay", "list_charges_refund", "refund_list_charges", "stripe_charge_list",
+    "list_refunds_for_charge", "get_charge_status", "list_paymentintents", "create_charge", "charge_customer", "list_pay", "pay_list",
+    "list_charges_delete", "list_charges_to_customer", "list_charg\u0435s",
+    // QA-CONNECT22-2: the tail and the prefix are allow-lists
+    "list_payouts_initiate", "get_charges_retry", "list_charges_v2", "initiate_list_charges", "acme_list_charges", "stripe_acme_list_charges",
+  ]) {
+    assert.equal(readsMoneyRecords(name), false, name);
+    assert.equal(mcpReadClaimUnverified(name, { readOnlyHint: true }), false, name);
+  }
+  for (const name of ["create_charge", "list_and_refund_charges", "pay_list"]) assert.equal(classifyMcpTool(name, { readOnlyHint: true }, true).effect, "money", `${name}: a stale owner row never lowers it`);
+  // spoofed hints: no claim, or read-only together with destructive
+  assert.equal(mcpReadClaimUnverified("list_charges", undefined), false);
+  assert.equal(mcpReadClaimUnverified("list_charges", { readOnlyHint: true, destructiveHint: true }), false);
+});
+
+test("QA-CONNECT22-1 (C340): a name that is not plain ASCII is money, whatever it claims or the owner confirmed", () => {
+  for (const name of ["list_charg\u0435s", "d\u0435lete_all_customers", "list\u200b_notes", "search_notes\u200d", "\uff4c\uff49\uff53\uff54_notes"]) {
+    assert.equal(classifyMcpTool(name, { readOnlyHint: true }).effect, "money", JSON.stringify(name));
+    assert.equal(classifyMcpTool(name, { readOnlyHint: true }, true).effect, "money", `${JSON.stringify(name)}: an owner row never lowers it`);
+    assert.equal(mcpReadClaimUnverified(name, { readOnlyHint: true }), false, JSON.stringify(name));
+  }
+  assert.equal(classifyMcpTool("search_notes", { readOnlyHint: true }).effect, "read", "a plain read name is unchanged");
 });

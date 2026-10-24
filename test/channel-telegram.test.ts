@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ChannelError, type InboundMessage } from "../src/channels/provider.ts";
-import { parseTelegramUpdate, telegramProvider, telegramReaction } from "../src/channels/providers/telegram.ts";
+import { parseTelegramUpdate, TELEGRAM_SINK_TRIES, telegramProvider, telegramReaction } from "../src/channels/providers/telegram.ts";
 import { fakeNet, fixture, instantSleep, type RecordedRoute, recordedFetch } from "./channel-fakes.ts";
 
 // Fake token (right shape, never valid anywhere).
@@ -281,9 +281,10 @@ test("telegram: poll loop throws channel_credentials_rejected on 401", async () 
   await assert.rejects(telegramProvider.inbound.run(creds, net, bot, () => {}, new AbortController().signal), assertChannelError("channel_credentials_rejected"));
 });
 
-test("telegram: poll loop retries transient errors with growing backoff and survives a throwing sink", async () => {
+test("telegram: poll loop retries transient errors with growing backoff", async () => {
   const controller = new AbortController();
   let polls = 0;
+  const received: InboundMessage[] = [];
   const { net, waits } = setup({
     [`POST ${P}/getWebhookInfo`]: { body: updates.getWebhookInfoEmpty },
     [`POST ${P}/getUpdates`]: () => {
@@ -295,18 +296,44 @@ test("telegram: poll loop retries transient errors with growing backoff and surv
     },
   });
   if (telegramProvider.inbound.kind !== "poll") throw new Error("expected poll");
+  await telegramProvider.inbound.run(creds, net, bot, (m) => received.push(m), controller.signal);
+  assert.equal(waits.length, 3);
+  assert.ok(waits.every((w) => w >= 1000));
+  assert.ok((waits[2] ?? 0) >= 2000, "backoff grows");
+  assert.equal(received.length, 1);
+});
+
+test("quality audit R2: a message the sink cannot store is fetched again (offset kept), then passed after TELEGRAM_SINK_TRIES", async () => {
+  const controller = new AbortController();
+  const offsets: (number | undefined)[] = [];
+  let polls = 0;
+  const id = updates.batch2.result[0].update_id as number;
+  const { net, waits } = setup({
+    [`POST ${P}/getWebhookInfo`]: { body: updates.getWebhookInfoEmpty },
+    [`POST ${P}/getUpdates`]: (call) => {
+      offsets.push(call.body?.offset);
+      polls += 1;
+      if (polls <= TELEGRAM_SINK_TRIES) return { body: updates.batch2 };
+      controller.abort();
+      return { body: { ok: true, result: [] } };
+    },
+  });
+  if (telegramProvider.inbound.kind !== "poll") throw new Error("expected poll");
+  let tries = 0;
   await telegramProvider.inbound.run(
     creds,
     net,
     bot,
     () => {
-      throw new Error("sink failure");
+      tries += 1;
+      throw new Error("database is locked");
     },
     controller.signal,
   );
-  assert.equal(waits.length, 3);
-  assert.ok(waits.every((w) => w >= 1000));
-  assert.ok((waits[2] ?? 0) >= 2000, "backoff grows");
+  assert.equal(tries, TELEGRAM_SINK_TRIES, "offered to the sink on every fetch");
+  assert.deepEqual(offsets.slice(0, TELEGRAM_SINK_TRIES), Array(TELEGRAM_SINK_TRIES).fill(undefined), "the offset never confirms the update it could not store");
+  assert.equal(offsets[TELEGRAM_SINK_TRIES], id + 1, "after the last try the update is passed");
+  assert.equal(waits.length, TELEGRAM_SINK_TRIES - 1, "a backoff before each new fetch");
 });
 
 test("telegram: an already aborted signal returns without polling", async () => {

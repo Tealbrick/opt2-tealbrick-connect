@@ -135,6 +135,10 @@ export class ReplayGuard {
     this.#max = max;
     this.#now = now;
   }
+  /** Quality audit R2: a key whose message could not be stored is forgotten, so the platform's redelivery is taken. */
+  forget(key: string): void {
+    this.#seen.delete(key);
+  }
   /** True the first time `key` is seen inside the window; false for a repeat. */
   firstSeen(key: string): boolean {
     const now = this.#now();
@@ -401,32 +405,42 @@ function runSocket(
         envelope = undefined;
       }
       if (!envelope) return;
-      if (typeof envelope.envelope_id === "string" && envelope.envelope_id.length <= 200) {
+      const ack = () => {
+        if (typeof envelope.envelope_id !== "string" || envelope.envelope_id.length > 200) return;
         try {
           ws.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
         } catch {
           // the close handler reconnects
         }
-      }
+      };
+      // Quality audit R2: an events_api envelope is acked only once its message is handled; anything else at once
+      if (envelope.type !== "events_api") ack();
       if (envelope.type === "hello") {
         hello = true;
       } else if (envelope.type === "disconnect") {
         finish("disconnect");
       } else if (envelope.type === "events_api") {
         const parsed = parseSlackEvent(envelope.payload, bot, net.now);
-        if (!parsed) return;
+        if (!parsed) return ack();
         // event_id stops Slack's retries; channel:ts stops the `message` + `app_mention` pair of one mention.
-        const eventFresh = dedupe.firstSeen(`event:${parsed.eventId}`);
+        const eventKey = `event:${parsed.eventId}`;
+        const eventFresh = dedupe.firstSeen(eventKey);
         // An edit or a deletion of a message is a different event from the message itself (R3).
         const change = parsed.message.change;
         const kind = change ? (change.kind === "edit" ? `edit:${change.at}` : "delete") : "message";
-        const messageFresh = dedupe.firstSeen(`${kind}:${parsed.message.conversation}:${parsed.message.messageId}`);
-        if (!eventFresh || !messageFresh) return;
+        const messageKey = `${kind}:${parsed.message.conversation}:${parsed.message.messageId}`;
+        const messageFresh = dedupe.firstSeen(messageKey);
+        if (!eventFresh || !messageFresh) return ack();
         try {
           sink(parsed.message);
         } catch {
-          // a sink failure never drops the connection
+          // Quality audit R2: not stored (the hub logged and counted it). No ack and no dedupe mark: Slack sends it again
+          // (Socket Mode redelivers an unacked event a few times). A sink failure never drops the connection.
+          dedupe.forget(eventKey);
+          dedupe.forget(messageKey);
+          return;
         }
+        ack();
       }
     });
     ws.addEventListener("close", () => finish("closed"));
