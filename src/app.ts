@@ -55,7 +55,7 @@ const ACTIONS_MAX_MS = 30 * 24 * 3600 * 1000;
 /** IN-2: the op a click is relayed to, per sending product (each one is a Connect companion in the manifest). */
 export const ACTION_CALLBACKS: Readonly<Record<string, string>> = { inbox: "item_decide_dm" };
 /** Refusals of the app that end the buttons (the decision is made, or can never be made from this message). */
-const FINAL_REFUSALS = new Set(["token_used", "token_expired", "token_invalid", "already_decided", "item_expired", "item_not_found", "stale_version", "buttons_off", "decide_in_inbox"]);
+const FINAL_REFUSALS = new Set(["token_used", "token_expired", "token_invalid", "token_locked", "already_decided", "item_expired", "item_not_found", "stale_version", "buttons_off", "decide_in_inbox"]);
 
 /** IN-2: relays one click to the sending app through the start context's callApp and turns the answer into a notice. */
 export function actionRelay(callApp: (product: string, op: string, input: Json, opts?: { idempotencyKey?: string }) => Promise<unknown>, now: () => number = Date.now): ActionRelay {

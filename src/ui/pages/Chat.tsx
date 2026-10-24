@@ -8,10 +8,26 @@ import { type ChannelProviderInfo, channelAccountConnect, channelAccounts, chann
 
 type Service = ChannelProviderInfo["service"];
 
+/** IN-2 (C334(2)): the one-time Slack step for the Approve / Deny buttons of Operator Inbox alerts (ASD-STE100). */
+function SlackButtonsSteps() {
+  return (
+    <div className="tb-soft">
+      <p>The Approve and Deny buttons of Operator Inbox alerts need Interactivity. Do these steps one time for each Slack app:</p>
+      <ol>
+        <li>Open api.slack.com/apps and select your Teal Brick app.</li>
+        <li>Select Interactivity &amp; Shortcuts.</li>
+        <li>Set Interactivity to On. Socket Mode needs no Request URL.</li>
+        <li>Select Save Changes.</li>
+        <li>If Slack tells you to reinstall the app, select Reinstall to Workspace.</li>
+      </ol>
+      <p>If Interactivity is off, the alert shows the buttons, but a click does nothing. You can always decide in Operator Inbox.</p>
+    </div>
+  );
+}
+
 const NAMES: Record<Service, string> = { slack: "Slack", teams: "Microsoft Teams", telegram: "Telegram", discord: "Discord" };
 const HELP: Record<Service, string> = {
-  slack:
-    "Create a Slack app with Socket Mode and Interactivity on, install it, then paste the bot token (xoxb-…) and the app-level token (xapp-…, scope connections:write). Interactivity lets you use the Approve and Deny buttons of Operator Inbox alerts.",
+  slack: "Create a Slack app with Socket Mode and Interactivity on, install it, then paste the bot token (xoxb-…) and the app-level token (xapp-…, scope connections:write).",
   teams: "Create a single-tenant Azure Bot. Set its messaging endpoint to your workspace door: https://<bridge>/p/connect/inbound/teams.",
   telegram: "Create a bot with @BotFather and paste its token. People must start a chat with the bot before it can message them.",
   discord: "Create a bot in the Discord developer portal, invite it to your server, paste its token.",
@@ -41,6 +57,7 @@ export function Chat() {
           <Card className="bot-card">
             <h2 className="sub-head">{NAMES[picked.service]}</h2>
             <p className="tb-soft">{HELP[picked.service]}</p>
+            {picked.service === "slack" ? <SlackButtonsSteps /> : null}
             <div className="tb-ctas">
               <Button variant="primary" onClick={() => setAdding(true)}>
                 {`Connect a ${NAMES[picked.service]} bot`}
@@ -136,6 +153,7 @@ function BotFlow(props: { provider: ChannelProviderInfo; agents: { id: string; n
       render: () => (
         <>
           <p className="tb-soft">{HELP[provider.service]}</p>
+          {provider.service === "slack" ? <SlackButtonsSteps /> : null}
           <Field label="Name">
             <TextInput value={labelText} onChange={(e) => setLabel(e.target.value)} maxLength={60} disabled={connected} />
           </Field>

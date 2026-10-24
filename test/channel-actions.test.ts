@@ -185,7 +185,7 @@ test("relay: only inbox → item_decide_dm; answers map to notices; final refusa
       throw Object.assign(new Error(message), { code });
     });
   const input = { token: VALUE_A, clicker: { service: "slack", id: "U0OWNER" }, account: "slack" };
-  for (const code of ["token_used", "token_expired", "token_invalid", "already_decided", "item_expired", "stale_version", "buttons_off", "decide_in_inbox"])
+  for (const code of ["token_used", "token_expired", "token_invalid", "token_locked", "already_decided", "item_expired", "stale_version", "buttons_off", "decide_in_inbox"])
     assert.deepEqual(await refuse(code)("inbox", input, "k"), { final: true, notice: "Inbox says no." }, code);
   assert.deepEqual(await refuse("wrong_person")("inbox", input, "k"), { final: false, notice: "Only the person this alert went to can decide here." });
   assert.deepEqual(await refuse("no_grant")("inbox", input, "k"), { final: false, notice: "Open Operator Inbox in the Portal to decide." });
