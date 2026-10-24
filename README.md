@@ -2,7 +2,7 @@
 
 Everything an agent reaches outside the workspace: Composio (Gmail, Calendar and 1,000+ apps), a Tealbrick catalog of self-hosted app connectors, custom remote MCP servers, Buzz (Nostr) identities per agent, and chat channels (Slack, Teams, Telegram, Discord). Built on the Miniapp SDK.
 
-**Status:** 0.6.2 = 0.6.1 + CF-CT-1 (declared JSON types, Mautic v2 PATCH), WebDAV PROPFIND/MKCOL/COPY/MOVE (Nextcloud) and catalog-0.3.1. Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-connect`. The largest of the apps (about 11,000 lines in `src/`).
+**Status:** 0.6.3 = 0.6.2 + clearer MCP read-only refusals and Accounts page wording (C331 demo gaps). 0.6.2 = 0.6.1 + CF-CT-1 (declared JSON types, Mautic v2 PATCH), WebDAV PROPFIND/MKCOL/COPY/MOVE (Nextcloud) and catalog-0.3.1. Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-connect`. The largest of the apps (about 11,000 lines in `src/`).
 
 - Repository: `Tealbrick/opt2-tealbrick-connect` (GitHub organisation `Tealbrick`)
 - Licence: Apache-2.0 for the app code (`LICENSE`, `NOTICE`); upstream licences are in `THIRD_PARTY_NOTICES.md`. The Tealbrick brand mark and app art are Tealbrick artwork and are not covered by the Apache-2.0 licence.

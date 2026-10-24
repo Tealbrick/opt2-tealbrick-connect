@@ -41,6 +41,16 @@ const LEVEL_OPTIONS: { value: Picked; label: string }[] = [
   { value: "read_update_delete", label: "Full (+ delete)" },
 ];
 
+/**
+ * C331 (demo gap 6): a custom MCP server's service id is derived from its host ("mcp_acme_data_sources__282ebac3"), so its group is
+ * headed by what the owner named the account; several accounts on one server keep the first label plus a count.
+ */
+export function serviceTitle(service: string, list: readonly Account[]): string {
+  if (list.length === 0 || !list.every((a) => a.source === "mcp")) return service;
+  const [first] = list;
+  return list.length === 1 ? (first?.label ?? service) : `${first?.label ?? service} (+${list.length - 1} more)`;
+}
+
 export function Accounts() {
   const accounts = useLoad(accountsOverview);
   const access = useLoad(dataAccessLog);
@@ -110,8 +120,8 @@ export function Accounts() {
         <section key={service} className="tb-stack" aria-labelledby={`svc-${service}`}>
           <div className="group-head">
             <h2 id={`svc-${service}`} className="tb-row">
-              <ServiceTile name={service} />
-              {service}
+              <ServiceTile name={serviceTitle(service, list)} />
+              {serviceTitle(service, list)}
             </h2>
             {list.some((a) => a.status === "connected") ? <RefreshTools service={service} /> : null}
           </div>
@@ -430,7 +440,10 @@ function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }:
               <span className="tb-soft access-note">
                 {ownerRowsEffective
                   ? `Set in Connect: ${agent.name} can ${LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.`
-                  : `Your setting is saved. It takes effect after a future bridge update; until then the Portal grant still limits ${agent.name}.`}
+                  : row.level === "read"
+                    ? // C331 (demo gap 5): READ is the lowest level; it works now wherever the Portal grant includes read
+                      `Your setting is saved. ${agent.name} can read this account now where its Portal grant includes read.`
+                    : `Your setting is saved. It takes effect after a future bridge update; until then the Portal grant still limits ${agent.name}.`}
               </span>
             ) : null}
           </div>

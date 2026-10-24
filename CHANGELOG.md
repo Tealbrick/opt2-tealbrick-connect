@@ -1,6 +1,14 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.2 (catalog 0.3.1, CF-CT-1, WebDAV).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.3 (catalog 0.3.1; C331 demo gaps).
+
+## 0.6.3 (prepared 2026-10-24; normal path)
+
+C331 (10): gaps found while building the DEV second-brain demo (coordination/leads/demo/DEMO.md gaps 4, 5, 6). No tool class changes, no migration, no catalog change.
+
+- **Gap 4, refusal text:** `mcp_tool_read_set` named the wrong reason for a money-named tool ("The server does not say this tool is read-only" although the server did, e.g. `stripe_list_charges` with `readOnlyHint: true`). The refusal now says the real reason: a money name (money tools are always held, CORE §7), the server's `destructiveHint`, a tool that is already read, or no read-only claim. The classes stay as they were (X-03: a server's claims only raise a class; money words always win).
+- **Gap 5, Accounts > Agent access:** an owner-set READ level said "takes effect after a future bridge update" although READ calls work at once. For READ it now says "<agent> can read this account now where its Portal grant includes read"; the future-bridge text stays for the higher levels while the bridge does not admit owner rows.
+- **Gap 6, Accounts heading:** a custom MCP server's group was headed by its internal service id ("mcp_acme_data_sources__282ebac3", derived from the host). It is now headed by the account label (several accounts on one server: the first label plus a count). Other services keep their name; element ids are unchanged.
 
 ## 0.6.2 (prepared 2026-10-20; normal path, 24 h soak)
 

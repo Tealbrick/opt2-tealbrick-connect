@@ -21,7 +21,7 @@ import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/ser
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, isInviteTool, isSendTool, recipientsAt, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -1409,7 +1409,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         if (row?.source !== "mcp") fail("tool_unknown", "No MCP tool with that name is connected.", 404);
         const tool = row as NonNullable<typeof row>;
         const confirmed = ownerReadOf(ctx.db, name);
-        if (i.read === true && !tool.readClaim && !confirmed) fail("tool_not_read_only", "The server does not say this tool is read-only, so it cannot be marked read.", 409);
+        if (i.read === true && !tool.readClaim && !confirmed) fail("tool_not_read_only", notConfirmableText(tool), 409);
         if (i.read === true) ctx.db.prepare("INSERT INTO connect_tool_owner_reads (name, set_at) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET set_at = excluded.set_at").run(name, Date.now());
         else ctx.db.prepare("DELETE FROM connect_tool_owner_reads WHERE name = ?").run(name);
         // Re-class at once from the stored facts: owner read → read; withdrawn → the name inference (server hint not trusted).
@@ -1727,6 +1727,19 @@ export async function runDueBuzzPosts(db: Db, relay: BuzzRelay, log: Logger, now
 
 function ownerReadOf(db: Db, name: string): boolean {
   return !!db.prepare("SELECT 1 FROM connect_tool_owner_reads WHERE name = ?").get(name);
+}
+
+/**
+ * C331 (demo gap 4): why the owner cannot mark an MCP tool read, in the words of the real reason. Money names win over any claim
+ * (CORE §7: money is always held); a class above the name inference came from the server's `destructiveHint`; otherwise the
+ * server makes no read-only claim.
+ */
+function notConfirmableText(tool: { upstream: string; effect: string }): string {
+  if (namesMoney(tool.upstream))
+    return "Connect treats every tool whose name names money (a charge, payment, refund or transfer) as a money tool. Money tools are always held, so this one cannot be marked read.";
+  if (tool.effect === "read") return "This tool is already treated as read-only.";
+  if (tool.effect === "destructive" && inferFromName(tool.upstream).effect !== "destructive") return "The server marks this tool as destructive, so it cannot be marked read.";
+  return "The server does not say this tool is read-only, so it cannot be marked read.";
 }
 
 /** X-02: the recipients of a send that ran are known to this caller on this account from now on. */

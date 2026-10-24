@@ -48,6 +48,8 @@ const stub: {
   scopeSets: Record<string, unknown>[];
   offerChanged?: boolean;
   ownerRowsEffective?: boolean;
+  /** replaces the one chat account when set */
+  accounts?: Record<string, unknown>[];
 } = {
   shares: [],
   entries: [],
@@ -67,12 +69,13 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const path = url.pathname.replace("/a/connect/tb/v1/", "");
   if (path === "session") return json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: [] });
   const op = /^ops\/(.+)$/.exec(path)?.[1];
-  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: [account()], dataApps: stub.dataApps, callersKnown: stub.callersKnown, ...(stub.ownerRowsEffective ? { ownerRowsEffective: true } : {}) } });
+  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: stub.accounts ?? [account()], dataApps: stub.dataApps, callersKnown: stub.callersKnown, ...(stub.ownerRowsEffective ? { ownerRowsEffective: true } : {}) } });
   if (op === "account_app_share") {
     const body = JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> };
     stub.sent.push(body.input ?? (body as Record<string, unknown>));
     return json(200, { status: "ok", output: { shares: stub.shares } });
   }
+  if (op === "mcp_tools_list") return json(200, { status: "ok", output: { service: "x", tools: [] } });
   if (op === "data_access_log") return json(200, { status: "ok", output: { entries: stub.entries } });
   if (op === "tb.agents_list") return json(200, { status: "ok", output: { agents: [{ id: "agt_1", name: "Front desk", status: "active", ...(stub.agentRows ? { access: stub.agentRows } : {}) }] } });
   if (op === "tb.scopes_set") {
@@ -411,5 +414,40 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
     await click(buttons(p.host, /^Use this access$/u)[0]);
     assert.deepEqual(stub.scopeSets, [{ agent: "agt_1", type: "account", id: "cna_1", access: "read" }]);
     await p.unmount();
+  });
+
+  it("C331 demo gap 5: an owner-set READ level works now; the future-bridge text stays for levels above read", async () => {
+    reset([{ type: "account", instanceId: "cna_1", access: "read", authority: "owner" }]);
+    stub.ownerRowsEffective = false;
+    const p = await mount(h(mod.Accounts));
+    assert.match(text(p.host), /Your setting is saved\. Front desk can read this account now where its Portal grant includes read\./u);
+    assert.doesNotMatch(text(p.host), /Your setting is saved\. It takes effect after a future bridge update/u);
+    await p.unmount();
+  });
+});
+
+describe("Accounts page: group headings (C331 demo gap 6)", () => {
+  const mcp = (id: string, label: string) => ({ id, service: "mcp_acme_data_sources__282ebac3", source: "mcp", kind: "as_itself", label, ownerAgent: null, status: "connected", detail: "" });
+  const headings = (host: Element) => [...host.querySelectorAll("h2")].map((x) => (x.textContent ?? "").trim());
+  after(() => {
+    delete stub.accounts;
+  });
+
+  it("a custom MCP server is headed by the account label, never the internal service id", async () => {
+    stub.agentRows = [];
+    stub.accounts = [mcp("cna_m1", "Acme LLC data: Stripe, Slack, Drive")];
+    const p = await mount(h(mod.Accounts));
+    assert.ok(headings(p.host).some((x) => x.endsWith("Acme LLC data: Stripe, Slack, Drive")), headings(p.host).join(" | "));
+    assert.ok(!headings(p.host).some((x) => x.includes("mcp_acme")), "no service id in a heading");
+    assert.ok(p.host.querySelector("#svc-mcp_acme_data_sources__282ebac3"), "the heading id stays the service id");
+    await p.unmount();
+  });
+
+  it("several accounts on one MCP server keep the first label plus a count; other services keep their name", async () => {
+    stub.accounts = [mcp("cna_m1", "Acme data"), mcp("cna_m2", "Acme data (2)")];
+    const p = await mount(h(mod.Accounts));
+    assert.ok(headings(p.host).some((x) => x.endsWith("Acme data (+1 more)")), headings(p.host).join(" | "));
+    await p.unmount();
+    assert.equal(mod.serviceTitle("telegram", [{ id: "cna_1", service: "telegram", source: "channel", kind: "as_itself", label: "Support bot", ownerAgent: null, status: "connected", detail: "" }]), "telegram");
   });
 });
