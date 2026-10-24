@@ -21,7 +21,7 @@ import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/ser
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, recipientsAt, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -1730,14 +1730,16 @@ function ownerReadOf(db: Db, name: string): boolean {
 }
 
 /**
- * C331 (demo gap 4): why the owner cannot mark an MCP tool read, in the words of the real reason. Money names win over any claim
- * (CORE §7: money is always held); a class above the name inference came from the server's `destructiveHint`; otherwise the
- * server makes no read-only claim.
+ * C331 (demo gap 4): why the owner cannot mark an MCP tool read, in the words of the real reason. A money name that does more than
+ * read money records stays money (CORE §7: always held; D4b); a class above the name inference came from the server's
+ * `destructiveHint`; otherwise the server makes no read-only claim.
  */
 function notConfirmableText(tool: { upstream: string; effect: string }): string {
-  if (namesMoney(tool.upstream))
-    return "Connect treats every tool whose name names money (a charge, payment, refund or transfer) as a money tool. Money tools are always held, so this one cannot be marked read.";
+  if (namesMoney(tool.upstream) && !readsMoneyRecords(tool.upstream))
+    return "Connect treats every tool whose name can move money (a charge, payment, refund or transfer) as a money tool. Money tools are always held, so this one cannot be marked read. Only a tool that only reads money records, such as list_charges, can be confirmed.";
   if (tool.effect === "read") return "This tool is already treated as read-only.";
+  // a read of money records without a usable claim: no readOnlyHint, or readOnlyHint together with destructiveHint
+  if (tool.effect === "money") return "The server does not say this tool is read-only, or also marks it destructive, so it cannot be marked read.";
   if (tool.effect === "destructive" && inferFromName(tool.upstream).effect !== "destructive") return "The server marks this tool as destructive, so it cannot be marked read.";
   return "The server does not say this tool is read-only, so it cannot be marked read.";
 }

@@ -210,6 +210,10 @@ function McpTools({ service }: { service: string }) {
           <li key={t.name} className="tool-row">
             <span>
               {t.title} <span className="tb-muted">({t.ownerConfirmedRead ? "you confirmed: reads only" : `treated as: ${EFFECT_TEXT[t.effect] ?? t.effect}`})</span>
+              {t.effect === "money" ? (
+                // C331 D4b: a read of money records; the owner confirms it per tool
+                <span className="tb-soft"> The server says it only reads money records. Reading moves no money. Confirm it only when you know it moves none.</span>
+              ) : null}
             </span>
             <Button size="sm" disabled={busy === t.name} onClick={() => void set(t, !t.ownerConfirmedRead)} aria-label={`${t.ownerConfirmedRead ? "Withdraw" : "Confirm"} read-only for ${t.title}`}>
               {t.ownerConfirmedRead ? "Withdraw" : "Confirm read-only"}

@@ -48,6 +48,7 @@ const stub: {
   scopeSets: Record<string, unknown>[];
   offerChanged?: boolean;
   ownerRowsEffective?: boolean;
+  mcpTools?: Record<string, unknown>[];
   /** replaces the one chat account when set */
   accounts?: Record<string, unknown>[];
 } = {
@@ -75,7 +76,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     stub.sent.push(body.input ?? (body as Record<string, unknown>));
     return json(200, { status: "ok", output: { shares: stub.shares } });
   }
-  if (op === "mcp_tools_list") return json(200, { status: "ok", output: { service: "x", tools: [] } });
+  if (op === "mcp_tools_list") return json(200, { status: "ok", output: { service: "x", tools: stub.mcpTools ?? [] } });
   if (op === "data_access_log") return json(200, { status: "ok", output: { entries: stub.entries } });
   if (op === "tb.agents_list") return json(200, { status: "ok", output: { agents: [{ id: "agt_1", name: "Front desk", status: "active", ...(stub.agentRows ? { access: stub.agentRows } : {}) }] } });
   if (op === "tb.scopes_set") {
@@ -440,6 +441,21 @@ describe("Accounts page: group headings (C331 demo gap 6)", () => {
     assert.ok(headings(p.host).some((x) => x.endsWith("Acme LLC data: Stripe, Slack, Drive")), headings(p.host).join(" | "));
     assert.ok(!headings(p.host).some((x) => x.includes("mcp_acme")), "no service id in a heading");
     assert.ok(p.host.querySelector("#svc-mcp_acme_data_sources__282ebac3"), "the heading id stays the service id");
+    await p.unmount();
+  });
+
+  it("C331 D4b: a claimed read of money records says that reading moves no money", async () => {
+    stub.accounts = [mcp("cna_m1", "Payments")];
+    stub.mcpTools = [
+      { name: "mcp_pay_stripe_list_charges", title: "stripe_list_charges", effect: "money", holdFamily: "money", unverifiedReadClaim: true, ownerConfirmedRead: false },
+      { name: "mcp_pay_frobnicate", title: "frobnicate", effect: "outward", holdFamily: "outward", unverifiedReadClaim: true, ownerConfirmedRead: false },
+    ];
+    const p = await mount(h(mod.Accounts));
+    const rows = [...p.host.querySelectorAll(".tool-row")].map((r) => (r.textContent ?? "").replace(/\s+/gu, " "));
+    assert.equal(rows.length, 2);
+    assert.match(rows[0] ?? "", /stripe_list_charges .*The server says it only reads money records\. Reading moves no money\./u);
+    assert.doesNotMatch(rows[1] ?? "", /Reading moves no money/u);
+    delete stub.mcpTools;
     await p.unmount();
   });
 

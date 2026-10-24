@@ -2297,7 +2297,7 @@
     {
       "id": "mcp_tool_read_set",
       "title": "Confirm an MCP tool as read-only",
-      "description": "An MCP server can only claim that a tool is read-only. Connect treats it as a write until you confirm it here. Withdraw the confirmation with read false.",
+      "description": "An MCP server can only claim that a tool is read-only. Connect treats it as a write until you confirm it here. A tool whose name names money can be confirmed only when it only reads money records (for example list_charges); reading moves no money. Withdraw the confirmation with read false.",
       "input": {
         "type": "object",
         "additionalProperties": false,
