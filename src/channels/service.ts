@@ -68,6 +68,7 @@ export function isChannelService(value: string): value is ServiceId {
 export class ChannelHub {
   readonly #d: ChannelDeps;
   readonly #workers = new Map<string, AbortController>();
+  readonly #notStored = new Map<string, number>();
 
   constructor(deps: ChannelDeps) {
     this.#d = deps;
@@ -316,7 +317,12 @@ export class ChannelHub {
       if (!bot) continue;
       try {
         const out = await provider.inbound.verifyWebhook(request, await this.#creds(account), this.#d.net, bot);
-        for (const m of out.messages) this.ingest(account, m);
+        try {
+          for (const m of out.messages) this.#store(account, m);
+        } catch {
+          // Quality audit R2: not stored (logged and counted); a 5xx makes the sender deliver the activity again
+          return { status: 503, body: "" };
+        }
         return out.reply ?? { status: 200, body: "" };
       } catch (error) {
         if (!(error instanceof ChannelError) || error.code !== "channel_webhook_unauthorized") this.#d.log?.warn("channel webhook failed", { service, code: (error as { code?: string }).code ?? "error" });
@@ -437,7 +443,7 @@ export class ChannelHub {
         try {
           this.#setState(account.id, "running");
           const creds = await this.#creds(account);
-          await inbound.run(creds, this.#d.net, bot, (m) => void this.ingest(account, m), controller.signal);
+          await inbound.run(creds, this.#d.net, bot, (m) => this.#store(account, m), controller.signal);
           if (controller.signal.aborted) break;
           attempt = 0;
         } catch (error) {
@@ -456,6 +462,35 @@ export class ChannelHub {
       this.#setState(account.id, "stopped");
     };
     void loop();
+  }
+
+  /**
+   * Quality audit R2 (2026-10-24): the inbound sink. A message that cannot be stored (a database error) is never silent: one
+   * error log line (metadata only, never the text), a per-account count since start, and the bot's inbound detail says it.
+   * Then it throws, so the provider lets the platform deliver it again where it can (Slack: no ack; Telegram: the offset
+   * stays); Discord does not redeliver, the count is the record.
+   */
+  #store(account: Account, m: InboundMessage): void {
+    try {
+      this.ingest(account, m);
+    } catch (error) {
+      const failed = (this.#notStored.get(account.id) ?? 0) + 1;
+      this.#notStored.set(account.id, failed);
+      const code = (error as { code?: string }).code ?? (error instanceof Error ? error.name : "error");
+      this.#d.log?.error("channel inbound message could not be stored", { service: account.service, account: account.id, code, failed });
+      try {
+        const words = failed === 1 ? "1 incoming message" : `${failed} incoming messages`;
+        this.#setState(account.id, "running", `${words} could not be stored since the last start (last: ${new Date().toISOString()}). Connect asks the chat service to send them again where it can.`);
+      } catch {
+        // the database itself is failing: the log line and the count stay
+      }
+      throw error;
+    }
+  }
+
+  /** Quality audit R2: inbound messages of an account that could not be stored since this process started. */
+  notStored(accountId: string): number {
+    return this.#notStored.get(accountId) ?? 0;
   }
 
   stop(accountId: string): void {

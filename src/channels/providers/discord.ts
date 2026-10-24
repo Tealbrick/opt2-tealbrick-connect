@@ -439,7 +439,8 @@ function gatewaySession(
         try {
           sink(message);
         } catch {
-          // The sink never breaks the gateway loop.
+          // The sink never breaks the gateway loop. Quality audit R2: the hub logged and counted the message that could not
+          // be stored and shows it on the bot; the Discord gateway does not deliver an event twice.
         }
       }
     };

@@ -141,3 +141,33 @@ test("manifest: channel ops are account-scoped; delete ops are destructive + hel
   assert.ok(manifest.publicRoutes?.some((r) => r.path === "/inbound/teams" && r.purpose === "webhook"));
   assert.ok(new AccountStore(testDb()));
 });
+
+test("quality audit R2: a message the database cannot store is logged, counted and shown on the bot, and the provider is told", async () => {
+  const w = fakeWorld();
+  const db = testDb();
+  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), channelProviders: new Map([["telegram", w.provider]]), channelNet: w.net });
+  const lines: { msg: string; fields?: Record<string, unknown> }[] = [];
+  const log = { debug() {}, info() {}, warn() {}, error: (msg: string, fields?: Record<string, unknown>) => void lines.push({ msg, ...(fields ? { fields } : {}) }) };
+  const person = testCtx({ db, person: true, log: log as never });
+  await handlerOf(app, "channel_accounts")({}, person); // the hub is built with this context's logger
+  await app.events?.agentAdded?.({ id: AGENT as `agt_${string}`, name: AGENT, mode: "free", status: "active" }, eventCtx(db));
+  const { account } = (await handlerOf(app, "channel_account_connect")({ service: "telegram", label: "TG", agent: AGENT, credentials: { bot_token: "123:ok" } }, person)) as { account: { id: string } };
+  await new Promise((r) => setTimeout(r, 10));
+  const msg: InboundMessage = { conversation: "chan-1", conversationType: "channel", messageId: "20", threadId: null, senderId: "u1", senderName: "Ann", text: "secret text", sentAt: 1 };
+  db.exec("CREATE TRIGGER r2_fail BEFORE INSERT ON connect_channel_inbox BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;");
+  assert.throws(() => w.deliver(msg), /disk I\/O error/u, "the provider learns it was not stored (Slack: no ack; Telegram: offset stays)");
+  assert.throws(() => w.deliver({ ...msg, messageId: "21" }));
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0]?.msg, "channel inbound message could not be stored");
+  assert.deepEqual([lines[1]?.fields?.account, lines[1]?.fields?.failed], [account.id, 2]);
+  assert.ok(!JSON.stringify(lines).includes("secret text"), "metadata only, never the text");
+  const listed = (await handlerOf(app, "channel_accounts")({}, person)) as { accounts: { id: string; bot: { detail: string; notStored: number } | null }[] };
+  const bot = listed.accounts.find((a) => a.id === account.id)?.bot;
+  assert.equal(bot?.notStored, 2);
+  assert.match(bot?.detail ?? "", /^2 incoming messages could not be stored since the last start/u);
+  // the database recovers: the redelivered message is stored
+  db.exec("DROP TRIGGER r2_fail");
+  w.deliver(msg);
+  const inbox = (await handlerOf(app, "channel_inbox")({}, testCtx({ db, agent: AGENT, access: { [account.id]: "read" } }))) as { messages: { text: string }[] };
+  assert.deepEqual(inbox.messages.map((m) => m.text), ["secret text"]);
+});
