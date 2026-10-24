@@ -1307,7 +1307,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         .filter((a) => a.source === "channel")
         .map((a) => {
           const bot = s.channels.bot(a.id);
-          return { ...accountView(a), bot: bot ? { id: bot.botId, name: bot.botName, inbound: bot.inboundState, detail: bot.inboundDetail, unmatchedChanges: bot.unmatchedChanges } : null };
+          return { ...accountView(a), bot: bot ? { id: bot.botId, name: bot.botName, inbound: bot.inboundState, detail: bot.inboundDetail, unmatchedChanges: bot.unmatchedChanges, notStored: s.channels.notStored(a.id) } : null };
         });
       return { accounts } as unknown as Json;
     },
