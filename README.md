@@ -2,7 +2,7 @@
 
 Everything an agent reaches outside the workspace: Composio (Gmail, Calendar and 1,000+ apps), a Tealbrick catalog of self-hosted app connectors, custom remote MCP servers, Buzz (Nostr) identities per agent, and chat channels (Slack, Teams, Telegram, Discord). Built on the Miniapp SDK.
 
-**Status:** 0.6.3 = 0.6.2 + clearer MCP read-only refusals and Accounts page wording (C331 demo gaps). 0.6.2 = 0.6.1 + CF-CT-1 (declared JSON types, Mautic v2 PATCH), WebDAV PROPFIND/MKCOL/COPY/MOVE (Nextcloud) and catalog-0.3.1. Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-connect`. The largest of the apps (about 11,000 lines in `src/`).
+**Status:** 0.7.1 = 0.7.0 + Buzz alerts decided by the recipient's signed ✅ / ❌ reaction (C343a). 0.7.0 = 0.6.3 + Approve / Deny buttons on companion apps' Slack and Telegram DMs, relayed to Operator Inbox (IN-2), conformance 0.1.29. 0.6.3 = 0.6.2 + clearer MCP read-only refusals and Accounts page wording (C331 demo gaps). 0.6.2 = 0.6.1 + CF-CT-1 (declared JSON types, Mautic v2 PATCH), WebDAV PROPFIND/MKCOL/COPY/MOVE (Nextcloud) and catalog-0.3.1. Visibility: public, Apache-2.0. Published as the public GHCR image `ghcr.io/tealbrick/opt2-tealbrick-connect`. The largest of the apps (about 11,000 lines in `src/`).
 
 - Repository: `Tealbrick/opt2-tealbrick-connect` (GitHub organisation `Tealbrick`)
 - Licence: Apache-2.0 for the app code (`LICENSE`, `NOTICE`); upstream licences are in `THIRD_PARTY_NOTICES.md`. The Tealbrick brand mark and app art are Tealbrick artwork and are not covered by the Apache-2.0 licence.
@@ -26,6 +26,7 @@ Connect is the one place for outside connectivity. Per connected account the own
 - Secrets are sealed in the SDK secret store: Buzz secret keys, channel credentials, catalog API keys, MCP auth headers and OAuth tokens. Composio OAuth material stays at Composio.
 - Outbound requests go through a pinned fetch with a public-address policy (https, public addresses only, no stdio MCP servers).
 - Other apps call Connect: Inbox sends owner alerts through the Buzz and channel DM operations; Fleet reads `identities_list`.
+- Connect calls one app: a press on an Approve / Deny button of an Inbox alert (Slack, Telegram) or the owner's signed ✅ / ❌ reaction on a Buzz alert is relayed to Inbox `item_decide_dm` (companion grant). Connect never decides; Inbox checks the one-time token.
 - Data for apps (R3, unreleased): the owner shares a connected chat account with one app, read only (Accounts, "Share with <app> (read only)"; none by default). The shared operations `data_accounts_list`, `data_catalog` and `data_pull` serve apps only and answer the dataset `messages` (contract `messages/1`, frozen in spec-v0.1.42) from the inbound log of Slack, Teams, Telegram and Discord (kept 30 days). See ARCHITECTURE "Data operations for apps".
   - **What "available" reveals:** the app sees that the account exists (service, label), the dataset name, kind and contract, the approximate row count, the oldest message time, the retention, the `history`, `edits` and `deletions` flags, and the name, type and message count of each conversation. It sees no message text, no sender and no message id.
   - **What "shared" adds:** the messages Connect receives from now on. The owner can tick "Include the last 30 days" to add the log Connect already holds.
