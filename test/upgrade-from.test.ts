@@ -13,8 +13,8 @@ import { root } from "./helpers.ts";
 const ci = JSON.parse(readFileSync(join(root, "tealbrick-ci.json"), "utf8")) as { images: { product: string; upgradeFrom?: string }[] };
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
 
-test("C361a: the 0.6.6 image-only patch accepts updates from 0.6.5 and older (range <=0.6.5)", () => {
+test("C361a: the 0.6.6 image-only patch accepts updates only from 0.6.1 and older or exactly 0.6.5 (dev-only 0.6.2 to 0.6.4 cannot move sideways)", () => {
   assert.equal(pkg.version, "0.6.6");
   const app = ci.images.find((i) => i.product === "connect");
-  assert.equal(app?.upgradeFrom, "<=0.6.5");
+  assert.equal(app?.upgradeFrom, "<=0.6.1 || =0.6.5");
 });
