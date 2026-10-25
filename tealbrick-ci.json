@@ -9,7 +9,8 @@
       "name": "opt2-tealbrick-connect",
       "product": "connect",
       "kind": "app",
-      "manifest": "tealbrick.manifest.json"
+      "manifest": "tealbrick.manifest.json",
+      "upgradeFrom": "<=0.6.1"
     }
   ]
 }
