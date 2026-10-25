@@ -121,6 +121,8 @@ export function testCtx(input: {
   companionCallers?: { product: string; ins: string; name: string; provider?: string | null }[];
   /** TEST DOUBLE of miniapp-sdk 0.1.32 `ctx.caller.listed` (C240 option B) on an APP caller; absent = an SDK without the flag */
   appListed?: boolean;
+  /** held families of the grant (`ctx.grant.claims.held`); absent = the claims carry none */
+  grantHeld?: string[];
   /** SDK workspace (slice / person principal); defaults to `ws` */
   workspace?: string | null;
   publicUrl?: string | null;
@@ -143,8 +145,8 @@ export function testCtx(input: {
     grant: input.person
       ? null
       : input.app
-        ? ({ ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST" } as never, caller: { type: "app", id: input.app as `ins_${string}` } } as never)
-        : { ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantCrud ? { crud: input.grantCrud } : {}) } as never, caller: { type: "agent", id: agent as `agt_${string}` } },
+        ? ({ ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantHeld ? { held: input.grantHeld } : {}) } as never, caller: { type: "app", id: input.app as `ins_${string}` } } as never)
+        : { ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantCrud ? { crud: input.grantCrud } : {}), ...(input.grantHeld ? { held: input.grantHeld } : {}) } as never, caller: { type: "agent", id: agent as `agt_${string}` } },
     op: {} as never,
     scope: {
       access: null,

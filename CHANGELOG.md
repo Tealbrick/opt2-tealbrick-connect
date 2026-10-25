@@ -1,6 +1,15 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.1 (catalog 0.3.0, C276c, CF-NC-2).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.5 (0.6.1 + first-contact fixes, C354a; catalog 0.3.0, C276c, CF-NC-2).
+
+## 0.6.5 (prepared 2026-10-25; the 0.6.1 code plus first-contact fixes)
+
+A patch release on the stable 0.6 line. The code is 0.6.1 with the changes below; nothing from 0.6.2 to 0.6.4 is included, so `upgradeFrom` is `<=0.6.1` (a workspace on 0.6.2 or later never updates to it).
+- **First-contact approval required when all messages are held.** `<tool>__first_contact`, `buzz_dm_first` and `channel_dm_first` answer 409 `first_contact_approval_off` and send nothing when the caller's grant holds `outward` (every message waits for the owner) but not `first_contact`. The answer names the owner's setting: 'First message to a new contact' on the agent card (agents) or 'First message to someone new' in the workspace settings for apps (apps). Removed when resolutions carry a hold-family set (spec 0.1.74).
+- **Unknown chat conversations are first contacts.** `channel_send` to a conversation id Connect has never seen asks the provider for its conversation list once; a conversation that is still unknown answers 409 `channel_first_contact_required` (use `channel_conversations` or `channel_dm_first`). Listed channels and groups post as before; a known direct conversation still needs a message from a person (not a bot) or a contact.
+- **Dependencies:** undici 8.12.2 (GHSA-xjj6-f33q-929c); happy-dom 21.0.4 for tests (GHSA-834v-8h66-3h79).
+- **CI:** template ci-v9.21.
+- Tests: `first-contact-outward-interim.test.ts`, `first-contact-outward-interim.e2e.test.ts` (real SDK), `channel-first-contact.test.ts`, `channel-direct-bot-only.test.ts`, `upgrade-from.test.ts`, a row in `channel-hub.test.ts`.
 
 ## 0.6.1 (prepared 2026-10-20; tagged after 0.6.0 is stable)
 
