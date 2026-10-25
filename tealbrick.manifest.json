@@ -5,7 +5,7 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "sdkMajor": 1,
   "publisher": {
     "name": "Tealbrick",
@@ -1458,6 +1458,46 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 40000
+          },
+          "actions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "label",
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 30
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9._:-]+$",
+                  "description": "Opaque value relayed back to the sending app on a click (signed by that app)."
+                },
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "primary",
+                    "danger"
+                  ]
+                }
+              }
+            },
+            "description": "Companion apps only (an agent is refused actions_apps_only): buttons under the message, shown on Slack and Telegram (Teams and Discord get the text only; the output says actions unsupported). A click is relayed to the sending app's callback op (Operator Inbox: item_decide_dm) with the person who clicked."
+          },
+          "actionsUntil": {
+            "type": "string",
+            "maxLength": 40,
+            "description": "Until when a click is relayed (ISO time, at most 30 days ahead; default 24 hours). Already passed when the send runs (after a long approval wait): the text goes alone with a note, actions expired."
           }
         },
         "required": [
@@ -1478,6 +1518,15 @@
           },
           "conversation": {
             "type": "string"
+          },
+          "actions": {
+            "type": "string",
+            "enum": [
+              "shown",
+              "unsupported",
+              "expired"
+            ],
+            "description": "Only when buttons were asked for. expired: actionsUntil passed before the send ran (it waited for approval); the text went alone with a note."
           }
         }
       },
@@ -1513,6 +1562,46 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 40000
+          },
+          "actions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "label",
+                "value"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 30
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9._:-]+$",
+                  "description": "Opaque value relayed back to the sending app on a click (signed by that app)."
+                },
+                "style": {
+                  "type": "string",
+                  "enum": [
+                    "primary",
+                    "danger"
+                  ]
+                }
+              }
+            },
+            "description": "Companion apps only (an agent is refused actions_apps_only): buttons under the message, shown on Slack and Telegram (Teams and Discord get the text only; the output says actions unsupported). A click is relayed to the sending app's callback op (Operator Inbox: item_decide_dm) with the person who clicked."
+          },
+          "actionsUntil": {
+            "type": "string",
+            "maxLength": 40,
+            "description": "Until when a click is relayed (ISO time, at most 30 days ahead; default 24 hours). Already passed when the send runs (after a long approval wait): the text goes alone with a note, actions expired."
           }
         },
         "required": [
@@ -1533,6 +1622,15 @@
           },
           "conversation": {
             "type": "string"
+          },
+          "actions": {
+            "type": "string",
+            "enum": [
+              "shown",
+              "unsupported",
+              "expired"
+            ],
+            "description": "Only when buttons were asked for. expired: actionsUntil passed before the send ran (it waited for approval); the text went alone with a note."
           }
         }
       },
@@ -2751,6 +2849,18 @@
       "idempotency": "none",
       "receipt": false,
       "audience": "person"
+    }
+  ],
+  "companions": [
+    {
+      "product": "inbox",
+      "operations": [
+        "item_decide_dm"
+      ],
+      "crud": [
+        "update"
+      ],
+      "purpose": "Approve or deny an Operator Inbox alert from its Slack or Telegram buttons: Connect relays your click; Operator Inbox checks it and decides."
     }
   ],
   "scopes": [
