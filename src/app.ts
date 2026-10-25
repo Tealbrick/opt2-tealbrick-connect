@@ -12,12 +12,22 @@ import type { CrudAction, DynamicCatalogEntry, DynamicResolution, DynamicSearchI
 import type { Caller, Db, DynamicHandlers, Handler, HandlerSpec, Json, Logger, OpContext, PublicHandler } from "@opt2-tealbrick/spec/sdk";
 
 import { type Account, AccountStore, CONNECTION_KINDS, type ConnectionKind, normalizeLabel } from "./accounts.ts";
+import { emojiMap, heldKey, pollBuzzActions, purgeBuzzActions, recordBuzzActions } from "./channels/buzz/actions.ts";
 import { BuzzIdentities, WORKSPACE_SENDER } from "./channels/buzz/identity.ts";
 import { parsePubkey } from "./channels/buzz/nostr.ts";
 import { BuzzRefusal, BuzzRelay } from "./channels/buzz/relay.ts";
-import { ChannelError, type ChannelNet, type ChannelProvider, type ChannelService as ChannelServiceId } from "./channels/provider.ts";
+import {
+  ACTION_LABEL_MAX,
+  ACTION_VALUE,
+  ChannelError,
+  type ChannelNet,
+  type ChannelProvider,
+  type ChannelService as ChannelServiceId,
+  MAX_ACTIONS,
+  type MessageAction,
+} from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
-import { ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
+import { ACTIONS_EXPIRED_NOTE, type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import {
   DATABASE_KINDS,
@@ -34,7 +44,7 @@ import {
 import { DatabaseService } from "./data/database-service.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, SHARE_ROUTES, type ShareLevel, type ShareRoute, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, isInviteTool, isSendTool, recipientsAt, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -52,6 +62,36 @@ import { newId } from "./util/ids.ts";
 import { type Lookup, NetPolicyError } from "./util/net-policy.ts";
 import { pinnedFetch } from "./util/pinned-fetch.ts";
 import { scrubSecrets } from "./util/redact.ts";
+
+/** IN-2: buttons work for this long when the app names no `actionsUntil`, and never longer than the max. */
+const ACTIONS_DEFAULT_MS = 24 * 3600 * 1000;
+const ACTIONS_MAX_MS = 30 * 24 * 3600 * 1000;
+/** IN-2: the op a click is relayed to, per sending product (each one is a Connect companion in the manifest). */
+export const ACTION_CALLBACKS: Readonly<Record<string, string>> = { inbox: "item_decide_dm" };
+/** Refusals of the app that end the buttons (the decision is made, or can never be made from this message). */
+const FINAL_REFUSALS = new Set(["token_used", "token_expired", "token_invalid", "token_locked", "already_decided", "item_expired", "item_not_found", "stale_version", "buttons_off", "decide_in_inbox"]);
+
+/** IN-2: relays one click to the sending app through the start context's callApp and turns the answer into a notice. */
+export function actionRelay(callApp: (product: string, op: string, input: Json, opts?: { idempotencyKey?: string }) => Promise<unknown>, now: () => number = Date.now): ActionRelay {
+  return async (product, input, idempotencyKey) => {
+    const op = ACTION_CALLBACKS[product];
+    if (!op) return { final: false, notice: "This button cannot be used from the chat." };
+    try {
+      const r = (await callApp(product, op, input as unknown as Json, { idempotencyKey })) as { status?: string; output?: { response?: string } };
+      if (r?.status !== "ok") return { final: false, notice: "Could not decide now. Open Operator Inbox." };
+      const at = new Date(now()).toISOString().slice(11, 16);
+      const verb = r.output?.response === "approve" ? "Approved" : r.output?.response === "deny" ? "Denied" : "Answered";
+      return { final: true, notice: `${verb} by you at ${at} UTC.` };
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      const message = error instanceof Error ? error.message.slice(0, 200) : "";
+      if (typeof code === "string" && FINAL_REFUSALS.has(code)) return { final: true, notice: message || "This button no longer works. Open Operator Inbox." };
+      if (code === "wrong_person") return { final: false, notice: "Only the person this alert went to can decide here." };
+      if (code === "no_grant" || code === "grant_stale" || code === "app_not_found") return { final: false, notice: "Open Operator Inbox in the Portal to decide." };
+      return { final: false, notice: "Could not decide now. Try again, or open Operator Inbox." };
+    }
+  };
+}
 
 export const PRODUCT_SCOPE = "account";
 /** Characters of a Buzz post a hold view shows (a hold view over 16 000 characters is refused by the SDK). */
@@ -435,6 +475,57 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       // fall through
     }
     return fail("cursor_invalid", "cursor is not one this op returned.");
+  };
+  /**
+   * IN-2: buttons on a DM (`actions`, `actionsUntil`). Only a companion app with a verified product attaches them (it signs
+   * the values; Connect only relays a click back to it). An agent is refused. Absent = no buttons.
+   */
+  const actionOrigin = (ctx: OpContext, i: Record<string, unknown>): ActionOrigin | undefined => {
+    if (i.actions === undefined && i.actionsUntil === undefined) return undefined;
+    const c = ctx.caller;
+    const product = c.type === "app" && typeof c.product === "string" && c.product !== "" ? c.product : null;
+    if (c.type !== "app") fail("actions_apps_only", "Only a companion app can add buttons to a message.", 403);
+    if (product === null) fail("caller_unverified", "The calling app has no verified product, so it cannot add buttons.", 403);
+    const list = Array.isArray(i.actions) ? i.actions : [];
+    if (list.length < 1 || list.length > MAX_ACTIONS) fail("actions_invalid", `Give 1 to ${MAX_ACTIONS} buttons.`);
+    const actions: MessageAction[] = list.map((raw) => {
+      const a = raw as Record<string, unknown>;
+      const label = typeof a.label === "string" ? a.label.trim() : "";
+      const value = typeof a.value === "string" ? a.value : "";
+      if (!label || label.length > ACTION_LABEL_MAX) fail("actions_invalid", `A button label has 1 to ${ACTION_LABEL_MAX} characters.`);
+      if (!ACTION_VALUE.test(value)) fail("actions_invalid", "A button value has 1 to 64 characters: letters, digits, . _ : -");
+      return { label, value, style: a.style === "danger" ? "danger" : "primary" };
+    });
+    if (new Set(actions.map((a) => a.value)).size !== actions.length) fail("actions_invalid", "Each button needs its own value.");
+    const now = Date.now();
+    const until = i.actionsUntil === undefined ? now + ACTIONS_DEFAULT_MS : Date.parse(String(i.actionsUntil));
+    if (!Number.isFinite(until) || until > now + ACTIONS_MAX_MS) fail("actions_invalid", "actionsUntil must be a time at most 30 days ahead.");
+    // QA-CON23-2: a send that waited for the owner's approval (first contact) past actionsUntil still goes out, as text only
+    return { product: product as string, instance: c.id, requestedAccount: String(i.account ?? ""), actions, expiresAt: until, expired: until <= now };
+  };
+  /**
+   * C343a: Buzz buttons = the recipient's signed ✅ / ❌ reaction (src/channels/buzz/actions.ts). One primary and at most
+   * one danger button; the app's token is bound to the `to` it sent to.
+   */
+  const buzzOrigin = (ctx: OpContext, i: Record<string, unknown>): ActionOrigin | undefined => {
+    const origin = actionOrigin(ctx, { ...i, account: i.to });
+    if (origin && !emojiMap(origin.actions)) fail("actions_invalid", "Buzz shows the buttons as reactions: give one primary (✅) and at most one danger (❌) button.");
+    // QA-CON27-1: a key Connect holds (an agent's or the workspace sender's) could sign its own approval: no reactions
+    const key = parsePubkey(String(i.to ?? ""));
+    if (origin && key && heldKey(ctx.db, key))
+      fail("actions_invalid", "This Buzz key belongs to an agent or the workspace sender in Connect, so it cannot approve by reaction. Send to the owner's own Buzz key.");
+    return origin;
+  };
+  /** Sends a Buzz DM, with reaction buttons when the app asked for them (and they have not expired). */
+  const buzzSend = async (ctx: OpContext, s: Services, sender: SenderUsed, i: Record<string, unknown>, to: string) => {
+    const origin = buzzOrigin(ctx, i);
+    const content = origin?.expired ? `${String(i.content ?? "")}\n\n${ACTIONS_EXPIRED_NOTE}` : String(i.content ?? "");
+    const sent = await s.relay.directMessage(sender.key, { to, content, ...relaysArg(i.relays) });
+    if (origin && !origin.expired) {
+      const owner = parsePubkey(to);
+      if (owner) await recordBuzzActions({ db: ctx.db, secrets: s.secrets, now: Date.now }, { sender: sender.key, owner, sent: sent.sent, origin });
+    }
+    return { sent, actions: origin ? (origin.expired ? ("expired" as const) : ("shown" as const)) : undefined };
   };
   const firstContactHint = (ctx: OpContext, op: string): string =>
     ctx.caller.type === "app"
@@ -1137,7 +1228,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const { account, ...sender } = chatSender(ctx, s, i.account);
           ctx.receipt.summary(`First ${account.service} DM via ${account.label}${sender.kind === "workspace" ? " (workspace sender)" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), service: account.service, account: account.label, person: String(i.person ?? "").slice(-60) });
-          return s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: true });
+          const origin = actionOrigin(ctx, i);
+          return s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: true, ...(origin ? { origin } : {}) });
         }),
       holdView: (input) => {
         const i = asInput(input);
@@ -1154,7 +1246,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           ctx.receipt.summary(`${account.service} DM via ${account.label}${sender.kind === "workspace" ? " (workspace sender)" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), service: account.service, account: account.label });
           try {
-            return await s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: false });
+            const origin = actionOrigin(ctx, i);
+            return await s.channels.directMessage(account, ctx.caller.id, { person: String(i.person ?? ""), text: String(i.text ?? ""), first: false, ...(origin ? { origin } : {}) });
           } catch (error) {
             if (error instanceof ChannelError && error.code === "channel_first_contact_required") fail(error.code, firstContactHint(ctx, "channel_dm_first"), 409);
             throw error;
@@ -1205,12 +1298,12 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const i = asInput(input);
           const s = services(ctx);
           const sender = await buzzSender(ctx, s);
-          const sent = await s.relay.directMessage(sender.key, { to: String(i.to ?? ""), content: String(i.content ?? ""), ...relaysArg(i.relays) });
+          const { sent, actions } = await buzzSend(ctx, s, sender, i, String(i.to ?? ""));
           rememberContact(ctx.db, sender.key, sent);
           for (const one of sent.sent) rememberBuzzSent(ctx.db, sender.key, one.id, one.channel);
           ctx.receipt.summary(`First Buzz DM to ${shortKey(sent.to)}${sender.kind === "workspace" ? " as the workspace sender" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), to: sent.to, channel: sent.channel });
-          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays };
+          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays, ...(actions ? { actions } : {}) };
         }),
       holdView: (input) => {
         const i = asInput(input);
@@ -1229,11 +1322,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const sender = await buzzSender(ctx, s);
           const known = ctx.db.prepare("SELECT 1 FROM connect_buzz_contacts WHERE agent = ? AND pubkey = ?").get(sender.key, to);
           if (!known) fail("buzz_first_contact_required", firstContactHint(ctx, "buzz_dm_first"), 409);
-          const sent = await s.relay.directMessage(sender.key, { to: to as string, content: String(i.content ?? ""), ...relaysArg(i.relays) });
+          const { sent, actions } = await buzzSend(ctx, s, sender, i, String(i.to ?? ""));
           for (const one of sent.sent) rememberBuzzSent(ctx.db, sender.key, one.id, one.channel);
           ctx.receipt.summary(`Buzz DM to ${shortKey(sent.to)}${sender.kind === "workspace" ? " as the workspace sender" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), to: sent.to, channel: sent.channel });
-          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays };
+          return { id: sent.id, channel: sent.channel, to: sent.to, relays: sent.relays, ...(actions ? { actions } : {}) };
         }),
       redact: (input) => `Buzz DM to ${shortKey(String(asInput(input).to ?? ""))}`,
     },
@@ -1538,7 +1631,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         .filter((a) => a.source === "channel")
         .map((a) => {
           const bot = s.channels.bot(a.id);
-          return { ...accountView(a), bot: bot ? { id: bot.botId, name: bot.botName, inbound: bot.inboundState, detail: bot.inboundDetail, unmatchedChanges: bot.unmatchedChanges } : null };
+          return { ...accountView(a), bot: bot ? { id: bot.botId, name: bot.botName, inbound: bot.inboundState, detail: bot.inboundDetail, unmatchedChanges: bot.unmatchedChanges, notStored: s.channels.notStored(a.id) } : null };
         });
       return { accounts } as unknown as Json;
     },
@@ -1650,14 +1743,14 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const row = s.tools.get(name);
         if (row?.source !== "mcp") fail("tool_unknown", "No MCP tool with that name is connected.", 404);
         const tool = row as NonNullable<typeof row>;
-        const confirmed = ownerReadOf(ctx.db, name);
-        if (i.read === true && !tool.readClaim && !confirmed) fail("tool_not_read_only", "The server does not say this tool is read-only, so it cannot be marked read.", 409);
+        // QA-CONNECT22-3: confirming needs the server's CURRENT read-only claim (stored at the last tool sync), also for a tool
+        // the owner confirmed before; an earlier confirmation never stands in for it
+        if (i.read === true && !tool.readClaim) fail("tool_not_read_only", notConfirmableText(tool), 409);
         if (i.read === true) ctx.db.prepare("INSERT INTO connect_tool_owner_reads (name, set_at) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET set_at = excluded.set_at").run(name, Date.now());
         else ctx.db.prepare("DELETE FROM connect_tool_owner_reads WHERE name = ?").run(name);
         // Re-class at once from the stored facts: owner read → read; withdrawn → the name inference (server hint not trusted).
         const cls = classifyMcpTool(tool.upstream, i.read === true ? { readOnlyHint: true } : undefined, i.read === true);
         s.tools.setClass(name, cls);
-        if (i.read !== true) ctx.db.prepare("UPDATE connect_tools SET read_claim = 1 WHERE name = ? AND effect != 'read'").run(name);
         return { name, effect: cls.effect, ownerConfirmedRead: i.read === true };
       });
     },
@@ -1825,6 +1918,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     publicRoutes: { [COMPOSIO_CALLBACK_PATH]: composioCallback, [MCP_CALLBACK_PATH]: mcpCallback, [TEAMS_WEBHOOK_PATH]: teamsWebhook },
     onStart: async (ctx) => {
       const s = services(ctx);
+      // IN-2: button clicks are relayed with the start context (app-initiated calls, C85)
+      const relayClick = actionRelay((product, op, input, opts) => ctx.callApp(product, op, input, opts));
+      s.channels.setActionRelay(relayClick);
       s.channels.startAll();
       await tetherBuzz(ctx.db, ctx.log);
       // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
@@ -1835,6 +1931,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         ctx.db.prepare("DELETE FROM connect_data_audit WHERE at < ?").run(Date.now() - 90 * 24 * 60 * 60 * 1000);
         s.leases.prune(Date.now() - 90 * 24 * 60 * 60 * 1000);
         await runDueBuzzPosts(ctx.db, s.relay, ctx.log);
+        // C343a: the owner's ✅ / ❌ reactions on Buzz alerts with buttons
+        await pollBuzzActions({ db: ctx.db, secrets: s.secrets, reader: s.relay, relay: relayClick, now: Date.now, log: ctx.log });
+        await purgeBuzzActions({ db: ctx.db, secrets: s.secrets, now: Date.now }, INBOX_RETENTION_MS);
       };
       const timer = setInterval(() => void tick().catch((e: unknown) => ctx.log.warn("scheduler tick failed", { code: (e as { code?: string }).code ?? "error" })), 15_000);
       timer.unref();
@@ -1970,6 +2069,23 @@ export async function runDueBuzzPosts(db: Db, relay: BuzzRelay, log: Logger, now
 
 function ownerReadOf(db: Db, name: string): boolean {
   return !!db.prepare("SELECT 1 FROM connect_tool_owner_reads WHERE name = ?").get(name);
+}
+
+/**
+ * C331 (demo gap 4): why the owner cannot mark an MCP tool read, in the words of the real reason. A money name that does more than
+ * read money records stays money (CORE §7: always held; D4b); a class above the name inference came from the server's
+ * `destructiveHint`; otherwise the server makes no read-only claim.
+ */
+function notConfirmableText(tool: { upstream: string; effect: string }): string {
+  // QA-CONNECT22-5: a name with characters Connect cannot check is money (C340); say that, not "it names money"
+  if (!plainName(tool.upstream)) return "This tool's name has characters Connect cannot check (only plain letters, digits and punctuation are checked), so it is treated as a money tool and cannot be marked read.";
+  if (namesMoney(tool.upstream) && !readsMoneyRecords(tool.upstream))
+    return "Connect treats every tool whose name can move money (a charge, payment, refund or transfer) as a money tool. Money tools are always held, so this one cannot be marked read. Only a tool that only reads money records, such as list_charges, can be confirmed.";
+  if (tool.effect === "read") return "This tool is already treated as read-only.";
+  // a read of money records without a usable claim: no readOnlyHint, or readOnlyHint together with destructiveHint
+  if (tool.effect === "money") return "The server does not say this tool is read-only, or also marks it destructive, so it cannot be marked read.";
+  if (tool.effect === "destructive" && inferFromName(tool.upstream).effect !== "destructive") return "The server marks this tool as destructive, so it cannot be marked read.";
+  return "The server does not say this tool is read-only, so it cannot be marked read.";
 }
 
 /** X-02: the recipients of a send that ran are known to this caller on this account from now on. */

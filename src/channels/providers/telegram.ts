@@ -17,6 +17,7 @@
  *   `from`): the service drops echoes with its sent-message ledger.
  */
 import {
+  type ActionSink,
   type BotIdentity,
   type ChannelCredentials,
   ChannelError,
@@ -24,6 +25,7 @@ import {
   type ChannelProvider,
   type Conversation,
   cleanInboundText,
+  type InboundAction,
   type InboundMessage,
   type InboundSink,
   mentionList,
@@ -36,9 +38,15 @@ const SERVICE = "Telegram";
 export const TELEGRAM_MAX_TEXT = 4096;
 export const TELEGRAM_POLL_TIMEOUT_S = 25;
 const TOKEN_SHAPE = /^[0-9]+:[A-Za-z0-9_-]+$/u;
+/** Quality audit R2: how often one update whose message could not be stored is fetched again before it is passed. QA INFO: 10
+ *  tries with the capped backoff (1 s doubling to 60 s) ride out a database outage of about 4 minutes. */
+export const TELEGRAM_SINK_TRIES = 10;
 const CHAT_ID_SHAPE = /^(-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{3,31})$/u;
 const USER_ID_SHAPE = /^[0-9]{1,20}$/u;
 const MESSAGE_ID_SHAPE = /^[0-9]{1,12}$/u;
+const CALLBACK_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/u;
+/** answerCallbackQuery shows at most 200 characters. */
+const CALLBACK_TEXT_MAX = 200;
 
 /**
  * Emoji a bot can set with setMessageReaction (ReactionTypeEmoji). U+FE0F is removed before the lookup, so "❤\ufe0f" and
@@ -239,6 +247,30 @@ export function parseTelegramUpdate(update: unknown, bot: Pick<BotIdentity, "bot
   };
 }
 
+/**
+ * IN-2: one `callback_query` update → the click, or null. Only a click on a message in a chat (not an inline message),
+ * by a person (not a bot), with callback_data, is read.
+ */
+export function parseTelegramCallback(update: unknown, bot: Pick<BotIdentity, "botId">): InboundAction | null {
+  const q = asRecord(asRecord(update)?.callback_query);
+  if (!q || typeof q.id !== "string" || !CALLBACK_ID_SHAPE.test(q.id) || typeof q.data !== "string") return null;
+  const from = asRecord(q.from);
+  if (!from || typeof from.id !== "number" || !Number.isSafeInteger(from.id) || String(from.id) === bot.botId) return null;
+  const message = asRecord(q.message);
+  const chat = asRecord(message?.chat);
+  // an "inaccessible message" (date 0, older than 48 h) carries no text and cannot be edited
+  if (!message || !chat || typeof chat.id !== "number" || !Number.isSafeInteger(chat.id) || typeof message.message_id !== "number" || message.date === 0) return null;
+  return {
+    conversation: String(chat.id),
+    messageId: String(message.message_id),
+    clickerId: String(from.id),
+    ...(from.is_bot === true ? { clickerIsBot: true as const } : {}),
+    value: q.data.slice(0, 200),
+    ackId: q.id,
+    text: cleanInboundText(typeof message.text === "string" ? message.text : ""),
+  };
+}
+
 async function verify(creds: ChannelCredentials, net: ChannelNet): Promise<BotIdentity> {
   const { result } = await call(creds, net, "getMe", {});
   const me = asRecord(result);
@@ -261,6 +293,8 @@ async function send(creds: ChannelCredentials, net: ChannelNet, input: SendInput
     chat_id: chat,
     text,
     ...(reply !== null ? { reply_parameters: { message_id: reply, allow_sending_without_reply: false } } : {}),
+    // IN-2: one row of buttons; callback_data = the opaque value (≤ 64 bytes, checked by the hub)
+    ...(input.actions?.length ? { reply_markup: { inline_keyboard: [input.actions.map((a) => ({ text: a.label, callback_data: a.value }))] } } : {}),
   });
   const id = asRecord(result)?.message_id;
   if (typeof id !== "number") throw new ChannelError("channel_provider_bad_response", "Telegram sent the message but the reply was not understood.", 502);
@@ -282,6 +316,25 @@ async function edit(creds: ChannelCredentials, net: ChannelNet, input: { convers
 async function remove(creds: ChannelCredentials, net: ChannelNet, input: { conversation: string; messageId: string }): Promise<void> {
   tokenOf(creds);
   await call(creds, net, "deleteMessage", { chat_id: chatOf(input.conversation), message_id: messageIdOf(input.messageId) });
+}
+
+/** IN-2: stops the client's spinner with the notice; a final answer also edits the message (the keyboard goes). */
+async function actionDone(
+  creds: ChannelCredentials,
+  net: ChannelNet,
+  input: { conversation: string; messageId: string; ackId: string | null; text: string; notice: string; final: boolean },
+): Promise<void> {
+  tokenOf(creds);
+  if (input.ackId && CALLBACK_ID_SHAPE.test(input.ackId)) {
+    await call(creds, net, "answerCallbackQuery", { callback_query_id: input.ackId, text: input.notice.slice(0, CALLBACK_TEXT_MAX), show_alert: !input.final }).catch(
+      // a late answer (the query is older than about 15 s) must not stop the edit
+      () => undefined,
+    );
+  }
+  if (!input.final) return;
+  const text = `${input.text}\n\n${input.notice}`.slice(0, TELEGRAM_MAX_TEXT);
+  // editMessageText without reply_markup removes the inline keyboard
+  await edit(creds, net, { conversation: input.conversation, messageId: input.messageId, text });
 }
 
 export function telegramReaction(emoji: string): string | null {
@@ -331,11 +384,13 @@ async function openDirect(creds: ChannelCredentials, net: ChannelNet, input: { p
  * (capped exponential with jitter); a rejected token throws; 409 (a webhook or another poller) backs off, and a
  * webhook found later is deleted again.
  */
-async function run(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity, sink: InboundSink, signal: AbortSignal): Promise<void> {
+async function run(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity, sink: InboundSink, signal: AbortSignal, actions?: ActionSink): Promise<void> {
   tokenOf(creds);
   let offset: number | undefined;
   let webhookChecked = false;
   let attempts = 0;
+  // Quality audit R2: tries per update whose message could not be stored (the offset stays on it until TELEGRAM_SINK_TRIES)
+  const sinkTries = new Map<number, number>();
   while (!signal.aborted) {
     try {
       if (!webhookChecked) {
@@ -348,21 +403,38 @@ async function run(creds: ChannelCredentials, net: ChannelNet, bot: BotIdentity,
         creds,
         net,
         "getUpdates",
-        { ...(offset !== undefined ? { offset } : {}), timeout: TELEGRAM_POLL_TIMEOUT_S, allowed_updates: ["message", "channel_post", "edited_message", "edited_channel_post"] },
+        { ...(offset !== undefined ? { offset } : {}), timeout: TELEGRAM_POLL_TIMEOUT_S, allowed_updates: ["message", "channel_post", "edited_message", "edited_channel_post", ...(actions ? ["callback_query"] : [])] },
         { signal, timeoutMs: (TELEGRAM_POLL_TIMEOUT_S + 15) * 1000 },
       );
       if (!Array.isArray(result)) throw new ChannelError("channel_provider_bad_response", "Telegram answered getUpdates but the reply was not understood.", 502);
       for (const update of result) {
         const id = asRecord(update)?.update_id;
         if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
-        if (offset === undefined || id + 1 > offset) offset = id + 1;
-        const message = parseTelegramUpdate(update, bot, net.now());
-        if (!message) continue;
-        try {
-          sink(message);
-        } catch {
-          // The sink never breaks the poll loop.
+        const click = actions ? parseTelegramCallback(update, bot) : null;
+        if (click && actions) {
+          try {
+            actions(click);
+          } catch {
+            // The sink never breaks the poll loop (a click is answered or retried by the hub, not by getUpdates).
+          }
+          if (offset === undefined || id + 1 > offset) offset = id + 1;
+          continue;
         }
+        const message = parseTelegramUpdate(update, bot, net.now());
+        if (message) {
+          try {
+            sink(message);
+            sinkTries.delete(id);
+          } catch {
+            // Quality audit R2: not stored (the hub logged and counted it). The offset stays on this update, so the next
+            // getUpdates returns it again after a backoff; after TELEGRAM_SINK_TRIES tries it is passed (counted each time).
+            const tries = (sinkTries.get(id) ?? 0) + 1;
+            sinkTries.set(id, tries);
+            if (tries < TELEGRAM_SINK_TRIES) throw new ChannelError("channel_inbound_not_stored", "An incoming Telegram message could not be stored; it is fetched again.", 503);
+            sinkTries.delete(id);
+          }
+        }
+        if (offset === undefined || id + 1 > offset) offset = id + 1;
       }
       attempts = 0;
     } catch (error) {
@@ -385,6 +457,7 @@ export const telegramProvider: ChannelProvider = {
   edit,
   delete: remove,
   react,
+  actionDone,
   openDirect,
   // R3: edits arrive as edited_message / edited_channel_post; Telegram never tells a bot that a message was deleted.
   reports: { edits: true, deletions: false },

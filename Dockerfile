@@ -1,7 +1,7 @@
-# Connect app image (SDK-API §15, C53 BSA-06: the template pattern). Base pinned by digest: node:24-slim.
+# Connect app image (SDK-API §15, C53 BSA-06: the template pattern). Base pinned by digest: node:24.22.1-bookworm-slim.
 # Bump the tag and the digest together; CI pins the built image by digest in the release record.
 
-FROM node:24-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS build
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS build
 WORKDIR /app
 ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
@@ -12,7 +12,7 @@ COPY scripts ./scripts
 COPY src ./src
 RUN pnpm run build && pnpm prune --prod --config.ignore-scripts=true
 
-FROM node:24-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules

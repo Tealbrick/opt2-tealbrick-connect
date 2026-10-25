@@ -5,6 +5,7 @@
  * long-running inbound workers (socket / long-poll) plus webhook delivery (Teams, via a manifest public route).
  * Credentials: SDK app secrets (`account:<id>`), never the database; never logged.
  */
+import { createHash } from "node:crypto";
 import type { AppSecrets } from "@opt2-tealbrick/miniapp-sdk";
 import type { Db, Logger } from "@opt2-tealbrick/spec/sdk";
 
@@ -16,7 +17,9 @@ import {
   ChannelError,
   type ChannelNet,
   type ChannelProvider,
+  type InboundAction,
   type InboundMessage,
+  type MessageAction,
   type ChannelService as ServiceId,
 } from "./provider.ts";
 
@@ -49,6 +52,32 @@ export interface ChannelDeps {
   log?: Logger;
 }
 
+/** IN-2: who sent a message with buttons, and until when a click may be relayed. */
+export interface ActionOrigin {
+  product: string;
+  instance: string;
+  /** the `account` input of the send (the app binds its token to it) */
+  requestedAccount: string;
+  actions: readonly MessageAction[];
+  expiresAt: number;
+  /** actionsUntil passed before the send ran (it waited for approval): the text goes alone, with a note */
+  expired?: boolean;
+}
+
+/** The line added to a message whose buttons expired before it was sent. */
+export const ACTIONS_EXPIRED_NOTE = "(The buttons of this message expired before it was sent. Use the app that sent it.)";
+
+/** IN-2: what the sending app answered for one click. `final` = the decision is made (or can never be made from here). */
+export interface RelayOutcome {
+  final: boolean;
+  notice: string;
+}
+export type ActionRelay = (product: string, input: { token: string; clicker: { service: string; id: string }; account: string }, idempotencyKey: string) => Promise<RelayOutcome>;
+
+/** A `busy` click older than this is taken as lost (the app never answered) and the message opens again. */
+export const ACTION_BUSY_MS = 2 * 60_000;
+const hashValue = (v: string) => createHash("sha256").update(v).digest("base64url");
+
 type BotRow = BotIdentity & { settings: Record<string, string>; inboundState: string; inboundDetail: string; unmatchedChanges: number };
 
 function parseMentions(value: unknown): string[] {
@@ -65,9 +94,15 @@ export function isChannelService(value: string): value is ServiceId {
   return (CHANNEL_SERVICES as readonly string[]).includes(value);
 }
 
+/** QA-CON25-1: how many not-stored message keys one account keeps (the count stops growing there; the log still shows each). */
+const NOT_STORED_MAX = 1000;
+
 export class ChannelHub {
   readonly #d: ChannelDeps;
   readonly #workers = new Map<string, AbortController>();
+  #relay: ActionRelay | null = null;
+  /** account id → keys of messages not stored yet (QA-CON25-1: counted once per message, removed when a redelivery is stored) */
+  readonly #notStored = new Map<string, Set<string>>();
 
   constructor(deps: ChannelDeps) {
     this.#d = deps;
@@ -316,7 +351,12 @@ export class ChannelHub {
       if (!bot) continue;
       try {
         const out = await provider.inbound.verifyWebhook(request, await this.#creds(account), this.#d.net, bot);
-        for (const m of out.messages) this.ingest(account, m);
+        try {
+          for (const m of out.messages) this.#store(account, m);
+        } catch {
+          // Quality audit R2: not stored (logged and counted); a 5xx makes the sender deliver the activity again
+          return { status: 503, body: "" };
+        }
         return out.reply ?? { status: 200, body: "" };
       } catch (error) {
         if (!(error instanceof ChannelError) || error.code !== "channel_webhook_unauthorized") this.#d.log?.warn("channel webhook failed", { service, code: (error as { code?: string }).code ?? "error" });
@@ -371,20 +411,96 @@ export class ChannelHub {
     return this.send(account, agent, { conversation: row.conversation, text: input.text, threadId });
   }
 
-  async directMessage(account: Account, agent: string, input: { person: string; text: string; first: boolean }): Promise<{ messageId: string; conversation: string }> {
+  async directMessage(
+    account: Account,
+    agent: string,
+    input: { person: string; text: string; first: boolean; origin?: ActionOrigin },
+  ): Promise<{ messageId: string; conversation: string; actions?: "shown" | "unsupported" | "expired" }> {
     const provider = this.provider(account.service);
     const known = this.#knownPerson(account, input.person);
     if (!input.first && !known) throw new ChannelError("channel_first_contact_required", "You have not written to this person before. Use channel_dm_first; the owner approves first contact.", 409);
-    const text = this.#checkText(provider, input.text);
+    const expired = input.origin?.expired === true;
+    const text = this.#checkText(provider, expired ? `${input.text}\n\n${ACTIONS_EXPIRED_NOTE}` : input.text);
     const creds = await this.#creds(account);
     const conversation = known ?? (await provider.openDirect(creds, this.#d.net, { personId: input.person })).conversation;
-    const out = await provider.send(creds, this.#d.net, { conversation, text });
+    // IN-2: buttons only where the provider can answer a click (Slack, Telegram); elsewhere the text goes alone
+    const origin = input.origin && !expired && provider.actionDone ? input.origin : undefined;
+    const out = await provider.send(creds, this.#d.net, { conversation, text, ...(origin ? { actions: origin.actions } : {}) });
     await this.#recordSent(account, conversation, out.messageId, agent);
+    if (origin) {
+      const now = this.#d.net.now();
+      this.#d.db
+        .prepare(
+          `INSERT OR REPLACE INTO connect_channel_actions (account_id, conversation, message_id, product, instance, requested_account, value_hashes, expires_at, state, result, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?)`,
+        )
+        .run(account.id, conversation, out.messageId, origin.product, origin.instance, origin.requestedAccount, JSON.stringify(origin.actions.map((a) => hashValue(a.value))), origin.expiresAt, now, now);
+    }
     this.#rememberConversation(account.id, conversation, `Direct: ${input.person.slice(-24)}`, "direct");
     this.#d.db
       .prepare("INSERT OR IGNORE INTO connect_channel_contacts (account_id, person_id, conversation, first_sent_at) VALUES (?, ?, ?, ?)")
       .run(account.id, input.person, conversation, Date.now());
-    return { messageId: out.messageId, conversation };
+    return { messageId: out.messageId, conversation, ...(input.origin ? { actions: expired ? ("expired" as const) : origin ? ("shown" as const) : ("unsupported" as const) } : {}) };
+  }
+
+  // ── button clicks (IN-2) ──
+
+  /** The app wires the relay at start (it needs the start context's callApp). Until then a click is answered "not ready". */
+  setActionRelay(relay: ActionRelay | null): void {
+    this.#relay = relay;
+  }
+
+  /**
+   * One click. Relayed only when it hits a message we sent with buttons, with one of its buttons, before expiry, while
+   * the message is open; the first click that ends in a decision closes it. The clicker always gets an answer.
+   */
+  async action(account: Account, a: InboundAction): Promise<void> {
+    if (a.clickerIsBot) return;
+    const provider = this.provider(account.service);
+    const done = provider.actionDone;
+    if (!done) return;
+    const creds = await this.#creds(account);
+    const answer = async (notice: string, final: boolean) => {
+      try {
+        await done(creds, this.#d.net, { conversation: a.conversation, messageId: a.messageId, clickerId: a.clickerId, ackId: a.ackId, text: a.text, notice, final });
+      } catch (error) {
+        this.#d.log?.warn("channel action answer failed", { service: account.service, code: (error as { code?: string }).code ?? "error" });
+      }
+    };
+    const db = this.#d.db;
+    const now = this.#d.net.now();
+    const row = db.prepare("SELECT * FROM connect_channel_actions WHERE account_id = ? AND conversation = ? AND message_id = ?").get(account.id, a.conversation, a.messageId);
+    const hash = hashValue(a.value);
+    if (!row || !(JSON.parse(String(row.value_hashes)) as string[]).includes(hash)) return answer("This button does not work here.", false);
+    if (row.state === "done") return answer(row.result ? String(row.result) : "This was already decided.", false);
+    const key = [account.id, a.conversation, a.messageId] as const;
+    if (Number(row.expires_at) <= now) {
+      const notice = "This button expired. Open Operator Inbox to decide.";
+      db.prepare("UPDATE connect_channel_actions SET state = 'done', result = ?, updated_at = ? WHERE account_id = ? AND conversation = ? AND message_id = ?").run(notice, now, ...key);
+      return answer(notice, true);
+    }
+    const claimed = db
+      .prepare(
+        "UPDATE connect_channel_actions SET state = 'busy', updated_at = ? WHERE account_id = ? AND conversation = ? AND message_id = ? AND (state = 'open' OR (state = 'busy' AND updated_at < ?))",
+      )
+      .run(now, ...key, now - ACTION_BUSY_MS).changes;
+    if (claimed !== 1) return answer("This is being handled.", false);
+    let outcome: RelayOutcome;
+    try {
+      outcome = this.#relay
+        ? await this.#relay(String(row.product), { token: a.value, clicker: { service: account.service, id: a.clickerId }, account: String(row.requested_account) }, `dm-act-${account.id}-${a.messageId}-${hash.slice(0, 16)}`)
+        : { final: false, notice: "Connect is starting. Try again in a moment." };
+    } catch {
+      outcome = { final: false, notice: "Could not decide now. Try again, or open Operator Inbox." };
+    }
+    const notice = outcome.notice.slice(0, 300);
+    db.prepare("UPDATE connect_channel_actions SET state = ?, result = ?, updated_at = ? WHERE account_id = ? AND conversation = ? AND message_id = ? AND state = 'busy'").run(
+      outcome.final ? "done" : "open",
+      outcome.final ? notice : null,
+      this.#d.net.now(),
+      ...key,
+    );
+    return answer(notice, outcome.final);
   }
 
   #ownMessage(account: Account, conversation: string, messageId: string): void {
@@ -437,7 +553,17 @@ export class ChannelHub {
         try {
           this.#setState(account.id, "running");
           const creds = await this.#creds(account);
-          await inbound.run(creds, this.#d.net, bot, (m) => void this.ingest(account, m), controller.signal);
+          await inbound.run(
+            creds,
+            this.#d.net,
+            bot,
+            (m) => this.#store(account, m),
+            controller.signal,
+            (a) =>
+              void this.action(account, a).catch((error: unknown) =>
+                this.#d.log?.warn("channel action failed", { service: account.service, code: (error as { code?: string }).code ?? "error" }),
+              ),
+          );
           if (controller.signal.aborted) break;
           attempt = 0;
         } catch (error) {
@@ -458,6 +584,49 @@ export class ChannelHub {
     void loop();
   }
 
+  /**
+   * Quality audit R2 (2026-10-24): the inbound sink. A message that cannot be stored (a database error) is never silent: one
+   * error log line (metadata only, never the text), a per-account count since start, and the bot's inbound detail says it.
+   * Then it throws, so the provider lets the platform deliver it again where it can (Slack: no ack; Telegram: the offset
+   * stays); Discord does not redeliver, the count is the record.
+   */
+  #store(account: Account, m: InboundMessage): void {
+    const key = `${m.change ? (m.change.kind === "edit" ? `edit:${m.change.at}` : "delete") : "message"}:${m.conversation}:${m.messageId}`;
+    const pending = this.#notStored.get(account.id);
+    try {
+      this.ingest(account, m);
+    } catch (error) {
+      const set = pending ?? new Set<string>();
+      // QA-CON25-1: one message counts once, however often its redelivery fails (bounded: the oldest key goes first)
+      set.add(key);
+      while (set.size > NOT_STORED_MAX) set.delete(set.values().next().value as string);
+      this.#notStored.set(account.id, set);
+      const code = (error as { code?: string }).code ?? (error instanceof Error ? error.name : "error");
+      this.#d.log?.error("channel inbound message could not be stored", { service: account.service, account: account.id, code, notStored: set.size });
+      this.#notStoredNotice(account.id, set.size);
+      throw error;
+    }
+    // QA-CON25-1: a redelivery was stored; the notice goes when nothing is left
+    if (pending?.delete(key)) this.#notStoredNotice(account.id, pending.size);
+  }
+
+  #notStoredNotice(accountId: string, count: number): void {
+    try {
+      if (count === 0) this.#setState(accountId, "running");
+      else {
+        const words = count === 1 ? "1 incoming message" : `${count} incoming messages`;
+        this.#setState(accountId, "running", `${words} could not be stored yet (last try: ${new Date().toISOString()}). Connect asks the chat service to send them again where it can.`);
+      }
+    } catch {
+      // the database itself is failing: the log line and the count stay
+    }
+  }
+
+  /** Quality audit R2 / QA-CON25-1: inbound messages of an account that are not stored yet (since this process started). */
+  notStored(accountId: string): number {
+    return this.#notStored.get(accountId)?.size ?? 0;
+  }
+
   stop(accountId: string): void {
     this.#workers.get(accountId)?.abort();
     this.#workers.delete(accountId);
@@ -469,5 +638,6 @@ export class ChannelHub {
 
   purge(now = Date.now()): void {
     this.#d.db.prepare("DELETE FROM connect_channel_inbox WHERE received_at < ?").run(now - INBOX_RETENTION_MS);
+    this.#d.db.prepare("DELETE FROM connect_channel_actions WHERE expires_at < ?").run(now - INBOX_RETENTION_MS);
   }
 }
