@@ -1,8 +1,10 @@
-# opt2 release publishing (template ci-v9.5, C72). GENERATED from Martin-Atrin/opt2-tealbrick-platform: ci/github/opt2-release.yml.
+# opt2 release publishing (template ci-v9.21, C72). GENERATED from Tealbrick/opt2-tealbrick-platform: ci/github/opt2-release.yml.
 # Do not edit in a repo: Woodpecker setup fails on drift. Woodpecker runs every other CI stage.
-# Images go to ghcr.io/martin-atrin/<name> with the built-in GITHUB_TOKEN (no personal token). Two jobs:
+# Images go to ghcr.io/<owner of this repo>/<name> (ci-v9.8, C206: ghcr.io/tealbrick) with the built-in GITHUB_TOKEN (no personal
+# token). A new package is private after its first push: an org owner makes it public once. Two jobs:
 #   build   — runs repo code (docker build, tb-gen kit, build + npm pack + pack guard) with a READ-ONLY token
 #   publish — runs NO repo code: loads the built artifacts, pushes images, attaches kit/package tarballs
+# C222 (ci-v9.10): only in PUBLIC repos (Actions are free there). Private repos use "releaseOn": "woodpecker" (.woodpecker/release.yaml).
 # The platform signer never trusts this workflow's output: it resolves digests in ghcr and checks the image labels.
 name: opt2 release
 on:
@@ -13,8 +15,8 @@ concurrency:
   group: opt2-release-${{ github.ref }}
   cancel-in-progress: false
 env:
-  TB_CI_REF: ci-v9.5
-  TB_CI_SHA256: "778527816efa8f009b24e5ee863677c2761eb0362164271967eaa9c430514cc5"
+  TB_CI_REF: ci-v9.21
+  TB_CI_SHA256: "8177c4bb9340e9c77fe44c3efdc41453a5fffd6f88c299d90a6262e057f8144b"
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -29,7 +31,7 @@ jobs:
           node-version: "24.11.1"
       - name: fetch the hash-checked runner
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/Martin-Atrin/opt2-tealbrick-platform/$TB_CI_REF/ci/tb-ci.ts" -o "$RUNNER_TEMP/tb-ci.ts"
+          curl -fsSL "https://raw.githubusercontent.com/Tealbrick/opt2-tealbrick-platform/$TB_CI_REF/ci/tb-ci.ts" -o "$RUNNER_TEMP/tb-ci.ts"
           echo "$TB_CI_SHA256  $RUNNER_TEMP/tb-ci.ts" | sha256sum -c -
       - name: build (no write token)
         env:
@@ -59,7 +61,7 @@ jobs:
           node-version: "24.11.1"
       - name: fetch the hash-checked runner
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/Martin-Atrin/opt2-tealbrick-platform/$TB_CI_REF/ci/tb-ci.ts" -o "$RUNNER_TEMP/tb-ci.ts"
+          curl -fsSL "https://raw.githubusercontent.com/Tealbrick/opt2-tealbrick-platform/$TB_CI_REF/ci/tb-ci.ts" -o "$RUNNER_TEMP/tb-ci.ts"
           echo "$TB_CI_SHA256  $RUNNER_TEMP/tb-ci.ts" | sha256sum -c -
       - name: publish (no repo code)
         env:
