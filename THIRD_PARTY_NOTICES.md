@@ -32,6 +32,16 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
 | `@opt2-tealbrick/miniapp-sdk` | 0.1.36 | MIT | https://github.com/Martin-Atrin/opt2-tealbrick-sdk |
 | `@opt2-tealbrick/manifest` | 0.1.28 | MIT | https://github.com/Martin-Atrin/opt2-tealbrick-sdk |
 | `@opt2-tealbrick/spec` (dependency of the SDK; the SDK pins the same release) | 0.1.52 | MIT | https://github.com/Martin-Atrin/opt2-tealbrick-specs |
+| `pg` (Postgres client for database accounts) | 8.23.1 | MIT | https://github.com/brianc/node-postgres |
+| `pg-pool` (pg) | 3.14.0 | MIT | https://github.com/brianc/node-postgres |
+| `pg-protocol`, `pg-connection-string` (pg) | 1.16.1, 2.14.1 | MIT | https://github.com/brianc/node-postgres |
+| `pg-types` (pg) | 2.2.0 | MIT | https://github.com/brianc/node-pg-types |
+| `pg-int8` (pg-types) | 1.0.1 | ISC | https://github.com/charmander/pg-int8 |
+| `pgpass` (pg) | 1.0.5 | MIT | https://github.com/hoegaarden/pgpass |
+| `pg-cloudflare` (pg, optional) | 1.4.1 | MIT | https://github.com/brianc/node-postgres |
+| `postgres-array`, `postgres-bytea`, `postgres-date`, `postgres-interval` (pg-types) | 2.0.0, 1.0.1, 1.0.7, 1.2.0 | MIT | https://github.com/bendrucker |
+| `split2` (pgpass) | 4.2.0 | ISC | https://github.com/mcollina/split2 |
+| `xtend` (postgres-interval) | 4.0.2 | MIT | https://github.com/Raynos/xtend |
 | `ajv` (dependency of the manifest package) | 8.17.1 | MIT | https://github.com/ajv-validator/ajv |
 | `fast-deep-equal` (ajv) | 3.1.3 | MIT | https://github.com/epoberezkin/fast-deep-equal |
 | `fast-uri` (ajv) | 3.1.8 | BSD-3-Clause | https://github.com/fastify/fast-uri |

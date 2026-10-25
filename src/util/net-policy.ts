@@ -109,3 +109,34 @@ export async function assertEndpointAllowed(value: string, options: PolicyOption
   if (answers.some((a) => isForbiddenAddress(a.address))) throw new NetPolicyError("address_not_allowed");
   return url;
 }
+
+/**
+ * A bare host (no URL) for a non-HTTP endpoint such as a database (C336 RQ-3). The same rules as `assertEndpointAllowed`:
+ * an IP literal must be public, local names are refused, every DNS answer must be public. Returns the address the check
+ * passed, so the caller can connect to THAT address (no second DNS answer between the check and the connection).
+ * `allowHosts` are exact host names that skip the address checks (tests only; no owner-facing exception exists, C41).
+ */
+export async function resolvePublicHost(value: string, options: { allowHosts?: readonly string[]; lookup?: Lookup } = {}): Promise<{ host: string; address: string }> {
+  const host = value.trim().replace(/^\[|\]$/gu, "").toLowerCase();
+  if (!host || host.length > 253 || /[\s/@?#\\]/u.test(host)) throw new NetPolicyError("invalid_host");
+  if (options.allowHosts?.includes(host)) {
+    if (isIP(host)) return { host, address: host };
+    const answers = await (options.lookup ?? defaultLookup)(host).catch(() => []);
+    return { host, address: answers[0]?.address ?? host };
+  }
+  if (isIP(host)) {
+    if (isForbiddenAddress(host)) throw new NetPolicyError("address_not_allowed");
+    return { host, address: host };
+  }
+  if (isForbiddenHostname(host)) throw new NetPolicyError("hostname_not_allowed");
+  let answers: ReadonlyArray<{ address: string }>;
+  try {
+    answers = await (options.lookup ?? defaultLookup)(host);
+  } catch {
+    throw new NetPolicyError("dns_lookup_failed");
+  }
+  const first = answers[0];
+  if (!first) throw new NetPolicyError("dns_lookup_failed");
+  if (answers.some((a) => isForbiddenAddress(a.address))) throw new NetPolicyError("address_not_allowed");
+  return { host, address: first.address };
+}

@@ -11,7 +11,7 @@ import type { AppSecrets, SdkAppDefinition, SdkOpContext, SdkPublicContext } fro
 import type { CrudAction, DynamicCatalogEntry, DynamicResolution, DynamicSearchInput, Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Caller, Db, DynamicHandlers, Handler, HandlerSpec, Json, Logger, OpContext, PublicHandler } from "@opt2-tealbrick/spec/sdk";
 
-import { type Account, AccountStore, CONNECTION_KINDS, type ConnectionKind } from "./accounts.ts";
+import { type Account, AccountStore, CONNECTION_KINDS, type ConnectionKind, normalizeLabel } from "./accounts.ts";
 import { emojiMap, heldKey, pollBuzzActions, purgeBuzzActions, recordBuzzActions } from "./channels/buzz/actions.ts";
 import { BuzzIdentities, WORKSPACE_SENDER } from "./channels/buzz/identity.ts";
 import { parsePubkey } from "./channels/buzz/nostr.ts";
@@ -29,8 +29,22 @@ import {
 import { channelProviders } from "./channels/registry.ts";
 import { ACTIONS_EXPIRED_NOTE, type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
+import {
+  DATABASE_KINDS,
+  DATABASE_RECOMMENDATION,
+  DATABASE_SERVICE,
+  DatabaseAccountStore,
+  type DatabaseDrivers,
+  type DatabaseKind,
+  type DbAccount,
+  isDatabaseId,
+  LeaseStore,
+  leaseState,
+} from "./data/database.ts";
+import { DatabaseService } from "./data/database-service.ts";
+import { LEASE_OP_IDS, leasesDeclared } from "./data/lease-ops.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
-import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
+import { DATA_APPS, isDataApp, SHARE_LEVELS, SHARE_ROUTES, type ShareLevel, type ShareRoute, ShareStore } from "./data/shares.ts";
 import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
@@ -46,7 +60,7 @@ import { resyncToolClasses, toolClassMarker } from "./tool-resync.ts";
 import { ACCOUNT_ARGUMENT, FIRST_CONTACT_SUFFIX, ToolRegistry } from "./tools.ts";
 import { type FetchLike, UpstreamError } from "./util/http.ts";
 import { newId } from "./util/ids.ts";
-import { NetPolicyError } from "./util/net-policy.ts";
+import { type Lookup, NetPolicyError } from "./util/net-policy.ts";
 import { pinnedFetch } from "./util/pinned-fetch.ts";
 import { scrubSecrets } from "./util/redact.ts";
 
@@ -130,6 +144,15 @@ export interface ConnectEnv {
   buzzRelays?: string | null;
   /** C133: the removed setting `buzz_relay_url` is still in the env (value never read); Buzz reports it clearly. */
   oldBuzzRelaySettingPresent?: boolean;
+  /**
+   * C336 RQ-3: the database clients (production: `defaultDatabaseDrivers()` from pg-driver.ts, set in main.ts; tests: a fake).
+   * A kind with no driver answers `database_driver_unavailable`.
+   */
+  databaseDrivers?: DatabaseDrivers;
+  /** Tests: DNS for database hosts (production: the system resolver). */
+  databaseLookup?: Lookup;
+  /** Tests: exact database host names that skip the address policy. No owner-facing exception exists in this release (C41). */
+  databaseAllowHosts?: readonly string[];
 }
 
 /** The SDK passes `SdkOpContext` (publicUrl, workspace, scopes, secrets: C31) where the frozen types say OpContext. */
@@ -158,10 +181,21 @@ interface Services {
   channels: ChannelHub;
   senders: SenderStore;
   shares: ShareStore;
+  /** C336 RQ-3: database accounts, their shares (with route) and the lease record */
+  databases: DatabaseAccountStore;
+  dbShares: ShareStore;
+  leases: LeaseStore;
+  dbService: DatabaseService;
 }
 
 export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
   const Err: ErrorCtor = env.ErrorClass ?? ConnectError;
+  /**
+   * C354a: the lease operations are NOT in the shipped manifest (no `secretOutput` in the pinned spec), so this is false in
+   * production: no handler is registered for them, a database can be shared at `available` only, and the page offers nothing
+   * about leases. Tests declare the operations (`LEASE_OPS`) to exercise the kept code.
+   */
+  const leasesEnabled = leasesDeclared(env.manifest);
   const fail = (code: string, message: string, status = 400, details?: Record<string, unknown>): never => {
     throw new Err(code, message, status, details);
   };
@@ -242,7 +276,16 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       },
       ...(ctx.log ? { log: ctx.log } : {}),
     });
-    const built = { accounts, tools, secrets, composio, buzz, relay, catalog, mcp, channels, senders: new SenderStore(db), shares: new ShareStore(db) };
+    const databases = new DatabaseAccountStore(db, secrets);
+    const leases = new LeaseStore(db);
+    const dbService = new DatabaseService({
+      accounts: databases,
+      leases,
+      drivers: env.databaseDrivers ?? {},
+      ...(env.databaseLookup ? { lookup: env.databaseLookup } : {}),
+      ...(env.databaseAllowHosts ? { allowHosts: env.databaseAllowHosts } : {}),
+    });
+    const built = { accounts, tools, secrets, composio, buzz, relay, catalog, mcp, channels, senders: new SenderStore(db), shares: new ShareStore(db), databases, dbShares: new ShareStore(db, "connect_db_shares"), leases, dbService };
     cache = { db, services: built };
     return built;
   };
@@ -274,6 +317,19 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     ownerAgent: a.ownerAgent,
     status: a.status,
     detail: a.detail,
+  });
+
+  /** A database account as the owner page lists it: label, endpoint display string and state. No user, no password. */
+  const dbAccountView = (a: DbAccount) => ({
+    id: a.id,
+    service: DATABASE_SERVICE[a.kind],
+    source: "database",
+    kind: "as_me",
+    label: a.label,
+    ownerAgent: null,
+    status: a.status,
+    detail: a.detail,
+    endpoint: a.endpoint,
   });
 
   /** Workspace id: from the SDK context (slice / person principal), else the verified grant. C12: Composio user_id. */
@@ -680,12 +736,30 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     return { account, level: share.level, product, since: share.includeHistory ? null : share.setAt };
   };
   /**
+   * The database branch of the data account check (C336 RQ-3). Same rules as `dataAccount`: the share must be bound to this
+   * verified product AND instance, the instance must still be listed, and every account the caller cannot see answers the
+   * identical `not_found`. A share with route `via_observer` gives its product nothing, so it answers `not_found` as well.
+   */
+  const dataDbAccount = (s: Services, ctx: OpContext, raw: unknown, need: "available" | "shared", note?: { product?: string | null }): { account: DbAccount; level: "available" | "shared"; product: string; instance: string } => {
+    const { product, instance } = dataCaller(ctx);
+    if (note) note.product = product;
+    const id = str(raw);
+    const account = id && isDatabaseId(id) ? s.databases.get(id) : null;
+    if (account?.status !== "connected") return noSuchAccount();
+    const share = s.dbShares.forCaller(account.id, product, instance);
+    if (share?.route !== "direct") return noSuchAccount();
+    stillListed(ctx);
+    if (need === "shared" && share.level !== "shared") fail("scope_denied", "This database is shared with you for its table list only. Ask the owner to share it for reading.", 403);
+    return { account, level: share.level, product, instance };
+  };
+  /**
    * One share as the owner page shows it. `current` (C240): the bound instance is still an app that can call Connect (in the
    * current signed slice). false = the app was removed or reinstalled, or the row is from before 0013: it serves no call
    * and the owner shares again.
    */
-  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number }, callers: { product: string; instance: string }[]) => ({
+  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number; route?: ShareRoute }, callers: { product: string; instance: string }[]) => ({
     product: r.product,
+    ...(r.route ? { route: r.route } : {}),
     instance: r.instance,
     current: r.instance !== null && callers.some((c) => c.instance === r.instance && c.product === r.product),
     level: r.level,
@@ -731,6 +805,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     dataset?: string;
     rows?: number;
     quarantined?: number;
+    /** data_lease: the lease id and its end (epoch ms); the access log names them. Never a credential. */
+    leaseId?: string;
+    leaseExpiresAt?: number;
   }
   /**
    * One audit line per data_* call (who called: type and id; which op; the verified product when there is one; account,
@@ -748,11 +825,12 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       ...(typeof i.account === "string" ? { account: i.account.slice(0, 64) } : {}),
       ...(typeof i.dataset === "string" ? { dataset: i.dataset.slice(0, 64) } : {}),
     };
-    const logLine = (outcome: string) => ctx.log.info(op, { outcome, caller: ctx.caller.type, app: note.product ?? null, account: note.account ?? null, rows: note.rows ?? 0, quarantined: note.quarantined ?? 0 });
+    const logLine = (outcome: string) =>
+      ctx.log.info(op, { outcome, caller: ctx.caller.type, app: note.product ?? null, account: note.account ?? null, rows: note.rows ?? 0, quarantined: note.quarantined ?? 0, ...(note.leaseId ? { lease: note.leaseId } : {}) });
     const insert = (outcome: string, now: number) =>
       ctx.db
-        .prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, account_id, dataset, row_count, quarantined) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(now, op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null, note.account ?? null, note.dataset ?? null, note.rows ?? 0, note.quarantined ?? 0);
+        .prepare("INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, account_id, dataset, row_count, quarantined, lease_id, lease_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(now, op, outcome, ctx.caller.type, ctx.caller.id, note.product ?? null, note.account ?? null, note.dataset ?? null, note.rows ?? 0, note.quarantined ?? 0, note.leaseId ?? null, note.leaseExpiresAt ?? null);
     const recordRefused = (outcome: string) => {
       try {
         const now = Date.now();
@@ -777,6 +855,14 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       insert("ok", Date.now());
     } catch (error) {
       ctx.log.error("data audit line could not be written; the answer is withheld", { op, error: error instanceof Error ? error.message.slice(0, 120) : "unknown" });
+      // a lease whose answer is withheld was never delivered: end it, so the owner's list shows no phantom lease
+      if (note.leaseId) {
+        try {
+          ctx.db.prepare("UPDATE connect_data_leases SET revoked_at = ? WHERE id = ?").run(Date.now(), note.leaseId);
+        } catch {
+          // best effort: the lease record holds no credential
+        }
+      }
       return fail("audit_unavailable", "Connect could not record this access, so it sent no data. Try again later.", 503, { retryable: true });
     }
     logLine("ok");
@@ -792,13 +878,21 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const { product, instance } = dataCaller(ctx);
           note.product = product;
           const bound = s.shares.accountsForCaller(product, instance);
-          if (bound.length > 0) stillListed(ctx);
-          const accounts = bound.flatMap((share) => {
-            const a = s.accounts.get(share.account);
-            return a?.source === "channel" && a.status === "connected"
-              ? [{ account: a.id, service: a.service, label: a.label, kinds: ["messages"], level: share.level }]
-              : [];
-          });
+          // C336 RQ-3: database shares of this caller; a share with route via_observer gives its product nothing, not even a line
+          const boundDb = s.dbShares.accountsForCaller(product, instance).filter((share) => share.route === "direct");
+          if (bound.length > 0 || boundDb.length > 0) stillListed(ctx);
+          const accounts = [
+            ...bound.flatMap((share) => {
+              const a = s.accounts.get(share.account);
+              return a?.source === "channel" && a.status === "connected"
+                ? [{ account: a.id, service: a.service, label: a.label, kinds: ["messages"], level: share.level }]
+                : [];
+            }),
+            ...boundDb.flatMap((share) => {
+              const a = s.databases.get(share.account);
+              return a?.status === "connected" ? [{ account: a.id, service: DATABASE_SERVICE[a.kind], label: a.label, kinds: ["table"], level: share.level, source: "database" }] : [];
+            }),
+          ];
           return { accounts } as unknown as Json;
         }),
       );
@@ -807,6 +901,23 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       return audited("data_catalog", ctx, input, async (note) =>
         guard(async () => {
           const s = services(ctx);
+          if (isDatabaseId(str(asInput(input).account) ?? "")) {
+            // C336 RQ-3: table and view names, columns, types, approximate rows. Never a value.
+            const { account, level } = dataDbAccount(s, ctx, asInput(input).account, "available", note);
+            note.account = account.id;
+            const tables = await s.dbService.catalog(account);
+            note.rows = tables.length;
+            const datasets = tables.map((t) => ({
+              dataset: t.dataset,
+              title: t.dataset,
+              kind: "table",
+              delivery: "lease",
+              relation: t.relation,
+              ...(t.approxRows === undefined ? {} : { approxRows: t.approxRows }),
+              columns: t.columns,
+            }));
+            return { account: account.id, service: DATABASE_SERVICE[account.kind], label: account.label, level, source: "database", datasets, untrusted: true } as unknown as Json;
+          }
           const { account, level } = dataAccount(s, ctx, asInput(input).account, "available", note);
           note.account = account.id;
           const history = messagesDeps(s, ctx).history(account.service);
@@ -820,6 +931,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         guard(async () => {
           const s = services(ctx);
           const i = asInput(input);
+          if (isDatabaseId(str(i.account) ?? "")) {
+            // a database dataset is delivered by lease (data_lease), never by pull; the share is checked first so a stranger learns nothing
+            dataDbAccount(s, ctx, i.account, "shared", note);
+            return fail("delivery_lease", "Database tables are not pulled through Connect.", 400);
+          }
           const { account, since: ingestedFrom } = dataAccount(s, ctx, i.account, "shared", note);
           note.account = account.id;
           if (str(i.dataset) !== MESSAGES_DATASET) fail("not_found", "No such dataset on this account.", 404);
@@ -836,6 +952,44 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           note.rows = page.rows.length;
           note.quarantined = page.quarantined ?? 0;
           return { ...page, schema: "messages/1", untrusted: true } as unknown as Json;
+        }),
+      );
+    },
+
+    /**
+     * NOT REGISTERED in the shipped app (C354a, QA-CON24-1): see `src/data/lease-ops.ts`. Kept for the day the manifest can
+     * declare `secretOutput`; tests declare the operation to run it.
+     * C336 RQ-3 / C330(3): a short lease on the owner's read-only database credential, for an app that holds a `shared`
+     * database share with route `direct`. APPS ONLY, like the other data ops. The answer carries the password: it is the only
+     * place it appears (manifest `secretOutput`: idempotency none, no receipt, no stored output). The audit line and the log
+     * line name the lease, account, datasets, expiry and caller, never the credential. v0: the lease is the owner's sealed
+     * credential plus the expiry Connect records (no per-lease database role yet).
+     * Spec 0.1.68 M-OP-12: receipt true (input digest + redacted summary, never the output). An agent or person caller is
+     * refused `no_access`; the spec's code for this refusal is `secret_output_app_only`, to be used when the spec pin moves
+     * (the code stays `no_access` until then, like the other data ops).
+     */
+    async data_lease(input, ctx) {
+      return audited("data_lease", ctx, input, async (note) =>
+        guard(async () => {
+          const s = services(ctx);
+          const i = asInput(input);
+          // cheap checks first: the shape of the request is refused before any share lookup or database contact
+          const { product, instance } = dataCaller(ctx);
+          note.product = product;
+          const datasets = DatabaseService.datasets(i.datasets);
+          const ttlS = DatabaseService.ttl(i.ttlS);
+          note.dataset = datasets.join(",").slice(0, 2000);
+          const { account } = dataDbAccount(s, ctx, i.account, "shared", note);
+          note.account = account.id;
+          const { grant, row } = await s.dbService.lease({ account, product, instance, datasets, ttlS });
+          note.leaseId = row.id;
+          note.leaseExpiresAt = row.expiresAt;
+          note.rows = datasets.length;
+          // M-OP-12: the receipt (input digest + this redacted summary) audits the issuance; it never holds the output.
+          // Only the account label the owner typed, the app, the table names the app asked for, the lease id and its end.
+          ctx.receipt.summary(`Database lease for ${DATA_APPS[product] ?? product}: ${datasets.length === 1 ? "1 table" : `${datasets.length} tables`} of “${account.label}” until ${grant.expiresAt}`);
+          ctx.receipt.meta({ account: account.id, lease: row.id, datasets, expiresAt: grant.expiresAt });
+          return grant as unknown as Json;
         }),
       );
     },
@@ -1246,9 +1400,13 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       // C240: `dataApps[].instances` are the verified app instances that can call Connect (ctx.companionCallers, person ops,
       // miniapp-sdk >= 0.1.32), each with its provider; `ownInfra` marks one that runs on the owner's own infrastructure.
       const { callers, dataApps } = dataTargets(ctx);
-      const accounts = s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a)));
+      const accounts = [
+        ...s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a))),
+        // C336 RQ-3: database accounts, apart from the tool accounts; shares carry their route; never a user or a password
+        ...s.databases.list().map((a) => ({ ...dbAccountView(a), shares: s.dbShares.forAccount(a.id).map((r) => shareView(r, callers)) })),
+      ];
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
-      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true } as unknown as Json;
+      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION, leasesEnabled } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
@@ -1261,9 +1419,18 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         if (!isDataApp(product)) fail("product_unknown", `Pick an app that reads data: ${Object.values(DATA_APPS).join(" or ")}.`);
         const level = str(i.level) as ShareLevel | undefined;
         if (!level || !SHARE_LEVELS.includes(level)) fail("level_invalid", "Pick none, available or shared.");
-        const account = s.accounts.get(id);
-        if (account?.source !== "channel") fail("account_not_found", "No such chat connection.", 404);
-        if (level !== "none" && account?.status !== "connected") fail("channel_account_not_connected", "This chat connection is not connected. Connect it again first.", 409);
+        // C336 RQ-3: a database account is shared the same way, with a route (direct = the app may lease; via_observer = only Observer reads it)
+        const database = isDatabaseId(id) ? (s.databases.get(id) ?? fail("account_not_found", "No such database.", 404)) : null;
+        const account = database ? null : s.accounts.get(id);
+        if (!database && account?.source !== "channel") fail("account_not_found", "No such chat connection.", 404);
+        if (level !== "none" && (database ? database.status !== "connected" : account?.status !== "connected")) fail("channel_account_not_connected", database ? "This database is not connected. Add it again first." : "This chat connection is not connected. Connect it again first.", 409);
+        // C354a: access to rows (a lease) is not offered yet, so a database is shared at `available` (table list) at most. A
+        // stored `shared` would silently turn into row access the day leases ship: refused now, the owner shares again then.
+        if (database && level === "shared" && !leasesEnabled) fail("lease_unavailable", "Access to the rows of a database is not offered yet. Share the database at “Table names only”.", 409);
+        const route = (str(i.route) ?? "direct") as ShareRoute;
+        if (!SHARE_ROUTES.includes(route)) fail("route_invalid", "Pick direct or via_observer.");
+        if (route !== "direct" && !database) fail("route_invalid", "Only a database share has a route.");
+        if (route === "via_observer" && product !== "knowledge") fail("route_invalid", "A share through Observer is for Knowledge. Share the database with Observer itself as direct.");
         // C240: bind the share to the verified product AND the instance the owner picked, from the CURRENT signed slice.
         // Not listed (not installed, removed, reinstalled, an SDK without companionCallers, an expired slice) = refused.
         const { callers } = dataTargets(ctx);
@@ -1274,13 +1441,37 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           target = callers.find((c) => c.instance === instance && c.product === product);
           if (!target) fail("app_instance_unknown", `This ${DATA_APPS[product]} is not installed in your workspace or cannot call Connect. Reload the page and pick it again.`, 404);
         }
-        s.shares.set(id, product, level as ShareLevel, i.includeHistory === true, instance);
-        ctx.log.info("account shared with an app", { account: id, product, instance, level: level as string });
+        const label = database?.label ?? account?.label ?? id;
+        if (database) {
+          const before = s.dbShares.get(id, product);
+          s.dbShares.set(id, product, level as ShareLevel, false, instance, Date.now(), route);
+          // a changed or removed share ends the leases it issued (the owner sees them end in the list)
+          const changed = !before || level === "none" || before.level !== level || (before.route ?? "direct") !== route || before.instance !== instance;
+          const ended = changed && before ? s.leases.revokeOpen(id, product) : 0;
+          ctx.log.info("database shared with an app", { account: id, product, instance, level: level as string, route, leasesEnded: ended });
+        } else {
+          s.shares.set(id, product, level as ShareLevel, i.includeHistory === true, instance);
+          ctx.log.info("account shared with an app", { account: id, product, instance, level: level as string });
+        }
         // which instance, and whether it runs on the owner's own server (C240 item 3), not only the product
         const who = target ? `${DATA_APPS[product]} “${target.name}”${target.provider === OWN_INFRA_PROVIDER ? " (your own server)" : ""}` : DATA_APPS[product];
-        ctx.receipt.summary(`Sharing of “${account?.label ?? id}” with ${who}: ${level === "none" ? "not shared" : level === "available" ? "names and counts only" : "messages, read only"}`);
-        ctx.receipt.meta({ account: id, product, instance, level: level as string, includeHistory: i.includeHistory === true });
-        return { account: id, product, instance, level, shares: s.shares.forAccount(id).map((r) => shareView(r, callers)) } as unknown as Json;
+        const what = database
+          ? level === "none"
+            ? "not shared"
+            : route === "via_observer"
+              ? "only Observer reads it"
+              : level === "available"
+                ? "table names only"
+                : "read-only database access on request"
+          : level === "none"
+            ? "not shared"
+            : level === "available"
+              ? "names and counts only"
+              : "messages, read only";
+        ctx.receipt.summary(`Sharing of “${label}” with ${who}: ${what}`);
+        ctx.receipt.meta({ account: id, product, instance, level: level as string, includeHistory: !database && i.includeHistory === true, ...(database ? { route } : {}) });
+        const shares = (database ? s.dbShares : s.shares).forAccount(id).map((r) => shareView(r, callers));
+        return { account: id, product, instance, level, ...(database ? { route } : {}), shares } as unknown as Json;
       });
     },
     // The owner (a person) sees which app asked for what: the last ACCESS_LOG_LIMIT audit lines, newest first. No message text.
@@ -1290,11 +1481,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const s = services(ctx);
         const labels = new Map<string, string>();
         const entries = ctx.db
-          .prepare("SELECT id, at, op, outcome, caller_type, product, account_id, row_count, repeats FROM connect_data_audit ORDER BY id DESC LIMIT ?")
+          .prepare("SELECT id, at, op, outcome, caller_type, product, account_id, dataset, row_count, repeats, lease_id, lease_expires_at FROM connect_data_audit ORDER BY id DESC LIMIT ?")
           .all(ACCESS_LOG_LIMIT)
           .map((r) => {
             const accountId = r.account_id === null ? null : String(r.account_id);
-            if (accountId !== null && !labels.has(accountId)) labels.set(accountId, s.accounts.get(accountId)?.label ?? "");
+            if (accountId !== null && !labels.has(accountId)) labels.set(accountId, (isDatabaseId(accountId) ? s.databases.get(accountId)?.label : s.accounts.get(accountId)?.label) ?? "");
             const product = r.product === null ? null : String(r.product);
             return {
               id: Number(r.id),
@@ -1308,6 +1499,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
               outcome: String(r.outcome),
               rows: Number(r.row_count),
               repeats: Number(r.repeats),
+              // data_lease lines: the lease and its end, and the datasets asked for (names the app asked for; never a credential)
+              ...(r.lease_id === null ? {} : { leaseId: String(r.lease_id), leaseExpiresAt: new Date(Number(r.lease_expires_at)).toISOString() }),
+              ...(r.op === "data_lease" && typeof r.dataset === "string" ? { datasets: r.dataset.split(",").slice(0, 50) } : {}),
             };
           });
         return { entries } as unknown as Json;
@@ -1353,6 +1547,55 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         });
         await extras(ctx).scopes.instances.create(PRODUCT_SCOPE, account.id, account.label, account.ownerAgent ? { ownerAgent: account.ownerAgent as `agt_${string}` } : {});
         return { account: accountView(account) };
+      });
+    },
+    // C336 RQ-3: the owner adds a database. The DSN is sealed in Connect; the form is checked against the address policy and
+    // the connecting role is checked (a superuser or replication role is refused). Connect reads metadata only.
+    async database_account_connect(input, ctx) {
+      return guard(async () => {
+        const s = services(ctx);
+        const i = asInput(input);
+        const kind = (str(i.engine) ?? "postgres") as DatabaseKind;
+        if (!DATABASE_KINDS.includes(kind)) fail("database_kind_unsupported", `Pick a supported database: ${DATABASE_KINDS.join(", ")}.`);
+        const account = await s.dbService.connect({ kind, label: str(i.label) ?? fail("label_required", "Give the database a label."), fields: i });
+        ctx.log.info("database added", { account: account.id, kind });
+        return { account: dbAccountView(account), recommendation: DATABASE_RECOMMENDATION } as unknown as Json;
+      });
+    },
+    // The owner sees the leases (newest 100): who, which datasets, until when, state. Never a credential.
+    async data_leases_list(_input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner sees the leases.", 403);
+        const s = services(ctx);
+        const now = Date.now();
+        const leases = s.leases.list(ACCESS_LOG_LIMIT).map((l) => ({
+          id: l.id,
+          account: l.account,
+          accountLabel: s.databases.get(l.account)?.label ?? "",
+          product: l.product,
+          app: DATA_APPS[l.product] ?? l.product,
+          datasets: l.datasets,
+          issuedAt: new Date(l.issuedAt).toISOString(),
+          expiresAt: new Date(l.expiresAt).toISOString(),
+          revokedAt: l.revokedAt === null ? null : new Date(l.revokedAt).toISOString(),
+          state: leaseState(l, now),
+        }));
+        return { leases } as unknown as Json;
+      });
+    },
+    // The owner ends a lease in Connect. v0: the lease is the stored read-only credential, so the owner cuts access at the
+    // database by changing that user's password; this marks the lease ended and it appears so in the list and the log.
+    async data_lease_revoke(input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner ends a lease.", 403);
+        const s = services(ctx);
+        const id = str(asInput(input).lease) ?? fail("lease_required", "Pick the lease to end.");
+        const lease = s.leases.get(id) ?? fail("lease_not_found", "No such lease.", 404);
+        s.leases.revoke(id);
+        ctx.log.info("data lease ended by the owner", { lease: id, account: lease.account });
+        ctx.receipt.summary(`Ended the database lease of ${DATA_APPS[lease.product] ?? lease.product} on “${s.databases.get(lease.account)?.label ?? lease.account}”`);
+        ctx.receipt.meta({ lease: id, account: lease.account, product: lease.product });
+        return { lease: id, state: leaseState(s.leases.get(id) ?? lease) } as unknown as Json;
       });
     },
     async catalog_account_test(input, ctx) {
@@ -1440,6 +1683,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const s = services(ctx);
         const i = asInput(input);
         const id = str(i.id) ?? fail("id_required", "Account id is required.");
+        if (isDatabaseId(id)) {
+          if (!s.databases.get(id)) fail("account_not_found", "Account not found.", 404);
+          return { account: dbAccountView(s.databases.rename(id, normalizeLabel(String(i.label ?? "")))) } as unknown as Json;
+        }
         if (!s.accounts.get(id)) fail("account_not_found", "Account not found.", 404);
         return { account: accountView(s.accounts.update(id, { label: String(i.label ?? "") })) };
       });
@@ -1448,6 +1695,13 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       return guard(async () => {
         const s = services(ctx);
         const id = str(asInput(input).id) ?? fail("id_required", "Account id is required.");
+        if (isDatabaseId(id)) {
+          // C336 RQ-3: the sealed DSN is removed, every share and open lease of the database ends
+          const db = s.databases.get(id) ?? fail("account_not_found", "Account not found.", 404);
+          s.leases.revokeOpen(id);
+          s.dbShares.clearAccount(id);
+          return { account: dbAccountView(await s.databases.revoke(db.id)) } as unknown as Json;
+        }
         const account = s.accounts.get(id) ?? fail("account_not_found", "Account not found.", 404);
         const revoked =
           account.source === "composio"
@@ -1669,6 +1923,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     return new Response(out.body, { status: out.status, headers: { "content-type": out.contentType ?? "text/plain", "cache-control": "no-store" } });
   };
 
+  // C354a: without the operations in the manifest there is no route to the lease code
+  if (!leasesEnabled) for (const id of LEASE_OP_IDS) delete handlers[id];
+
   return {
     manifest: env.manifest,
     handlers,
@@ -1687,6 +1944,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const tick = async () => {
         s.channels.purge();
         ctx.db.prepare("DELETE FROM connect_data_audit WHERE at < ?").run(Date.now() - 90 * 24 * 60 * 60 * 1000);
+        s.leases.prune(Date.now() - 90 * 24 * 60 * 60 * 1000);
         await runDueBuzzPosts(ctx.db, s.relay, ctx.log);
         // C343a: the owner's ✅ / ❌ reactions on Buzz alerts with buttons
         await pollBuzzActions({ db: ctx.db, secrets: s.secrets, reader: s.relay, relay: relayClick, now: Date.now, log: ctx.log });

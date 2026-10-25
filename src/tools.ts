@@ -43,8 +43,10 @@ export interface ToolRow extends ToolClass {
 export function toolName(upstream: string): string {
   let name = upstream.toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "");
   if (!/^[a-z]/u.test(name)) name = `t_${name}`;
-  if (name.length > 48) name = `${name.slice(0, 39)}_${sha256Hex(upstream).slice(0, 8)}`;
-  if (!NAME_PATTERN.test(name)) throw new Error(`tool_name_invalid: ${upstream}`);
+  // C354: a name never contains "__" (x__<suffix> is reserved for resolved variants such as __first_contact): when the cut
+  // lands on a "_", that underscore is dropped before the hash is appended
+  if (name.length > 48) name = `${name.slice(0, 39).replace(/_+$/u, "")}_${sha256Hex(upstream).slice(0, 8)}`;
+  if (!NAME_PATTERN.test(name) || name.includes("__")) throw new Error(`tool_name_invalid: ${upstream}`);
   return name;
 }
 

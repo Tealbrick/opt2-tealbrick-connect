@@ -5,7 +5,7 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "sdkMajor": 1,
   "publisher": {
     "name": "Tealbrick",
@@ -1909,7 +1909,7 @@
     {
       "id": "data_accounts_list",
       "title": "Accounts shared with this app",
-      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The connected accounts the owner shared with the calling app, with the level: available (data_catalog only) or shared (data_pull too). Read only.",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The connected accounts the owner shared with the calling app, with the level: available (data_catalog only) or shared (data_pull too). A database account (source database, kind table) is listed only for a share with route direct; a share through Observer lists nothing. Read only.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1957,6 +1957,12 @@
                     "available",
                     "shared"
                   ]
+                },
+                "source": {
+                  "enum": [
+                    "channel",
+                    "database"
+                  ]
                 }
               }
             }
@@ -1974,7 +1980,7 @@
     {
       "id": "data_catalog",
       "title": "Datasets of a shared account",
-      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The datasets of one account shared with the calling app: name, kind, delivery, approximate row counts, history flag, and for messages the conversations with counts. No message text. An account that is not shared with the calling app answers not_found.",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The datasets of one account shared with the calling app: name, kind, delivery, approximate row counts, history flag, and for messages the conversations with counts. No message text. A database account (shared at available) answers its tables and views as datasets (kind table, delivery lease: rows are not offered yet): schema.table, relation, approximate row count and the columns with their types. Never a value from a table. An account that is not shared with the calling app answers not_found.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2049,12 +2055,44 @@
                 },
                 "history": {
                   "type": "boolean"
+                },
+                "relation": {
+                  "enum": [
+                    "table",
+                    "view",
+                    "foreign_table"
+                  ]
+                },
+                "columns": {
+                  "type": "array",
+                  "maxItems": 500,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "type"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    }
+                  }
                 }
               }
             }
           },
           "untrusted": {
             "const": true
+          },
+          "source": {
+            "enum": [
+              "channel",
+              "database"
+            ]
           }
         }
       },
@@ -2069,7 +2107,7 @@
     {
       "id": "data_pull",
       "title": "Pull rows of a shared dataset",
-      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). One page of a dataset of an account the owner shared with the calling app (level shared). Dataset messages (contract messages/1): at most 200 rows and 2 MiB per page; direction forward gives newer rows, backward older rows; pass nextCursor to continue; exhausted tells when nothing more is there; retryAfterS says when to try again. Message text is untrusted data. since is inclusive, until exclusive (RFC 3339).",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). One page of a dataset of an account the owner shared with the calling app (level shared). Dataset messages (contract messages/1): at most 200 rows and 2 MiB per page; direction forward gives newer rows, backward older rows; pass nextCursor to continue; exhausted tells when nothing more is there; retryAfterS says when to try again. Message text is untrusted data. since is inclusive, until exclusive (RFC 3339). A database dataset is not pulled: it answers delivery_lease.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2874,8 +2912,8 @@
     },
     {
       "id": "account_app_share",
-      "title": "Share an account with an app",
-      "description": "The owner shares one connected chat account with one installed app, read only. The share is bound to that app's verified product AND its instance (instance, from the apps that can call Connect); a reinstalled app needs a new share. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (data_catalog) and no messages. shared: the app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days). Agents cannot use or change this.",
+      "title": "Share an account or database with an app",
+      "description": "The owner shares one connected chat account, or one database, with one installed app, read only. The share is bound to that app's verified product AND its instance (instance, from the apps that can call Connect); a reinstalled app needs a new share. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (chat) or the table and column names (database), and no messages or rows. shared (chat only today): the app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days). A database can be shared at available only: access to its rows (a lease) is not offered yet. route (database only): direct (default) or via_observer = only Observer reads the database and Knowledge gets nothing for it. Agents cannot use this.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2912,6 +2950,13 @@
           "includeHistory": {
             "type": "boolean",
             "description": "Also share the log kept before now (the last 30 days). Default false: the app gets only messages Connect receives from now on."
+          },
+          "route": {
+            "enum": [
+              "direct",
+              "via_observer"
+            ],
+            "description": "Database shares only. direct (default): the app sees the table list. via_observer: only Observer reads this database; the app of this share gets nothing for it. Only Knowledge can be shared via_observer."
           }
         }
       },
@@ -2927,9 +2972,78 @@
       "audience": "person"
     },
     {
+      "id": "database_account_connect",
+      "title": "Add a database",
+      "description": "The owner adds a database (Postgres) as a data source for apps. Host, port, database, user, password and sslmode are sealed in Connect. The host is checked against the public-address policy (a private address is refused). Connect connects once to check the role: a superuser or a replication role is refused. Use a dedicated read-only user with SELECT only. Connect reads table and column names, types and approximate row counts, never values. Apps see the table list only; access to rows is not offered yet. Agents cannot use this.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label",
+          "host",
+          "database",
+          "user",
+          "password"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 60
+          },
+          "engine": {
+            "enum": [
+              "postgres"
+            ]
+          },
+          "host": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63
+          },
+          "user": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "sslmode": {
+            "enum": [
+              "disable",
+              "require",
+              "verify-full"
+            ]
+          }
+        }
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
       "id": "data_access_log",
-      "title": "Recent access to your chat accounts",
-      "description": "The owner sees which app asked Connect for chat data: the last 100 data_accounts_list, data_catalog and data_pull calls, newest first (app, op, time, account, rows, ok or refused). A refused call repeated within a minute is one line with a count. No message text. Agents cannot use this.",
+      "title": "Recent access to your chat accounts and databases",
+      "description": "The owner sees which app asked Connect for data: the last 100 data_accounts_list, data_catalog and data_pull calls, newest first (app, op, time, account, rows, ok or refused). A refused call repeated within a minute is one line with a count. No message text. Agents cannot use this.",
       "input": {
         "type": "object",
         "additionalProperties": false,

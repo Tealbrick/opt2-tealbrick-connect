@@ -287,3 +287,16 @@ test("an app the slice does not list yet is identified by the grant prd (GRANT-P
   assert.equal(code(await call(w.stranger, "data_catalog", inputOf("data_catalog"))), "caller_unverified");
   shares.set(account, "knowledge", "none");
 });
+
+test("C354a on the real SDK: the shipped app has no data_lease route, for an app caller or an agent", async () => {
+  shares.set(account, "knowledge", "shared", true, w.liar);
+  for (const caller of [w.liar, w.agent]) {
+    for (const op of ["data_lease", "data_leases_list", "data_lease_revoke"]) {
+      const r = await call(caller, op, { account, datasets: ["public.customers"] });
+      assert.ok(r.status >= 400 && r.status < 500, `${op}: ${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
+      assert.equal(r.body.output, undefined, op);
+      assert.ok(!JSON.stringify(r.body).includes("password"), op);
+    }
+  }
+  shares.set(account, "knowledge", "none");
+});

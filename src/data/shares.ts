@@ -28,6 +28,17 @@ export const DATA_APPS: Readonly<Record<string, string>> = {
 
 export const isDataApp = (product: string): boolean => Object.hasOwn(DATA_APPS, product);
 
+/**
+ * C336 RQ-3: the route of a database share. `direct` = the share's product may lease the credential (data_lease).
+ * `via_observer` = only Observer reads this database; the product of the row gets nothing for it (not listed, not found).
+ * Chat shares have no route (always `direct`).
+ */
+export const SHARE_ROUTES = ["direct", "via_observer"] as const;
+export type ShareRoute = (typeof SHARE_ROUTES)[number];
+
+/** The two share tables: chat accounts (0010, 0013) and database accounts (0018, with the route column). */
+export type ShareTable = "connect_account_shares" | "connect_db_shares";
+
 export interface ShareRow {
   product: string;
   /** the app instance the owner shared with; null = a row from before migration 0013 (matches no caller) */
@@ -36,26 +47,37 @@ export interface ShareRow {
   includeHistory: boolean;
   /** epoch ms */
   setAt: number;
+  /** database shares only (table connect_db_shares); absent on a chat share */
+  route?: ShareRoute;
 }
 
-const rowOf = (r: Record<string, unknown>): ShareRow => ({
+const rowOf = (r: Record<string, unknown>, routes: boolean): ShareRow => ({
   product: String(r.product),
   instance: typeof r.instance_id === "string" && r.instance_id !== "" ? r.instance_id : null,
   level: String(r.level) as StoredLevel,
   includeHistory: Number(r.include_history) === 1,
   setAt: Number(r.set_at),
+  ...(routes ? { route: r.route === "via_observer" ? ("via_observer" as const) : ("direct" as const) } : {}),
 });
 
 export class ShareStore {
   readonly #db: Db;
+  readonly #table: ShareTable;
 
-  constructor(db: Db) {
+  constructor(db: Db, table: ShareTable = "connect_account_shares") {
     this.#db = db;
+    this.#table = table;
   }
 
+  get #routes(): boolean {
+    return this.#table === "connect_db_shares";
+  }
+
+  #row = (r: Record<string, unknown>): ShareRow => rowOf(r, this.#routes);
+
   get(account: string, product: string): ShareRow | null {
-    const row = this.#db.prepare("SELECT * FROM connect_account_shares WHERE account_id = ? AND product = ?").get(account, product);
-    return row ? rowOf(row) : null;
+    const row = this.#db.prepare(`SELECT * FROM ${this.#table} WHERE account_id = ? AND product = ?`).get(account, product);
+    return row ? this.#row(row) : null;
   }
 
   /** The share that serves a call: the row of this product, only when it is bound to exactly this caller instance. */
@@ -72,14 +94,24 @@ export class ShareStore {
    * `none` removes the row (no instance needed). Else the row is bound to `instance`: a call that changes nothing keeps
    * `set_at`; a change of level, history choice or instance moves it to now (a new instance is a new share).
    */
-  set(account: string, product: string, level: ShareLevel, includeHistory = false, instance: string | null = null, now = Date.now()): void {
+  set(account: string, product: string, level: ShareLevel, includeHistory = false, instance: string | null = null, now = Date.now(), route: ShareRoute = "direct"): void {
     if (level === "none") {
-      this.#db.prepare("DELETE FROM connect_account_shares WHERE account_id = ? AND product = ?").run(account, product);
+      this.#db.prepare(`DELETE FROM ${this.#table} WHERE account_id = ? AND product = ?`).run(account, product);
       return;
     }
     if (!instance) throw new Error("a share needs the app instance (C240)");
+    if (route !== "direct" && !this.#routes) throw new Error("a chat share has no route");
     const current = this.get(account, product);
-    if (current && current.level === level && current.includeHistory === includeHistory && current.instance === instance) return;
+    if (current && current.level === level && current.includeHistory === includeHistory && current.instance === instance && (current.route ?? "direct") === route) return;
+    if (this.#routes) {
+      this.#db
+        .prepare(
+          `INSERT INTO connect_db_shares (account_id, product, level, route, include_history, set_at, instance_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (account_id, product) DO UPDATE SET level = excluded.level, route = excluded.route, include_history = excluded.include_history, set_at = excluded.set_at, instance_id = excluded.instance_id`,
+        )
+        .run(account, product, level, route, includeHistory ? 1 : 0, now, instance);
+      return;
+    }
     this.#db
       .prepare(
         `INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at, instance_id) VALUES (?, ?, ?, ?, ?, ?)
@@ -89,18 +121,18 @@ export class ShareStore {
   }
 
   forAccount(account: string): ShareRow[] {
-    return this.#db.prepare("SELECT * FROM connect_account_shares WHERE account_id = ? ORDER BY product").all(account).map(rowOf);
+    return this.#db.prepare(`SELECT * FROM ${this.#table} WHERE account_id = ? ORDER BY product`).all(account).map(this.#row);
   }
 
   /** The shares that serve this caller: bound to this product AND this instance. */
   accountsForCaller(product: string, instance: string): (ShareRow & { account: string })[] {
     return this.#db
-      .prepare("SELECT * FROM connect_account_shares WHERE product = ? AND instance_id = ? ORDER BY account_id")
+      .prepare(`SELECT * FROM ${this.#table} WHERE product = ? AND instance_id = ? ORDER BY account_id`)
       .all(product, instance)
-      .map((r) => ({ ...rowOf(r), account: String(r.account_id) }));
+      .map((r) => ({ ...this.#row(r), account: String(r.account_id) }));
   }
 
   clearAccount(account: string): void {
-    this.#db.prepare("DELETE FROM connect_account_shares WHERE account_id = ?").run(account);
+    this.#db.prepare(`DELETE FROM ${this.#table} WHERE account_id = ?`).run(account);
   }
 }

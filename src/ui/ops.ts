@@ -33,8 +33,10 @@ export interface Account {
   ownerAgent: string | null;
   status: AccountStatus;
   detail: string;
-  /** Chat accounts only (C230 R3): the apps the owner shared this account with. */
+  /** Chat and database accounts (C230 R3, C336): the apps the owner shared this account with. */
   shares?: AppShare[];
+  /** Database accounts only: `host:port/database`. Never a user or a password. */
+  endpoint?: string;
 }
 
 export interface AppShare {
@@ -47,7 +49,12 @@ export interface AppShare {
   /** the owner included the log kept before the share began (30 days) */
   includeHistory: boolean;
   setAt: string;
+  /** database shares only (C336): direct = the app may lease; via_observer = only Observer reads it */
+  route?: ShareRoute;
 }
+
+/** C336 RQ-3: how an app reaches a shared database. */
+export type ShareRoute = "direct" | "via_observer";
 
 /** R3: what an app may do with a chat account. none = nothing; available = dataset names and counts; shared = pull messages too. */
 export type ShareLevel = "none" | "available" | "shared";
@@ -65,6 +72,10 @@ export interface AccessEntry {
   rows: number;
   /** identical refusals within the same minute folded into this line */
   repeats: number;
+  /** data_lease lines (C336): the lease, its end and the tables asked for. Never a credential. */
+  leaseId?: string;
+  leaseExpiresAt?: string;
+  datasets?: string[];
 }
 export interface DataApp {
   product: string;
@@ -102,15 +113,36 @@ export type RelayOutcome = { relay: string; ok: true } | { relay: string; ok: fa
 export const servicesSearch = (query: string) => callOp<{ composioKey: boolean; catalogAvailable?: boolean; services: ServiceHit[] }>("services_search", { query });
 /** `callersKnown` false = this Connect build cannot list the installed apps yet (miniapp-sdk < 0.1.32): no share can be made. */
 /** `ownerRowsEffective` false/absent = the workspace bridge does not admit owner rows above the Portal grant yet (QA-CON060-1). */
-export const accountsOverview = () => callOp<{ accounts: Account[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean }>("accounts_overview", {});
-export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null) =>
+export const accountsOverview = () =>
+  callOp<{ accounts: Account[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean; databaseRecommendation?: string; leasesEnabled?: boolean }>("accounts_overview", {});
+export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null, route?: ShareRoute) =>
   callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", {
     account,
     product,
     level,
     includeHistory,
     ...(level !== "none" && instance ? { instance } : {}),
+    ...(route ? { route } : {}),
   });
+export type SslMode = "disable" | "require" | "verify-full";
+/** C336 RQ-3: add a Postgres database. The password goes to Connect once and is never shown again. */
+export const databaseAccountConnect = (input: { label: string; host: string; port?: number; database: string; user: string; password: string; sslmode: SslMode }) =>
+  callOp<{ account: Account; recommendation: string }>("database_account_connect", input);
+/** One database lease as the owner sees it (no credential). */
+export interface DataLease {
+  id: string;
+  account: string;
+  accountLabel: string;
+  product: string;
+  app: string;
+  datasets: string[];
+  issuedAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  state: "active" | "revoked" | "expired";
+}
+export const dataLeasesList = () => callOp<{ leases: DataLease[] }>("data_leases_list", {});
+export const dataLeaseRevoke = (lease: string) => callOp<{ lease: string; state: DataLease["state"] }>("data_lease_revoke", { lease });
 export const dataAccessLog = () => callOp<{ entries: AccessEntry[] }>("data_access_log", {});
 export const accountConnect = (input: { service: string; label: string; kind: AccountKind; agent?: string }) =>
   callOp<{ account: Account; redirectUrl: string }>("account_connect", input);
