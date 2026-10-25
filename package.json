@@ -24,7 +24,7 @@
     "@opt2-tealbrick/manifest": "https://github.com/Martin-Atrin/opt2-tealbrick-sdk/releases/download/manifest-v0.1.18/opt2-tealbrick-manifest-0.1.18.tgz",
     "@opt2-tealbrick/miniapp-sdk": "https://github.com/Martin-Atrin/opt2-tealbrick-sdk/releases/download/miniapp-sdk-v0.1.24/opt2-tealbrick-miniapp-sdk-0.1.24.tgz",
     "@opt2-tealbrick/spec": "https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.35/opt2-tealbrick-spec-0.1.35.tgz",
-    "undici": "8.11.2"
+    "undici": "8.12.2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
@@ -34,7 +34,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "ajv": "8.20.0",
-    "happy-dom": "21.0.1",
+    "happy-dom": "21.0.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "typescript": "7.0.2"
