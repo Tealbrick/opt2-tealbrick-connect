@@ -1,8 +1,8 @@
 /**
- * C354a exposure interim, end to end on the real SDK (based on QA R-1) on the real SDK (miniapp-sdk 0.1.23, SDK-HV-1): Connect runs under `startApp` behind a fake bridge, an
- * agent sends a Gmail draft (first contact → held). The owner's hold shows the draft's recipients, subject and text. The
- * agent then edits the draft (A → B) and repeats the approved call: it is held AGAIN with B's content and nothing is sent;
- * B is sent only after its own approval.
+ * C354a interim (connect 0.7.3 / 0.5.13) end to end on the real SDK: Connect runs under `startApp` behind a fake bridge with a
+ * fake upstream. A grant that holds `outward` but not `first_contact` gets 409 `first_contact_approval_off` on a first-contact
+ * send and nothing is sent; every other combination is held as before, and the default path still completes after approval.
+ * The harness is copied from hold-view-e2e (QA R-1).
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 
 import { digest, type Ed25519KeyPair, generateKeyPair, signCallProof, signGrant, signKeySetStatement, signSlice, ulid } from "@opt2-tealbrick/manifest";
-import { decideHold, defineApp, HOLD_VIEW_UNREADABLE, startApp, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { decideHold, defineApp, startApp, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json, PersonPrincipal, RunningApp } from "@opt2-tealbrick/spec/sdk";
 
@@ -196,4 +196,13 @@ test("interim: a grant that holds outward but not first_contact refuses __first_
   assert.equal((await sendDraft("gmail_send_draft__first_contact", ["first_contact"])).status, 202, "default card holds first contact");
   assert.equal((await sendDraft("gmail_send_draft__first_contact", ["outward", "first_contact"])).status, 202, "both held");
   assert.equal(sends() - before, 0);
+  // the default path still completes: the owner approves the held first contact and the same call then sends once
+  const held = await sendDraft("gmail_send_draft__first_contact", ["first_contact"]);
+  assert.equal(held.status, 202);
+  const holdId = String(held.body.holdId);
+  assert.equal(hold(holdId).status, "held");
+  await approve(holdId);
+  const run = await sendDraft("gmail_send_draft__first_contact", ["first_contact"]);
+  assert.equal(run.status, 200, JSON.stringify(run.body));
+  assert.equal(sends() - before, 1);
 });

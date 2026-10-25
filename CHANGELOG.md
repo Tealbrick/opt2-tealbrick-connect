@@ -6,9 +6,11 @@ Versions follow `package.json` and `tealbrick.manifest.json` (product id `connec
 
 C354a exposure interim (security). The SDK holds a call on ONE hold family per op. First-contact sends (`<tool>__first_contact`, `buzz_dm_first`, `channel_dm_first`) carry `first_contact` only, so an owner who holds every message (`outward`, "ask me before every message") but turned off approval for "First message to a new contact" had first contacts sent WITHOUT approval while plain messages waited.
 - These three paths now refuse with 409 `first_contact_approval_off` when the caller's grant holds `outward` and not `first_contact`. The message tells the agent to ask the owner to turn on first-contact approval; then the call waits for the owner. Nothing is sent. Default cards (which hold `first_contact`) are unchanged.
+- The answer names the setting the owner sees: 'First message to a new contact' on the agent card (agent callers) or 'First message to someone new' in the workspace settings for apps (app callers) (QA S3-2).
+- `channel_send` to a conversation id Connect has never seen (for example a person's user id, which Slack turns into a direct message) was sent without the first-contact check, also under the default settings (QA S3-1, pre-existing). Connect now asks the provider for its conversation list once; a conversation that is still unknown is refused with `channel_first_contact_required` (use `channel_conversations` or `channel_dm_first`). Listed channels and groups post as before.
 - Limit: a first-contact call that a policy hook held and the owner approved is also refused under that one setting (the op context has no approval flag).
 - Removed when the SDK carries a hold-family set (spec 0.1.74 `DynamicResolution.holdFamilies`, bridge cap `hold_families`) and Connect resolves `__first_contact` with `["first_contact", "outward"]`.
-- Tests: `first-contact-outward-interim.test.ts` (static ops, agent and app callers), `first-contact-outward-interim.e2e.test.ts` (real SDK: held [outward] → 409 and no send; [outward] plain → held; [first_contact] and [outward, first_contact] → held).
+- Tests: `first-contact-outward-interim.test.ts` (static ops, agent and app callers), `first-contact-outward-interim.e2e.test.ts` (real SDK: held [outward] → 409 and no send; [outward] plain → held; [first_contact] and [outward, first_contact] → held; the default path sends once after approval), `channel-hub.test.ts` (unknown conversation refused, nothing sent; a listed channel posts).
 
 ## 0.7.2 (prepared 2026-10-25; on top of 0.7.1)
 
