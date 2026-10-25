@@ -42,6 +42,7 @@ import {
   leaseState,
 } from "./data/database.ts";
 import { DatabaseService } from "./data/database-service.ts";
+import { LEASE_OP_IDS, leasesDeclared } from "./data/lease-ops.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, SHARE_ROUTES, type ShareLevel, type ShareRoute, ShareStore } from "./data/shares.ts";
 import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
@@ -189,6 +190,12 @@ interface Services {
 
 export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
   const Err: ErrorCtor = env.ErrorClass ?? ConnectError;
+  /**
+   * C354a: the lease operations are NOT in the shipped manifest (no `secretOutput` in the pinned spec), so this is false in
+   * production: no handler is registered for them, a database can be shared at `available` only, and the page offers nothing
+   * about leases. Tests declare the operations (`LEASE_OPS`) to exercise the kept code.
+   */
+  const leasesEnabled = leasesDeclared(env.manifest);
   const fail = (code: string, message: string, status = 400, details?: Record<string, unknown>): never => {
     throw new Err(code, message, status, details);
   };
@@ -927,7 +934,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           if (isDatabaseId(str(i.account) ?? "")) {
             // a database dataset is delivered by lease (data_lease), never by pull; the share is checked first so a stranger learns nothing
             dataDbAccount(s, ctx, i.account, "shared", note);
-            return fail("delivery_lease", "Database tables are not pulled through Connect. Ask for a lease with data_lease and read them with your own connection.", 400);
+            return fail("delivery_lease", "Database tables are not pulled through Connect.", 400);
           }
           const { account, since: ingestedFrom } = dataAccount(s, ctx, i.account, "shared", note);
           note.account = account.id;
@@ -950,6 +957,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     },
 
     /**
+     * NOT REGISTERED in the shipped app (C354a, QA-CON24-1): see `src/data/lease-ops.ts`. Kept for the day the manifest can
+     * declare `secretOutput`; tests declare the operation to run it.
      * C336 RQ-3 / C330(3): a short lease on the owner's read-only database credential, for an app that holds a `shared`
      * database share with route `direct`. APPS ONLY, like the other data ops. The answer carries the password: it is the only
      * place it appears (manifest `secretOutput`: idempotency none, no receipt, no stored output). The audit line and the log
@@ -1397,7 +1406,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         ...s.databases.list().map((a) => ({ ...dbAccountView(a), shares: s.dbShares.forAccount(a.id).map((r) => shareView(r, callers)) })),
       ];
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
-      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION } as unknown as Json;
+      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION, leasesEnabled } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
@@ -1415,6 +1424,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const account = database ? null : s.accounts.get(id);
         if (!database && account?.source !== "channel") fail("account_not_found", "No such chat connection.", 404);
         if (level !== "none" && (database ? database.status !== "connected" : account?.status !== "connected")) fail("channel_account_not_connected", database ? "This database is not connected. Add it again first." : "This chat connection is not connected. Connect it again first.", 409);
+        // C354a: access to rows (a lease) is not offered yet, so a database is shared at `available` (table list) at most. A
+        // stored `shared` would silently turn into row access the day leases ship: refused now, the owner shares again then.
+        if (database && level === "shared" && !leasesEnabled) fail("lease_unavailable", "Access to the rows of a database is not offered yet. Share the database at “Table names only”.", 409);
         const route = (str(i.route) ?? "direct") as ShareRoute;
         if (!SHARE_ROUTES.includes(route)) fail("route_invalid", "Pick direct or via_observer.");
         if (route !== "direct" && !database) fail("route_invalid", "Only a database share has a route.");
@@ -1910,6 +1922,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     const out = await services(ctx).channels.webhook("teams", { headers: req.headers, body });
     return new Response(out.body, { status: out.status, headers: { "content-type": out.contentType ?? "text/plain", "cache-control": "no-store" } });
   };
+
+  // C354a: without the operations in the manifest there is no route to the lease code
+  if (!leasesEnabled) for (const id of LEASE_OP_IDS) delete handlers[id];
 
   return {
     manifest: env.manifest,

@@ -15,9 +15,12 @@ import type { Json, Logger } from "@opt2-tealbrick/spec/sdk";
 
 import { createConnectApp } from "../src/app.ts";
 import { type DatabaseDriver, type DbRow, type DbSession, type DbTarget, POSTGRES_SQL } from "../src/data/database.ts";
+import { LEASE_OP_IDS, LEASE_OPS } from "../src/data/lease-ops.ts";
 import { eventCtx, handlerOf, root, secretsFor, testCtx, testDb } from "./helpers.ts";
 
 const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
+/** C354a: the lease operations are not in the shipped manifest; these tests declare them to run the kept code */
+const leaseManifest: Manifest = { ...manifest, operations: [...manifest.operations, ...LEASE_OPS] };
 const AGENT = "agt_01DATAAGENT000000000000000";
 const KNOWLEDGE = "ins_01HZKNWDG00000000000000000";
 const OBSERVER = "ins_01HZ0BSRVR0000000000000000";
@@ -87,7 +90,7 @@ async function setup(options: { callers?: { product: string; ins: string; name: 
     if (host === "mixed.example.com") return [{ address: PUBLIC_IP, family: 4 }, { address: "192.168.1.10", family: 4 }];
     throw new Error("ENOTFOUND");
   };
-  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: fake.driver }, databaseLookup: lookup });
+  const app = createConnectApp({ manifest: leaseManifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: fake.driver }, databaseLookup: lookup });
   const db = testDb();
   await app.events?.agentAdded?.({ id: AGENT as `agt_${string}`, name: "Agent", mode: "free", status: "active" }, eventCtx(db));
   const callers = options.callers ?? [
@@ -129,19 +132,53 @@ const DATASETS = ["public.customers", "public.orders"];
 
 // ── manifest ──
 
-test("manifest: the SDK's own validator accepts it (description length, rules), as startApp will", () => {
-  const result = validateManifest(manifest);
-  assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
+test("manifest: the SDK's own validator accepts the shipped manifest and the manifest with the lease operations (description length, rules)", () => {
+  for (const m of [manifest, leaseManifest]) {
+    const result = validateManifest(m);
+    assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
+  }
 });
 
-test("manifest: data_lease follows M-OP-12 (read, idempotency none, receipt true, agent audience, not dynamic) and the owner ops are person ops", () => {
-  const op = manifest.operations.find((o) => o.id === "data_lease");
+test("C354a: the shipped manifest has NO lease operation and the shipped app has no handler or route for one", () => {
+  for (const id of LEASE_OP_IDS) {
+    assert.equal(manifest.operations.some((o) => o.id === id), false, `${id} is not in the manifest`);
+    assert.equal(createConnectApp({ manifest, migrationsDir: join(root, "migrations") }).handlers[id], undefined, `${id} has no handler`);
+    assert.ok(createConnectApp({ manifest: leaseManifest, migrationsDir: join(root, "migrations") }).handlers[id], `${id} is registered once the manifest declares it`);
+  }
+  assert.ok(!JSON.stringify(manifest).includes("data_lease"), "no operation text names a lease operation");
+  assert.ok(manifest.operations.some((o) => o.id === "database_account_connect"), "database accounts and the catalog ship");
+});
+
+test("the kept lease operations follow M-OP-12 (read, idempotency none, receipt true, agent audience, not dynamic) and the owner ops are person ops", () => {
+  const ops = leaseManifest.operations;
+  const op = ops.find((o) => o.id === "data_lease");
   assert.deepEqual([op?.audience, op?.crud, op?.effect, op?.idempotency, op?.receipt, op?.scopeType, op?.dynamic, op?.holdFamily], ["agent", ["read"], "read", "none", true, undefined, undefined, undefined]);
   const input = op?.input as unknown as { properties: { datasets: { minItems: number; maxItems: number }; ttlS: { maximum: number } } };
   assert.deepEqual([input.properties.datasets.minItems, input.properties.datasets.maxItems, input.properties.ttlS.maximum], [1, 50, 900]);
-  for (const id of ["database_account_connect", "data_leases_list", "data_lease_revoke"]) assert.equal(manifest.operations.find((o) => o.id === id)?.audience, "person", id);
-  assert.equal(manifest.operations.find((o) => o.id === "data_lease_revoke")?.receipt, true);
-  assert.equal(manifest.operations.find((o) => o.id === "database_account_connect")?.receipt, false, "the connect form carries a password: no receipt");
+  for (const id of ["database_account_connect", "data_leases_list", "data_lease_revoke"]) assert.equal(ops.find((o) => o.id === id)?.audience, "person", id);
+  assert.equal(ops.find((o) => o.id === "data_lease_revoke")?.receipt, true);
+  assert.equal(ops.find((o) => o.id === "database_account_connect")?.receipt, false, "the connect form carries a password: no receipt");
+});
+
+test("C354a: in the shipped app a database can be shared at available only; shared is refused and nothing is stored", async () => {
+  const fake = fakeDriver();
+  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: fake.driver }, databaseLookup: async () => [{ address: PUBLIC_IP, family: 4 }] });
+  const db = testDb();
+  const person = testCtx({ db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "railway" }] });
+  const added = (await handlerOf(app, "database_account_connect")({ label: "Shop DB", host: "db.example.com", database: "shop", user: "readonly", password: CANARY } as Json, person)) as unknown as { account: { id: string } };
+  const id = added.account.id;
+  const share = (level: string) => handlerOf(app, "account_app_share")({ account: id, product: "knowledge", level, instance: KNOWLEDGE } as Json, person);
+  const r = await refusal(share("shared"));
+  assert.deepEqual([r.code, r.httpStatus], ["lease_unavailable", 409]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_db_shares").get()?.n, 0);
+  await share("available");
+  assert.equal(db.prepare("SELECT level FROM connect_db_shares").get()?.level, "available");
+  const overview = (await handlerOf(app, "accounts_overview")({} as Json, person)) as unknown as { leasesEnabled: boolean };
+  assert.equal(overview.leasesEnabled, false);
+  // the catalog works for the app at that level
+  const knowledge = testCtx({ db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", appListed: true });
+  const cat = (await handlerOf(app, "data_catalog")({ account: id } as Json, knowledge)) as unknown as { datasets: { dataset: string }[] };
+  assert.ok(cat.datasets.length > 0);
 });
 
 // ── adding a database ──
@@ -217,7 +254,7 @@ test("database_account_connect: a driver failure shows a fixed text and an allow
 });
 
 test("a build with no driver says so (database_driver_unavailable)", async () => {
-  const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), databaseLookup: async () => [{ address: PUBLIC_IP, family: 4 }] });
+  const app = createConnectApp({ manifest: leaseManifest, migrationsDir: join(root, "migrations"), databaseLookup: async () => [{ address: PUBLIC_IP, family: 4 }] });
   const db = testDb();
   const person = testCtx({ db, person: true });
   const r = await refusal(handlerOf(app, "database_account_connect")({ label: "x", host: "db.example.com", database: "d", user: "u", password: CANARY } as Json, person));
@@ -405,7 +442,7 @@ test("data_lease: the address is checked again at the lease (DNS that turned pri
   const id = await t.connect();
   await t.share(id, "knowledge", "shared");
   // same account, the name now answers a private address: rebuild the app with that DNS over the same database
-  const flip = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: t.fake.driver }, databaseLookup: async () => [{ address: "10.0.0.9", family: 4 }] });
+  const flip = createConnectApp({ manifest: leaseManifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: t.fake.driver }, databaseLookup: async () => [{ address: "10.0.0.9", family: 4 }] });
   const r = await refusal(handlerOf(flip, "data_lease")({ account: id, datasets: DATASETS } as Json, t.ctx.knowledge));
   assert.equal(r.code, "endpoint_not_allowed");
   assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0);
@@ -498,7 +535,7 @@ test("every error on the lease path has a code and a fixed message: no DSN, host
   await secretsFor(t.db).delete(`db:${id}`);
   assert.equal((await fail(t.lease(id, DATASETS))).code, "database_credentials_missing");
   // the host now fails DNS, or answers a private address: the policy text names a reason, never the host
-  const dns = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: t.fake.driver }, databaseLookup: async () => { throw new Error(`getaddrinfo ENOTFOUND ${HOST}`); } });
+  const dns = createConnectApp({ manifest: leaseManifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: t.fake.driver }, databaseLookup: async () => { throw new Error(`getaddrinfo ENOTFOUND ${HOST}`); } });
   await secretsFor(t.db).put(`db:${id}`, JSON.stringify({ host: HOST, port: 5432, database: "shop", user: "readonly", password: CANARY, sslmode: "verify-full" }));
   const lookup = await (async () => { try { await handlerOf(dns, "data_lease")({ account: id, datasets: DATASETS } as Json, t.ctx.knowledge); } catch (e) { clean(e as Error); return e as { code: string; message: string }; } throw new Error("expected a refusal"); })();
   assert.deepEqual([lookup.code, lookup.message], ["endpoint_not_allowed", "Endpoint is not allowed (dns_lookup_failed)."]);

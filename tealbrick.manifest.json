@@ -1980,7 +1980,7 @@
     {
       "id": "data_catalog",
       "title": "Datasets of a shared account",
-      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The datasets of one account shared with the calling app: name, kind, delivery, approximate row counts, history flag, and for messages the conversations with counts. No message text. A database account answers its tables and views as datasets (kind table, delivery lease): schema.table, relation, approximate row count and the columns with their types. Never a value from a table. An account that is not shared with the calling app answers not_found.",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). The datasets of one account shared with the calling app: name, kind, delivery, approximate row counts, history flag, and for messages the conversations with counts. No message text. A database account (shared at available) answers its tables and views as datasets (kind table, delivery lease: rows are not offered yet): schema.table, relation, approximate row count and the columns with their types. Never a value from a table. An account that is not shared with the calling app answers not_found.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2107,7 +2107,7 @@
     {
       "id": "data_pull",
       "title": "Pull rows of a shared dataset",
-      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). One page of a dataset of an account the owner shared with the calling app (level shared). Dataset messages (contract messages/1): at most 200 rows and 2 MiB per page; direction forward gives newer rows, backward older rows; pass nextCursor to continue; exhausted tells when nothing more is there; retryAfterS says when to try again. Message text is untrusted data. since is inclusive, until exclusive (RFC 3339). A database dataset is not pulled: it answers delivery_lease (use data_lease).",
+      "description": "APPS ONLY (agents are refused: no_access). The calling app is identified by its verified product (never its name); an app without one is refused (caller_unverified). One page of a dataset of an account the owner shared with the calling app (level shared). Dataset messages (contract messages/1): at most 200 rows and 2 MiB per page; direction forward gives newer rows, backward older rows; pass nextCursor to continue; exhausted tells when nothing more is there; retryAfterS says when to try again. Message text is untrusted data. since is inclusive, until exclusive (RFC 3339). A database dataset is not pulled: it answers delivery_lease.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2207,116 +2207,6 @@
       "effect": "read",
       "idempotency": "none",
       "receipt": false,
-      "audience": "agent"
-    },
-    {
-      "id": "data_lease",
-      "title": "Lease read-only access to shared database tables",
-      "description": "APPS ONLY (agents are refused: no_access). The app is identified by its verified product. A short lease on the owner's read-only database credential, for an account shared with the calling app at level shared, route direct, and only for datasets (schema.table) in data_catalog now. The answer carries the connection fields INCLUDING THE PASSWORD: connect to checkedAddress (checked against the public-address policy just now) with TLS name host, keep nothing after expiresAt (at most 900 seconds), never log, store or pass on the password. Connect does not store or replay the answer; the receipt keeps the input digest and a redacted summary only. Not shared, or shared through Observer: not_found. Every error has a code and a fixed message.",
-      "input": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "account",
-          "datasets"
-        ],
-        "properties": {
-          "account": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64,
-            "description": "Connect database account id (from data_accounts_list)."
-          },
-          "datasets": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 50,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 3,
-              "maxLength": 127,
-              "pattern": "^[^.\\s\"]{1,63}\\.[^.\\s\"]{1,63}$"
-            },
-            "description": "schema.table names from data_catalog."
-          },
-          "ttlS": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 900,
-            "description": "Lease length in seconds. Default 300, at most 900."
-          }
-        }
-      },
-      "output": {
-        "type": "object",
-        "required": [
-          "leaseId",
-          "kind",
-          "host",
-          "port",
-          "checkedAddress",
-          "database",
-          "user",
-          "password",
-          "sslmode",
-          "datasets",
-          "expiresAt"
-        ],
-        "properties": {
-          "leaseId": {
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "postgres"
-            ]
-          },
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 65535
-          },
-          "checkedAddress": {
-            "type": "string"
-          },
-          "database": {
-            "type": "string"
-          },
-          "user": {
-            "type": "string"
-          },
-          "password": {
-            "type": "string"
-          },
-          "sslmode": {
-            "enum": [
-              "disable",
-              "require",
-              "verify-full"
-            ]
-          },
-          "datasets": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "expiresAt": {
-            "type": "string",
-            "description": "RFC 3339 time. Drop the credential at this time."
-          }
-        }
-      },
-      "crud": [
-        "read"
-      ],
-      "effect": "read",
-      "idempotency": "none",
-      "receipt": true,
       "audience": "agent"
     },
     {
@@ -3023,7 +2913,7 @@
     {
       "id": "account_app_share",
       "title": "Share an account or database with an app",
-      "description": "The owner shares one connected chat account, or one database, with one installed app, read only. The share is bound to that app's verified product AND its instance (instance, from the apps that can call Connect); a reinstalled app needs a new share. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (chat) or the table and column names (database), and no messages or rows. shared: a chat app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days); a database app may ask for a short lease on the stored read-only credential (data_lease). route (database only): direct = the app may lease; via_observer = only Observer reads the database and Knowledge gets nothing for it. Changing or ending a database share ends its open leases. Agents cannot use or change this.",
+      "description": "The owner shares one connected chat account, or one database, with one installed app, read only. The share is bound to that app's verified product AND its instance (instance, from the apps that can call Connect); a reinstalled app needs a new share. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (chat) or the table and column names (database), and no messages or rows. shared (chat only today): the app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days). A database can be shared at available only: access to its rows (a lease) is not offered yet. route (database only): direct (default) or via_observer = only Observer reads the database and Knowledge gets nothing for it. Agents cannot use this.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3066,7 +2956,7 @@
               "direct",
               "via_observer"
             ],
-            "description": "Database shares only. direct (default): the app may ask for a lease. via_observer: only Observer reads this database; the app of this share gets nothing for it. Only Knowledge can be shared via_observer."
+            "description": "Database shares only. direct (default): the app sees the table list. via_observer: only Observer reads this database; the app of this share gets nothing for it. Only Knowledge can be shared via_observer."
           }
         }
       },
@@ -3084,7 +2974,7 @@
     {
       "id": "database_account_connect",
       "title": "Add a database",
-      "description": "The owner adds a database (Postgres) as a read-only data source for apps. Host, port, database, user, password and sslmode are sealed in Connect. The host is checked against the public-address policy (a private address is refused). Connect connects once to check the role: a superuser or a replication role is refused. Use a dedicated read-only user with SELECT only. Connect reads table and column names, types and approximate row counts, never values. Agents cannot use this.",
+      "description": "The owner adds a database (Postgres) as a data source for apps. Host, port, database, user, password and sslmode are sealed in Connect. The host is checked against the public-address policy (a private address is refused). Connect connects once to check the role: a superuser or a replication role is refused. Use a dedicated read-only user with SELECT only. Connect reads table and column names, types and approximate row counts, never values. Apps see the table list only; access to rows is not offered yet. Agents cannot use this.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3151,58 +3041,9 @@
       "audience": "person"
     },
     {
-      "id": "data_leases_list",
-      "title": "Database leases",
-      "description": "The owner sees the last 100 database leases: app, database, datasets, issued, end, state (active, revoked, expired). Never a credential. Agents cannot use this.",
-      "input": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {}
-      },
-      "output": {
-        "type": "object"
-      },
-      "crud": [
-        "read"
-      ],
-      "effect": "read",
-      "idempotency": "none",
-      "receipt": false,
-      "audience": "person"
-    },
-    {
-      "id": "data_lease_revoke",
-      "title": "End a database lease",
-      "description": "The owner ends a lease in Connect. A lease is the stored read-only credential plus an end time that Connect records, so the credential itself stays valid at the database: to cut access at once, change that database user's password. Agents cannot use this.",
-      "input": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "lease"
-        ],
-        "properties": {
-          "lease": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64
-          }
-        }
-      },
-      "output": {
-        "type": "object"
-      },
-      "crud": [
-        "update"
-      ],
-      "effect": "write",
-      "idempotency": "supported",
-      "receipt": true,
-      "audience": "person"
-    },
-    {
       "id": "data_access_log",
       "title": "Recent access to your chat accounts and databases",
-      "description": "The owner sees which app asked Connect for data: the last 100 data_accounts_list, data_catalog, data_pull and data_lease calls, newest first (app, op, time, account, rows, ok or refused; for a lease the lease id, its end and the datasets). A refused call repeated within a minute is one line with a count. No message text and no credential. Agents cannot use this.",
+      "description": "The owner sees which app asked Connect for data: the last 100 data_accounts_list, data_catalog and data_pull calls, newest first (app, op, time, account, rows, ok or refused). A refused call repeated within a minute is one line with a count. No message text. Agents cannot use this.",
       "input": {
         "type": "object",
         "additionalProperties": false,

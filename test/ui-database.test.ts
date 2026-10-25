@@ -34,13 +34,16 @@ const O1 = "ins_01HZ0BSRVR0000000000000000";
 const SETAT = "2026-10-17T10:00:00.000Z";
 type Share = { product: string; instance: string | null; current: boolean; level: "available" | "shared"; includeHistory: boolean; setAt: string; route?: "direct" | "via_observer" };
 type Lease = { id: string; account: string; accountLabel: string; product: string; app: string; datasets: string[]; issuedAt: string; expiresAt: string; revokedAt: string | null; state: "active" | "revoked" | "expired" };
-const stub: { shares: Share[]; leases: Lease[]; sent: { op: string; input: Record<string, unknown> }[]; connectFails: boolean; entries: Record<string, unknown>[]; withDatabase: boolean } = {
+const stub: { shares: Share[]; leases: Lease[]; sent: { op: string; input: Record<string, unknown> }[]; connectFails: boolean; entries: Record<string, unknown>[]; withDatabase: boolean; leasesEnabled: boolean; asked: string[] } = {
   shares: [],
   leases: [],
   sent: [],
   connectFails: false,
   entries: [],
   withDatabase: true,
+  // the shipped Connect has no lease operations (C354a); a test turns them on to check the kept page code
+  leasesEnabled: false,
+  asked: [],
 };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const database = () => ({ id: "cdb_1", service: "postgres", source: "database", kind: "as_me", label: "Shop DB", ownerAgent: null, status: "connected", detail: "", endpoint: "db.example.com:5432/shop", shares: stub.shares });
@@ -51,6 +54,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const path = url.pathname.replace("/a/connect/tb/v1/", "");
   if (path === "session") return json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: [] });
   const op = /^ops\/(.+)$/.exec(path)?.[1];
+  if (op) stub.asked.push(op);
   const body = JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> };
   const sent = (): void => void stub.sent.push({ op: String(op), input: body.input ?? (body as Record<string, unknown>) });
   if (op === "accounts_overview") {
@@ -64,6 +68,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         ],
         callersKnown: true,
         databaseRecommendation: "Use a dedicated read-only database user: SELECT only, no REPLICATION.",
+        leasesEnabled: stub.leasesEnabled,
       },
     });
   }
@@ -140,6 +145,8 @@ const reset = () => {
   stub.entries = [];
   stub.connectFails = false;
   stub.withDatabase = true;
+  stub.leasesEnabled = false;
+  stub.asked = [];
 };
 const lease = (n: number, extra: Partial<Lease> = {}): Lease => ({ id: `lse_${n}`, account: "cdb_1", accountLabel: "Shop DB", product: "knowledge", app: "Knowledge", datasets: ["public.customers", "public.orders"], issuedAt: "2026-10-18T09:00:00.000Z", expiresAt: "2026-10-18T09:05:00.000Z", revokedAt: null, state: "active", ...extra });
 
@@ -154,18 +161,18 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     assert.deepEqual(notes(none.host), ["This app sees nothing of this database. Pick a level to share; you can revoke it at any time.", "This app sees nothing of this database. Pick a level to share; you can revoke it at any time."]);
     await none.unmount();
 
-    stub.shares = [
-      { product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" },
-      { product: "observer", instance: O1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" },
-    ];
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" }];
     const mixed = await mount(h(mod.Accounts));
-    const [names, lease] = notes(mixed.host);
-    assert.match(names ?? "", /names of the tables and views, their columns and types, and about how many rows each holds\. It sees no values\./u);
-    assert.match(lease ?? "", /short lease \(up to 15 minutes\) on the read-only user you stored/u);
-    assert.match(lease ?? "", /the password stays valid in your database until you change it there/u);
+    const [names] = notes(mixed.host);
+    assert.match(names ?? "", /names of the tables and views, their columns and types, and about how many rows each holds\. It sees no values\. Access to the rows is not offered yet\./u);
+    assert.doesNotMatch(text(mixed.host), /lease/iu, "C354a: nothing on the page speaks of leases while Connect offers none");
+    // the share menu offers no row access
+    await click(mixed.host.querySelector('[aria-label="Share Shop DB with Knowledge"]'));
+    const labels = [...(mixed.host.querySelector('[aria-label="Share Shop DB with Knowledge"]')?.parentElement?.querySelectorAll('[role="option"]') ?? [])].map((o) => (o.textContent ?? "").trim());
+    assert.deepEqual(labels, ["Not shared", "Table names only"]);
     await mixed.unmount();
 
-    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "via_observer" }];
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "via_observer" }];
     const routed = await mount(h(mod.Accounts));
     assert.match(notes(routed.host)[0] ?? "", /Knowledge gets nothing from this database\. Only Observer reads it/u);
     await routed.unmount();
@@ -175,21 +182,21 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     reset();
     const page = await mount(h(mod.Accounts));
     assert.equal(page.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'), null, "no route before a share");
-    await choose(page.host, "Share Shop DB with Knowledge", "Allow read-only access");
-    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "shared", includeHistory: false, instance: K1, route: "direct" } }]);
+    await choose(page.host, "Share Shop DB with Knowledge", "Table names only");
+    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "available", includeHistory: false, instance: K1, route: "direct" } }]);
     await page.unmount();
 
     stub.sent = [];
     stub.shares = [
-      { product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" },
-      { product: "observer", instance: O1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" },
+      { product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" },
+      { product: "observer", instance: O1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" },
     ];
     const shared = await mount(h(mod.Accounts));
     assert.ok(shared.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'));
     assert.equal(shared.host.querySelector('[aria-label="How Observer reaches Shop DB"]'), null, "Observer has no route");
     assert.equal(shared.host.querySelector('input[type="checkbox"]'), null, "no 30-day history for a database");
     await choose(shared.host, "How Knowledge reaches Shop DB", "Only through Observer");
-    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "shared", includeHistory: false, instance: K1, route: "via_observer" } }]);
+    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "available", includeHistory: false, instance: K1, route: "via_observer" } }]);
     await shared.unmount();
   });
 
@@ -242,8 +249,66 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     await page.unmount();
   });
 
-  it("lists the leases without a credential, ends an active one on click, and says what ending means", async () => {
+  it("QA-CON24-2: a refusal of the add form is scrolled into view and takes focus (also the same refusal twice and a form that is incomplete)", async () => {
     reset();
+    stub.withDatabase = false;
+    stub.connectFails = true;
+    const scrolled: Element[] = [];
+    const proto = (globalThis as { HTMLElement: { prototype: { scrollIntoView?: (arg?: unknown) => void } } }).HTMLElement.prototype;
+    const original = proto.scrollIntoView;
+    proto.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    try {
+      const page = await mount(h(mod.Accounts));
+      await click([...page.host.querySelectorAll("button")].find((b) => b.textContent === "Add a database"));
+      const form = page.host.querySelector('form[aria-label="Add a database"]') as HTMLFormElement;
+      const submit = async () => {
+        await act(async () => form.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event));
+        await flush();
+      };
+      const type = async (label: string, value: string) => {
+        const input = [...form.querySelectorAll("label")].find((l) => (l.textContent ?? "").trim().startsWith(label))?.querySelector("input") as HTMLInputElement;
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")?.set?.call(input, value);
+          input.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+        });
+      };
+      const alertBox = () => form.querySelector('[role="alert"]')?.parentElement as HTMLElement | null;
+      // incomplete form
+      await submit();
+      assert.ok(alertBox(), "the notice is shown");
+      assert.equal(document.activeElement, alertBox(), "focus moved to the notice");
+      assert.equal(scrolled.at(-1), alertBox(), "the notice was scrolled into view");
+      // a refusal from Connect
+      for (const [label, value] of [["Name", "Shop DB"], ["Host", "10.0.0.5"], ["Database", "shop"], ["User", "readonly"], ["Password", CANARY]] as const) await type(label, value);
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      scrolled.length = 0;
+      await submit();
+      assert.match(text(alertBox() as Element), /Endpoint is not allowed/u);
+      assert.equal(document.activeElement, alertBox());
+      assert.equal(scrolled.length, 1);
+      // the same refusal again moves the reader to it again
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      scrolled.length = 0;
+      await submit();
+      assert.equal(document.activeElement, alertBox(), "same text, focus again");
+      assert.equal(scrolled.length, 1);
+      await page.unmount();
+    } finally {
+      if (original) proto.scrollIntoView = original;
+      else delete proto.scrollIntoView;
+    }
+  });
+
+  it("when Connect offers leases (kept code): the level appears, the lease sentence is honest, the list shows no credential and an active lease can be ended", async () => {
+    reset();
+    stub.leasesEnabled = true;
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" }];
+    const offered = await mount(h(mod.Accounts));
+    assert.match(notes(offered.host)[0] ?? "", /short lease \(up to 15 minutes\) on the read-only user you stored/u);
+    assert.match(notes(offered.host)[0] ?? "", /the password stays valid in your database until you change it there/u);
+    await offered.unmount();
     stub.leases = [lease(2), lease(1, { state: "revoked", revokedAt: "2026-10-18T09:01:00.000Z", datasets: ["a.b", "c.d", "e.f", "g.h", "i.j"] }), lease(0, { state: "expired" })];
     const page = await mount(h(mod.Accounts));
     const section = page.host.querySelector('section[aria-labelledby="data-leases"]') as Element;
@@ -260,8 +325,18 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     await page.unmount();
   });
 
+  it("in the shipped Connect there is no lease section and the page never asks for the lease list (C354a)", async () => {
+    reset();
+    stub.leases = [lease(1)];
+    const page = await mount(h(mod.Accounts));
+    assert.equal(page.host.querySelector('section[aria-labelledby="data-leases"]'), null);
+    assert.ok(!stub.asked.includes("data_leases_list"), stub.asked.join(","));
+    await page.unmount();
+  });
+
   it("the access list names a lease line: the tables and when the lease ends", async () => {
     reset();
+    stub.leasesEnabled = true;
     stub.entries = [
       { id: 1, at: "2026-10-18T09:00:00.000Z", op: "data_lease", callerType: "app", product: "knowledge", app: "Knowledge", account: "Shop DB", ok: true, outcome: "ok", rows: 2, repeats: 0, leaseId: "lse_1", leaseExpiresAt: "2026-10-18T09:05:00.000Z", datasets: ["public.customers", "public.orders"] },
       { id: 2, at: "2026-10-18T09:00:00.000Z", op: "data_lease", callerType: "app", product: "knowledge", app: "Knowledge", account: "Shop DB", ok: false, outcome: "scope_denied", rows: 0, repeats: 0 },

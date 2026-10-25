@@ -1,5 +1,5 @@
 /**
- * C336 RQ-3 on the REAL SDK (M-OP-12, specs#47 head 3c108b0): data_lease over HTTP with a signed grant and call proof. The
+ * C336 RQ-3 on the REAL SDK, with the lease operations DECLARED by the test (they are not in the shipped manifest, C354a) (M-OP-12, specs#47 head 3c108b0): data_lease over HTTP with a signed grant and call proof. The
  * receipt row the SDK writes (input digest + the handler's redacted summary) must never hold the credential, and the
  * answer is not kept in the idempotency table. The database client is a fake; the DSN is sealed in the real app secret store.
  */
@@ -18,10 +18,13 @@ import type { Db, Json, RunningApp } from "@opt2-tealbrick/spec/sdk";
 
 import { createConnectApp } from "../src/app.ts";
 import { DatabaseAccountStore, type DatabaseDriver, type DbRow, POSTGRES_SQL } from "../src/data/database.ts";
+import { LEASE_OPS } from "../src/data/lease-ops.ts";
 import { ShareStore } from "../src/data/shares.ts";
 import { root } from "./helpers.ts";
 
-const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
+const shipped = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
+/** C354a: the lease operations are not in the shipped manifest; this test declares them to run the kept code on the real SDK */
+const manifest: Manifest = { ...shipped, operations: [...shipped.operations, ...LEASE_OPS] };
 const nowS = () => Math.floor(Date.now() / 1000);
 const CANARY = "CANARY-pw-e2e-5c81d07a93";
 const HOST = "db.e2e-example.com";
