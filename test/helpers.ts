@@ -106,6 +106,8 @@ export function testCtx(input: {
   ws?: string;
   /** CRUD of the agent's Portal grant (`ctx.grant.claims.crud`); absent = the claims carry none */
   grantCrud?: CrudAction[];
+  /** held families of the grant (`ctx.grant.claims.held`); absent = the claims carry none */
+  grantHeld?: string[];
   /** person call from the app UI: no grant */
   person?: boolean;
   /** companion APP caller (C86): caller.type "app", id = this instance id */
@@ -143,8 +145,8 @@ export function testCtx(input: {
     grant: input.person
       ? null
       : input.app
-        ? ({ ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST" } as never, caller: { type: "app", id: input.app as `ins_${string}` } } as never)
-        : { ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantCrud ? { crud: input.grantCrud } : {}) } as never, caller: { type: "agent", id: agent as `agt_${string}` } },
+        ? ({ ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantHeld ? { held: input.grantHeld } : {}) } as never, caller: { type: "app", id: input.app as `ins_${string}` } } as never)
+        : { ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantCrud ? { crud: input.grantCrud } : {}), ...(input.grantHeld ? { held: input.grantHeld } : {}) } as never, caller: { type: "agent", id: agent as `agt_${string}` } },
     op: {} as never,
     scope: {
       access: null,

@@ -392,8 +392,22 @@ export class ChannelHub {
 
   async send(account: Account, agent: string, input: { conversation: string; text: string; threadId?: string | null }): Promise<{ messageId: string; conversation: string }> {
     const provider = this.provider(account.service);
-    const known = this.#d.db.prepare("SELECT type FROM connect_channel_conversations WHERE account_id = ? AND conversation = ?").get(account.id, input.conversation);
-    if (known?.type === "direct") {
+    const knownRow = () => this.#d.db.prepare("SELECT type FROM connect_channel_conversations WHERE account_id = ? AND conversation = ?").get(account.id, input.conversation);
+    let known = knownRow();
+    if (!known) {
+      // C354a QA S3-1: a conversation id Connect has never seen (e.g. a person's user id, which Slack turns into a DM) is a
+      // first contact. Ask the provider once; if it still does not list the conversation, refuse like an unknown person.
+      await this.refreshConversations(account).catch(() => undefined);
+      known = knownRow();
+      if (!known) {
+        throw new ChannelError(
+          "channel_first_contact_required",
+          "Connect has not seen this conversation. Use channel_conversations to list the conversations you can post to, or channel_dm_first to write to a person; the owner approves first contact.",
+          409,
+        );
+      }
+    }
+    if (known.type === "direct") {
       const wrote = this.#d.db.prepare("SELECT 1 FROM connect_channel_inbox WHERE account_id = ? AND conversation = ? AND sender_is_bot = 0 LIMIT 1").get(account.id, input.conversation);
       const contact = this.#d.db.prepare("SELECT 1 FROM connect_channel_contacts WHERE account_id = ? AND conversation = ?").get(account.id, input.conversation);
       if (!wrote && !contact) throw new ChannelError("channel_first_contact_required", "This is a direct conversation with someone you have not written to. Use channel_dm_first.", 409);
