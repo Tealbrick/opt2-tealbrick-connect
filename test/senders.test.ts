@@ -87,7 +87,7 @@ async function setup(readEvents: NostrEvent[] = []) {
 
 test("manifest 0.4.0: identities_list is agent read-only without receipt; sender ops are person writes; account scope shares sender instances", () => {
   const ops = Object.fromEntries(manifest.operations.map((o) => [o.id, o]));
-  assert.equal(manifest.version, "0.5.10");
+  assert.equal(manifest.version, "0.5.13");
   const list = ops.identities_list;
   assert.deepEqual([list?.audience, list?.effect, list?.idempotency, list?.receipt, list?.scopeType], ["agent", "read", "none", false, undefined]);
   assert.deepEqual(list?.crud, ["read"]);
