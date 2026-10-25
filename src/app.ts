@@ -31,7 +31,7 @@ import { ACTIONS_EXPIRED_NOTE, type ActionOrigin, type ActionRelay, ChannelHub, 
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, type ShareLevel, ShareStore } from "./data/shares.ts";
-import { classifyMcpTool, isInviteTool, isSendTool, recipientsAt, recipientsOf } from "./effect.ts";
+import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
@@ -1400,7 +1400,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         .filter((a) => a.source === "channel")
         .map((a) => {
           const bot = s.channels.bot(a.id);
-          return { ...accountView(a), bot: bot ? { id: bot.botId, name: bot.botName, inbound: bot.inboundState, detail: bot.inboundDetail, unmatchedChanges: bot.unmatchedChanges } : null };
+          return { ...accountView(a), bot: bot ? { id: bot.botId, name: bot.botName, inbound: bot.inboundState, detail: bot.inboundDetail, unmatchedChanges: bot.unmatchedChanges, notStored: s.channels.notStored(a.id) } : null };
         });
       return { accounts } as unknown as Json;
     },
@@ -1501,14 +1501,14 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const row = s.tools.get(name);
         if (row?.source !== "mcp") fail("tool_unknown", "No MCP tool with that name is connected.", 404);
         const tool = row as NonNullable<typeof row>;
-        const confirmed = ownerReadOf(ctx.db, name);
-        if (i.read === true && !tool.readClaim && !confirmed) fail("tool_not_read_only", "The server does not say this tool is read-only, so it cannot be marked read.", 409);
+        // QA-CONNECT22-3: confirming needs the server's CURRENT read-only claim (stored at the last tool sync), also for a tool
+        // the owner confirmed before; an earlier confirmation never stands in for it
+        if (i.read === true && !tool.readClaim) fail("tool_not_read_only", notConfirmableText(tool), 409);
         if (i.read === true) ctx.db.prepare("INSERT INTO connect_tool_owner_reads (name, set_at) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET set_at = excluded.set_at").run(name, Date.now());
         else ctx.db.prepare("DELETE FROM connect_tool_owner_reads WHERE name = ?").run(name);
         // Re-class at once from the stored facts: owner read → read; withdrawn → the name inference (server hint not trusted).
         const cls = classifyMcpTool(tool.upstream, i.read === true ? { readOnlyHint: true } : undefined, i.read === true);
         s.tools.setClass(name, cls);
-        if (i.read !== true) ctx.db.prepare("UPDATE connect_tools SET read_claim = 1 WHERE name = ? AND effect != 'read'").run(name);
         return { name, effect: cls.effect, ownerConfirmedRead: i.read === true };
       });
     },
@@ -1826,6 +1826,23 @@ export async function runDueBuzzPosts(db: Db, relay: BuzzRelay, log: Logger, now
 
 function ownerReadOf(db: Db, name: string): boolean {
   return !!db.prepare("SELECT 1 FROM connect_tool_owner_reads WHERE name = ?").get(name);
+}
+
+/**
+ * C331 (demo gap 4): why the owner cannot mark an MCP tool read, in the words of the real reason. A money name that does more than
+ * read money records stays money (CORE §7: always held; D4b); a class above the name inference came from the server's
+ * `destructiveHint`; otherwise the server makes no read-only claim.
+ */
+function notConfirmableText(tool: { upstream: string; effect: string }): string {
+  // QA-CONNECT22-5: a name with characters Connect cannot check is money (C340); say that, not "it names money"
+  if (!plainName(tool.upstream)) return "This tool's name has characters Connect cannot check (only plain letters, digits and punctuation are checked), so it is treated as a money tool and cannot be marked read.";
+  if (namesMoney(tool.upstream) && !readsMoneyRecords(tool.upstream))
+    return "Connect treats every tool whose name can move money (a charge, payment, refund or transfer) as a money tool. Money tools are always held, so this one cannot be marked read. Only a tool that only reads money records, such as list_charges, can be confirmed.";
+  if (tool.effect === "read") return "This tool is already treated as read-only.";
+  // a read of money records without a usable claim: no readOnlyHint, or readOnlyHint together with destructiveHint
+  if (tool.effect === "money") return "The server does not say this tool is read-only, or also marks it destructive, so it cannot be marked read.";
+  if (tool.effect === "destructive" && inferFromName(tool.upstream).effect !== "destructive") return "The server marks this tool as destructive, so it cannot be marked read.";
+  return "The server does not say this tool is read-only, so it cannot be marked read.";
 }
 
 /** X-02: the recipients of a send that ran are known to this caller on this account from now on. */
