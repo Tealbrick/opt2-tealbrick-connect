@@ -134,7 +134,7 @@ packages:
     version: 0.1.18
 
   '@opt2-tealbrick/miniapp-sdk@https://github.com/Martin-Atrin/opt2-tealbrick-sdk/releases/download/miniapp-sdk-v0.1.22/opt2-tealbrick-miniapp-sdk-0.1.22.tgz':
-    resolution: {tarball: https://github.com/Martin-Atrin/opt2-tealbrick-sdk/releases/download/miniapp-sdk-v0.1.22/opt2-tealbrick-miniapp-sdk-0.1.22.tgz}
+    resolution: {integrity: sha512-VPnueUv2WgLbGObLqB8QyuNg1wH8GU7JNB71tyDuBA76K4SH+Mph3pLZn3hcLXh4DcgoWJB/E4TyuMfKmWaI9Q==, tarball: https://github.com/Martin-Atrin/opt2-tealbrick-sdk/releases/download/miniapp-sdk-v0.1.22/opt2-tealbrick-miniapp-sdk-0.1.22.tgz}
     version: 0.1.22
     hasBin: true
     peerDependencies:
@@ -154,11 +154,11 @@ packages:
         optional: true
 
   '@opt2-tealbrick/spec@https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.26/opt2-tealbrick-spec-0.1.26.tgz':
-    resolution: {tarball: https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.26/opt2-tealbrick-spec-0.1.26.tgz}
+    resolution: {integrity: sha512-u8QrxaA/fACTiLB8VPyDWORTTRijxt8rQuAnU0cgOfSauaDl1E+YIzGzxjsrpwbYav2jLhE20sCLzeQJ+rntBQ==, tarball: https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.26/opt2-tealbrick-spec-0.1.26.tgz}
     version: 0.1.26
 
   '@opt2-tealbrick/spec@https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.31/opt2-tealbrick-spec-0.1.31.tgz':
-    resolution: {tarball: https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.31/opt2-tealbrick-spec-0.1.31.tgz}
+    resolution: {integrity: sha512-hdau8QqGkMkeab43WcEMz39lbPFhmmMz1cOgGtBsSkvBIOIUUPt8bRZECUDNlYMUDnbNXBCyt2sARxzyreklkQ==, tarball: https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.31/opt2-tealbrick-spec-0.1.31.tgz}
     version: 0.1.31
 
   '@opt2-tealbrick/spec@https://github.com/Martin-Atrin/opt2-tealbrick-specs/releases/download/spec-v0.1.35/opt2-tealbrick-spec-0.1.35.tgz':
