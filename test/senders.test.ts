@@ -87,7 +87,7 @@ async function setup(readEvents: NostrEvent[] = []) {
 
 test("manifest 0.4.0: identities_list is agent read-only without receipt; sender ops are person writes; account scope shares sender instances", () => {
   const ops = Object.fromEntries(manifest.operations.map((o) => [o.id, o]));
-  assert.equal(manifest.version, "0.7.0");
+  assert.equal(manifest.version, "0.7.1");
   const list = ops.identities_list;
   assert.deepEqual([list?.audience, list?.effect, list?.idempotency, list?.receipt, list?.scopeType], ["agent", "read", "none", false, undefined]);
   assert.deepEqual(list?.crud, ["read"]);
@@ -297,4 +297,32 @@ test("0.5.3 (F76): every operation title is unique, so the approval form never s
   const title = (id: string) => manifest.operations.find((o) => o.id === id)?.title;
   assert.equal(title("buzz_dm"), "Direct message a known person on Buzz");
   assert.equal(title("channel_dm"), "Direct message a known person on a chat service");
+});
+
+test("C343a buzz_dm(_first) with actions: verified apps only; ✅/❌ shape; recorded with sealed values; late buttons go as text", async () => {
+  const s = await setup();
+  await handlerOf(s.app, "sender_identity_set")({ channel: "buzz", label: "Acme workspace" }, s.person);
+  const to = npubEncode(publicKeyOf(generateSecretKey()));
+  const actions = [
+    { label: "Approve", value: `ib1.${"t".repeat(16)}.a`, style: "primary" },
+    { label: "Deny", value: `ib1.${"t".repeat(16)}.d`, style: "danger" },
+  ];
+  const inbox = testCtx({ db: s.db, app: INBOX_APP, appProduct: "inbox" });
+  await assert.rejects(s.run("buzz_dm_first", { to, content: "alert", actions }, testCtx({ db: s.db, agent: A })), isCode("actions_apps_only"));
+  await assert.rejects(s.run("buzz_dm_first", { to, content: "alert", actions }), isCode("caller_unverified"));
+  await assert.rejects(s.run("buzz_dm_first", { to, content: "alert", actions: [actions[0], { ...actions[1], style: "primary" }] }, inbox), isCode("actions_invalid"));
+  const out = (await s.run("buzz_dm_first", { to, content: "alert", actions }, inbox)) as { id: string; actions: string };
+  assert.equal(out.actions, "shown");
+  const row = s.db.prepare("SELECT * FROM connect_buzz_actions").get() as Record<string, unknown>;
+  assert.deepEqual([row.id, row.product, row.instance, row.requested_to, row.state], [out.id, "inbox", INBOX_APP, to, "open"]);
+  assert.doesNotMatch(JSON.stringify(row), /ib1\./u, "values are not in the database");
+  // the alert text is sent as given (no buttons on the wire: Buzz has none)
+  assert.equal(s.w.events.at(-1)?.content, "alert");
+  const late = (await s.run("buzz_dm", { to, content: "late alert", actions, actionsUntil: "2020-01-01T00:00:00Z" }, inbox)) as { actions: string };
+  assert.equal(late.actions, "expired");
+  assert.match(String(s.w.events.at(-1)?.content), /^late alert\n\n\(The buttons of this message expired/u);
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM connect_buzz_actions").get()?.n, 1);
+  // QA-CON27-1: a key Connect holds (here an agent's identity) cannot take reaction buttons
+  const agentKey = (s.db.prepare("SELECT pubkey FROM connect_buzz_identities WHERE agent <> ? LIMIT 1").get(WORKSPACE_SENDER) ?? s.db.prepare("SELECT pubkey FROM connect_buzz_identities LIMIT 1").get()) as { pubkey: string };
+  await assert.rejects(s.run("buzz_dm_first", { to: npubEncode(agentKey.pubkey), content: "self", actions }, inbox), (e: ConnectError) => e.code === "actions_invalid" && /belongs to an agent/u.test(e.message));
 });

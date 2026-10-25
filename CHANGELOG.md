@@ -1,6 +1,24 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.3 (catalog 0.3.1; C331 demo gaps).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.1 (catalog 0.3.1; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.1 (prepared 2026-10-25; on top of 0.7.0)
+
+C343a: decide an Operator Inbox approval from Buzz. Buzz has no buttons, so the recipient reacts on the alert.
+
+- `buzz_dm` / `buzz_dm_first` take `actions` (verified companion apps only; one primary button = ✅, at most one danger button = ❌) and `actionsUntil`. Buttons that expired while the send waited for approval: the text goes alone with a note, `actions: "expired"`.
+- `src/channels/buzz/actions.ts`: migration 0017 `connect_buzz_actions` (no button values; the values are sealed in the app secrets as `buzz-actions:<id>` and removed when the alert closes). The 15 s tick reads kind 7 reactions on the alert events in the DM channel (`authors` = the recipient) and counts one only when its Schnorr signature verifies, the recipient's key signed it, its last `e` tag is the alert, it is exactly ✅ or ❌, it is not older than the alert, and the alert is open and unexpired. The first one decides; ✅ and ❌ in the same second decide nothing. A text reply never decides. The reaction is relayed to the sending app like a button press; a reply in the DM is the receipt.
+- QA-CON27-1: a recipient key that Connect holds (an agent's or the workspace sender's Buzz identity) never takes reactions (refused at send, closed at poll). All open alerts are polled, page by page.
+- CON23D-1/2: tests that a Telegram callback_query is confirmed at once and that the hub hands the provider the button-press sink.
+
+## 0.7.0 (prepared 2026-10-25; normal path)
+
+IN-2 (C322(9), C331(3)): decide an Operator Inbox approval from a Slack or Telegram DM button.
+
+- `channel_dm` / `channel_dm_first` take `actions` (1 to 3 buttons: label at most 30 characters, value at most 64 of `[A-Za-z0-9._:-]`, style primary/danger) and `actionsUntil` (default 24 hours, at most 30 days). Verified companion apps only: an agent gets 403 `actions_apps_only`. Slack shows Block Kit buttons (Socket Mode `interactive` / `block_actions`; the Slack app needs Interactivity on, see the owner steps in Chat bots › Slack); Telegram shows an inline keyboard (`callback_query`). Teams and Discord send the text only (`actions: "unsupported"`).
+- Migration 0016 `connect_channel_actions`: messages sent with buttons (value hashes only, sending product and instance, requested account, expiry, open/busy/done). A click is relayed only for a stored button on a stored, open message before expiry; the first decision closes it and the buttons are removed (Slack `chat.update`, Telegram `editMessageText`). Notices for the clicker only: Slack ephemeral, Telegram callback answer.
+- New companion `inbox: [item_decide_dm] / update` (the update confirm shows it, C100): a click is relayed to Operator Inbox, which checks the signed one-time token and decides.
+- Conformance 0.1.25 → 0.1.29 (sdk#44: person list checks follow `nextCursor`; A4 failed on manifests with a companion). The harness applies `TBCONF_LEVEL_CRUD`, so the A21 owner-row rows run and pass.
 
 ## 0.6.3 (prepared 2026-10-24; normal path)
 
