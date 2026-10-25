@@ -1,6 +1,10 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.5 (0.6.1 + first-contact fixes, C354a; catalog 0.3.0, C276c, CF-NC-2).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.6.6 (0.6.5 + Node 24.22.1 base image; catalog 0.3.0, C276c, CF-NC-2).
+
+## 0.6.6 (2026-10-25; image-only patch, C361a)
+
+The 0.6.5 code on the Node 24.22.1 base image (Node.js security release 2026-10-21; the eMudhra root and the Node2Shell bug). No other code change. `upgradeFrom` is `<=0.6.1 || =0.6.5` (C361a): a workspace on 0.6.1 or older, or exactly on 0.6.5, may update to it; the dev-only 0.6.2 to 0.6.4 cannot move sideways onto it.
 
 ## 0.6.5 (prepared 2026-10-25; the 0.6.1 code plus first-contact fixes)
 

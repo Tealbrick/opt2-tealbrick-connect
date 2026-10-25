@@ -10,7 +10,7 @@
       "product": "connect",
       "kind": "app",
       "manifest": "tealbrick.manifest.json",
-      "upgradeFrom": "<=0.6.1"
+      "upgradeFrom": "<=0.6.1 || =0.6.5"
     }
   ]
 }
