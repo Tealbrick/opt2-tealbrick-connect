@@ -373,7 +373,11 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     if (held.includes("outward") && !held.includes("first_contact")) {
       fail(
         "first_contact_approval_off",
-        "The owner holds every message for approval but not first messages to new people, so Connect does not send this first contact. Ask the owner to turn on approval for 'First message to a new contact'; then this call waits for the owner.",
+        `The owner holds every message for approval but not first messages to new people, so Connect does not send this first contact. ${
+          ctx.caller.type === "app"
+            ? "Ask the owner to turn on 'First message to someone new' in the workspace settings for apps"
+            : "Ask the owner to turn on 'First message to a new contact' on your agent card"
+        }; then this call waits for the owner.`,
         409,
         { retryable: false },
       );
