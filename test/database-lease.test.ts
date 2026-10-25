@@ -583,21 +583,26 @@ test("account_update renames a database; the data access log names a database by
 
 // ── upgrade ──
 
-test("migration 0016 is expand only: numbering has no gap, old rows survive untouched, the new tables and columns work", () => {
+test("migration 0018 is expand only: numbering has no gap, old rows survive untouched, the new tables and columns work", () => {
   const dir = join(root, "migrations");
   const files = readdirSync(dir).filter((n) => n.endsWith(".sql")).sort();
-  assert.deepEqual(files.map((f) => Number(f.slice(0, 4))), files.map((_, n) => n + 1), "gap-free from 0001");
-  assert.ok(files.includes("0016_database_accounts.sql"));
+  // The Coordinator's order: Inbox #23 = 0016, another PR = 0017, this PR = 0018. Until those two are on main the folder has
+  // a gap at 0016 and 0017 (the SDK's gap-free check fails locally for the real-SDK tests and conformance, by design); every
+  // number below this migration is gap-free from 0001 and this one is the last.
+  const numbers = files.map((f) => Number(f.slice(0, 4)));
+  assert.deepEqual(numbers.slice(0, -1), numbers.slice(0, -1).map((_, n) => n + 1), "gap-free from 0001 below this migration");
+  assert.equal(numbers.at(-1), 18);
+  assert.equal(files.at(-1), "0018_database_accounts.sql");
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
-  for (const f of files.filter((n) => n < "0016")) db.exec(readFileSync(join(dir, f), "utf8"));
+  for (const f of files.filter((n) => n < "0018")) db.exec(readFileSync(join(dir, f), "utf8"));
   db.exec(`INSERT INTO connect_accounts (id, service, source, kind, label, owner_agent, status, detail, created_at, updated_at) VALUES ('a1','telegram','channel','as_itself','x','agt_1','connected','',1,1)`);
   db.exec(`INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at, instance_id) VALUES ('a1', 'knowledge', 'shared', 1, 5, 'ins_1')`);
   db.exec(`INSERT INTO connect_data_audit (at, op, outcome, caller_type, caller_id, product, account_id, dataset, row_count, quarantined) VALUES (1,'data_pull','ok','app','ins_1','knowledge','a1','messages',3,0)`);
   const snapshot = (): string =>
     JSON.stringify(["connect_accounts", "connect_account_shares", "connect_data_audit"].map((t) => db.prepare(`SELECT * FROM ${t}`).all()));
   const before = snapshot();
-  db.exec(readFileSync(join(dir, "0016_database_accounts.sql"), "utf8"));
+  db.exec(readFileSync(join(dir, "0018_database_accounts.sql"), "utf8"));
   // old columns and values are unchanged; the two new audit columns are NULL for old rows
   const after = JSON.parse(snapshot()) as Record<string, unknown>[][];
   const old = JSON.parse(before) as Record<string, unknown>[][];

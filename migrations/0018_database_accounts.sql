@@ -1,4 +1,4 @@
--- 0016 (C336 RQ-3, C330(3)): database accounts for the data_* ops, with shares that carry a route, and data leases.
+-- 0018 (C336 RQ-3, C330(3)): database accounts for the data_* ops, with shares that carry a route, and data leases.
 -- Expand only: new tables and new nullable columns. Nothing is changed or dropped.
 --
 -- Why new tables and not a new `connect_accounts.source` value: that column has a CHECK list (0001) that SQLite can only

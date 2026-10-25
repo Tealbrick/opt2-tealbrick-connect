@@ -36,7 +36,7 @@ export const isDataApp = (product: string): boolean => Object.hasOwn(DATA_APPS, 
 export const SHARE_ROUTES = ["direct", "via_observer"] as const;
 export type ShareRoute = (typeof SHARE_ROUTES)[number];
 
-/** The two share tables: chat accounts (0010, 0013) and database accounts (0016, with the route column). */
+/** The two share tables: chat accounts (0010, 0013) and database accounts (0018, with the route column). */
 export type ShareTable = "connect_account_shares" | "connect_db_shares";
 
 export interface ShareRow {
