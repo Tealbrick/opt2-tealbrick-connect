@@ -118,6 +118,19 @@ test("DMs: first contact via channel_dm_first; channel_dm refuses unknown people
   assert.match(spec.holdView({ person: "u7", text: "hello" }), /First direct message[\s\S]*hello/u);
 });
 
+test("C354a S3-1: channel_send to a conversation Connect has never seen is a first contact (refused, nothing sent); a listed channel posts", async () => {
+  const s = await setup();
+  const { account } = (await handlerOf(s.app, "channel_account_connect")({ service: "telegram", label: "TG", agent: AGENT, credentials: { bot_token: "123:ok" } }, s.person)) as { account: { id: string } };
+  const ctx = testCtx({ db: s.db, agent: AGENT, access: { [account.id]: "read_update" } });
+  const before = s.w.sent.length;
+  for (const conversation of ["U0NEWPERSON", "dm-u77", ""]) {
+    await assert.rejects(handlerOf(s.app, "channel_send")({ account: account.id, conversation, text: "hi" }, ctx), (e: ConnectError) => e.code === "channel_first_contact_required", conversation);
+  }
+  assert.equal(s.w.sent.length, before, "nothing reached the provider");
+  await handlerOf(s.app, "channel_send")({ account: account.id, conversation: "chan-1", text: "hello channel" }, ctx);
+  assert.equal(s.w.sent.at(-1)?.conversation, "chan-1");
+});
+
 test("edit/delete only own messages; react passes through", async () => {
   const s = await setup();
   const { account } = (await handlerOf(s.app, "channel_account_connect")({ service: "telegram", label: "TG", agent: AGENT, credentials: { bot_token: "123:ok" } }, s.person)) as { account: { id: string } };

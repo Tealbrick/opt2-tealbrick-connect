@@ -387,6 +387,25 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     }
     return fail("cursor_invalid", "cursor is not one this op returned.");
   };
+  // Interim (C354a exposure): the SDK holds on ONE family per op. A first-contact send carries `first_contact` only, so a grant
+  // that holds `outward` (owner: "ask me before every message") but not `first_contact` would let it run unheld while plain
+  // messages wait. Refuse instead (fail closed) until resolutions carry a hold-family set (spec 0.1.74 `holdFamilies`).
+  const refuseUnheldFirstContact = (ctx: OpContext): void => {
+    const held: readonly string[] = ctx.grant?.claims.held ?? [];
+    if (held.includes("outward") && !held.includes("first_contact")) {
+      fail(
+        "first_contact_approval_off",
+        `The owner holds every message for approval but not first messages to new people, so Connect does not send this first contact. ${
+          ctx.caller.type === "app"
+            ? "Ask the owner to turn on 'First message to someone new' in the workspace settings for apps"
+            : "Ask the owner to turn on 'First message to a new contact' on your agent card"
+        }; then this call waits for the owner.`,
+        409,
+        { retryable: false },
+      );
+    }
+  };
+
   const firstContactHint = (ctx: OpContext, op: string): string =>
     ctx.caller.type === "app"
       ? `The workspace sender has not written to this person before. Call ${op} once (the owner approves first contact); later messages use the normal op.`
@@ -475,6 +494,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const row = s.tools.get(baseName) ?? fail("tool_unknown", `Unknown tool ${tool}. Search first.`, 404);
         const send = isSendTool(row);
         if (firstContact && !send) fail("tool_unknown", `Unknown tool ${tool}. Only send tools have a first-contact form.`, 404);
+        if (firstContact) refuseUnheldFirstContact(ctx);
         const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
         const account = await pickAccount(ctx, s, row, selector);
         // C276c: a catalog send names where its recipients are; other send tools use the top-level recipient arguments (X-02).
@@ -987,6 +1007,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       scope: sendScope,
       run: async (input, ctx) =>
         guard(async () => {
+          refuseUnheldFirstContact(ctx);
           const i = asInput(input);
           const s = services(ctx);
           const { account, ...sender } = chatSender(ctx, s, i.account);
@@ -1057,6 +1078,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     buzz_dm_first: {
       run: async (input, ctx) =>
         guard(async () => {
+          refuseUnheldFirstContact(ctx);
           const i = asInput(input);
           const s = services(ctx);
           const sender = await buzzSender(ctx, s);
