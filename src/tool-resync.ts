@@ -9,7 +9,7 @@ import type { Db, Logger } from "@opt2-tealbrick/spec/sdk";
 import type { Account, AccountStore } from "./accounts.ts";
 
 /** Bump when classify / per-method CRUD rules change, so stored rows are re-made on the next start. */
-export const TOOL_CLASS_VERSION = "c276c-1";
+export const TOOL_CLASS_VERSION = "c331-2";
 export const TOOL_CLASSES_KEY = "tool_classes";
 
 export interface ResyncSources {

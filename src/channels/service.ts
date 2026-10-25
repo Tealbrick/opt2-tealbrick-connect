@@ -94,10 +94,15 @@ export function isChannelService(value: string): value is ServiceId {
   return (CHANNEL_SERVICES as readonly string[]).includes(value);
 }
 
+/** QA-CON25-1: how many not-stored message keys one account keeps (the count stops growing there; the log still shows each). */
+const NOT_STORED_MAX = 1000;
+
 export class ChannelHub {
   readonly #d: ChannelDeps;
   readonly #workers = new Map<string, AbortController>();
   #relay: ActionRelay | null = null;
+  /** account id → keys of messages not stored yet (QA-CON25-1: counted once per message, removed when a redelivery is stored) */
+  readonly #notStored = new Map<string, Set<string>>();
 
   constructor(deps: ChannelDeps) {
     this.#d = deps;
@@ -346,7 +351,12 @@ export class ChannelHub {
       if (!bot) continue;
       try {
         const out = await provider.inbound.verifyWebhook(request, await this.#creds(account), this.#d.net, bot);
-        for (const m of out.messages) this.ingest(account, m);
+        try {
+          for (const m of out.messages) this.#store(account, m);
+        } catch {
+          // Quality audit R2: not stored (logged and counted); a 5xx makes the sender deliver the activity again
+          return { status: 503, body: "" };
+        }
         return out.reply ?? { status: 200, body: "" };
       } catch (error) {
         if (!(error instanceof ChannelError) || error.code !== "channel_webhook_unauthorized") this.#d.log?.warn("channel webhook failed", { service, code: (error as { code?: string }).code ?? "error" });
@@ -547,7 +557,7 @@ export class ChannelHub {
             creds,
             this.#d.net,
             bot,
-            (m) => void this.ingest(account, m),
+            (m) => this.#store(account, m),
             controller.signal,
             (a) =>
               void this.action(account, a).catch((error: unknown) =>
@@ -572,6 +582,49 @@ export class ChannelHub {
       this.#setState(account.id, "stopped");
     };
     void loop();
+  }
+
+  /**
+   * Quality audit R2 (2026-10-24): the inbound sink. A message that cannot be stored (a database error) is never silent: one
+   * error log line (metadata only, never the text), a per-account count since start, and the bot's inbound detail says it.
+   * Then it throws, so the provider lets the platform deliver it again where it can (Slack: no ack; Telegram: the offset
+   * stays); Discord does not redeliver, the count is the record.
+   */
+  #store(account: Account, m: InboundMessage): void {
+    const key = `${m.change ? (m.change.kind === "edit" ? `edit:${m.change.at}` : "delete") : "message"}:${m.conversation}:${m.messageId}`;
+    const pending = this.#notStored.get(account.id);
+    try {
+      this.ingest(account, m);
+    } catch (error) {
+      const set = pending ?? new Set<string>();
+      // QA-CON25-1: one message counts once, however often its redelivery fails (bounded: the oldest key goes first)
+      set.add(key);
+      while (set.size > NOT_STORED_MAX) set.delete(set.values().next().value as string);
+      this.#notStored.set(account.id, set);
+      const code = (error as { code?: string }).code ?? (error instanceof Error ? error.name : "error");
+      this.#d.log?.error("channel inbound message could not be stored", { service: account.service, account: account.id, code, notStored: set.size });
+      this.#notStoredNotice(account.id, set.size);
+      throw error;
+    }
+    // QA-CON25-1: a redelivery was stored; the notice goes when nothing is left
+    if (pending?.delete(key)) this.#notStoredNotice(account.id, pending.size);
+  }
+
+  #notStoredNotice(accountId: string, count: number): void {
+    try {
+      if (count === 0) this.#setState(accountId, "running");
+      else {
+        const words = count === 1 ? "1 incoming message" : `${count} incoming messages`;
+        this.#setState(accountId, "running", `${words} could not be stored yet (last try: ${new Date().toISOString()}). Connect asks the chat service to send them again where it can.`);
+      }
+    } catch {
+      // the database itself is failing: the log line and the count stay
+    }
+  }
+
+  /** Quality audit R2 / QA-CON25-1: inbound messages of an account that are not stored yet (since this process started). */
+  notStored(accountId: string): number {
+    return this.#notStored.get(accountId)?.size ?? 0;
   }
 
   stop(accountId: string): void {

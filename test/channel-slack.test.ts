@@ -405,3 +405,38 @@ test("R3 slack parser: another app's message carries senderIsBot; the bot's own 
   assert.equal(parseSlackEvent(event({ subtype: "message_changed", message: { user: BOT.botId, text: "x", ts: "1700000100.000100", edited: { ts: "1700000150.000100" } } }), BOT, () => 1), null);
   assert.deepEqual(slackProvider.reports, { edits: true, deletions: true });
 });
+
+test("quality audit R2: a message the sink cannot store is not acked and not deduped, so Slack's redelivery is stored", async () => {
+  const { net, sockets } = slackNet({ "apps.connections.open": { body: api["apps.connections.open"] } });
+  if (slackProvider.inbound.kind !== "socket") assert.fail("slack inbound is socket");
+  const received: InboundMessage[] = [];
+  let failNext = true;
+  const abort = new AbortController();
+  const running = slackProvider.inbound.run(
+    CREDS,
+    net,
+    BOT,
+    (m) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("database is locked");
+      }
+      received.push(m);
+    },
+    abort.signal,
+  );
+  await until(() => sockets.length === 1, "socket");
+  const ws = sockets[0] as FakeSocket;
+  ws.emit(envelopes.hello);
+  ws.emit(envelopes.message);
+  assert.deepEqual(ws.sent.map((s) => JSON.parse(s).envelope_id), [], "not acked: Slack sends it again");
+  assert.equal(received.length, 0);
+  ws.emit(envelopes.message); // Slack's redelivery of the unacked envelope
+  assert.deepEqual(ws.sent.map((s) => JSON.parse(s).envelope_id), ["env-0001"]);
+  assert.equal(received.length, 1, "the redelivery is stored, not deduped away");
+  ws.emit(envelopes.message);
+  assert.equal(received.length, 1, "a later repeat is still deduped (and acked)");
+  assert.equal(ws.sent.length, 2);
+  abort.abort();
+  await running;
+});
