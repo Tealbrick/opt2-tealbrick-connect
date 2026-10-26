@@ -25,6 +25,8 @@ const running = await startApp(
       // C133: the old single-relay setting is no longer read; only its presence is reported (clear owner error).
       oldBuzzRelaySettingPresent: Boolean(process.env.CONNECT_BUZZ_RELAY_URL?.trim()),
       databaseDrivers: defaultDatabaseDrivers(),
+      // C368: zone for dates on hold cards (the SDK has no workspace zone yet); UTC when unset
+      timeZone: process.env.CONNECT_TIME_ZONE ?? null,
       ErrorClass: TbError,
     }),
   ),

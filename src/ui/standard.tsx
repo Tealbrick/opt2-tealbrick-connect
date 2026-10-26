@@ -12,6 +12,7 @@
 import { callOp, tbFetch, type UseAgents, type UseHolds } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, EmptyState, Notice, Swatch, Table, Tag } from "@opt2-tealbrick/ui";
 import { type Dispatch, type ReactNode, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
+import { HoldDetails } from "./hold-details.tsx";
 
 // ── messages ────────────────────────────────────────────────────────────────
 
@@ -266,6 +267,8 @@ function HoldRow({ hold, busy, onDecide }: { hold: Hold; busy: boolean; onDecide
         <Tag status="needs-you">{hold.op}</Tag>
         {hold.holdFamily ? <Tag>{hold.holdFamily}</Tag> : null}
         {hold.heldBy ? <Tag>{`held by ${hold.heldBy}`}</Tag> : null}
+        {/* C368/C369: when the agent asked; the hold text itself holds no time (the approval is bound to it) */}
+        <Tag>{when(hold.createdAt)}</Tag>
       </span>
       {hold.view ? <pre className="view">{hold.view}</pre> : null}
       <div className="side">
@@ -275,6 +278,7 @@ function HoldRow({ hold, busy, onDecide }: { hold: Hold; busy: boolean; onDecide
         <Button size="sm" disabled={busy} aria-label={`Deny ${hold.op} from ${hold.caller.name}`} onClick={() => onDecide("deny")}>
           Deny
         </Button>
+        <HoldDetails hold={hold} />
       </div>
     </div>
   );

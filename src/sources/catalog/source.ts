@@ -12,7 +12,8 @@ import type { AppSecrets } from "@opt2-tealbrick/miniapp-sdk";
 import type { Artifact } from "@opt2-tealbrick/spec/manifest";
 
 import type { Account, AccountStore } from "../../accounts.ts";
-import { entrySchema, type ToolRegistry, toolName } from "../../tools.ts";
+import { isPostizCreatePost } from "../../postiz.ts";
+import { DRAFT_SUFFIX, entrySchema, type ToolRegistry, toolName } from "../../tools.ts";
 import type { FetchLike } from "../../util/http.ts";
 import { assertEndpointAllowed, type Lookup } from "../../util/net-policy.ts";
 import { type CatalogAuth, callOperation, credentialFields } from "./http.ts";
@@ -217,12 +218,14 @@ export class CatalogSource {
         name,
         upstream: op.operationId,
         title: op.summary.slice(0, 200),
-        description: `${op.method.toUpperCase()} ${op.path}: ${op.summary}`,
+        description: `${op.method.toUpperCase()} ${op.path}: ${op.summary}${draftHint(app.id, name, op)}`,
         inputSchema: entrySchema(op.inputSchema),
         crud: op.crud,
         effect: op.effect,
         ...(op.holdFamily ? { holdFamily: op.holdFamily } : {}),
         ...(op.sendRecipients ? { sendRecipients: op.sendRecipients } : {}),
+        httpMethod: op.method,
+        httpPath: op.path,
       })),
     );
   }
@@ -249,6 +252,14 @@ export class CatalogSource {
       ...(this.#d.allowOrigins ? { allowOrigins: this.#d.allowOrigins } : {}),
     });
     return result.data;
+  }
+
+  /** C368: the upstream operation behind a catalog tool (for the owner's hold details). Null when the app or tool is unknown. */
+  async operationOf(service: string, tool: string): Promise<{ operationId: string; method: string; path: string } | null> {
+    const app = (await this.apps()).get(service);
+    if (!app) return null;
+    const op = (await this.#compiledFor(app)).byName.get(tool);
+    return op ? { operationId: op.operationId, method: op.method, path: op.path } : null;
   }
 
   /** Connection test: call the app's `healthOperation` with the account's credentials (read-only operations only). */
@@ -286,6 +297,15 @@ export function applyMergePatch(target: unknown, patch: unknown): unknown {
     else base[key] = applyMergePatch(base[key], value);
   }
   return base;
+}
+
+/**
+ * C368: tell the agent about the draft form of Postiz create post (a plain write: no owner approval, no second approval in Postiz).
+ * Only that one operation; the name is the registry name plus the variant suffix.
+ */
+function draftHint(app: string, name: string, op: { method: string; path: string }): string {
+  if (!isPostizCreatePost({ source: "catalog", service: app, httpMethod: op.method, httpPath: op.path })) return "";
+  return ` To only SAVE A DRAFT (not published), call ${name}${DRAFT_SUFFIX} with body.type "draft" and new posts only (no group, no id): it runs without owner approval. type "schedule" and "now" need the owner's approval.`;
 }
 
 /** `cb_<app>_<operation>` (≤ 48 chars, toolName hashes longer ones). */

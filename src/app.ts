@@ -46,7 +46,8 @@ import { LEASE_OP_IDS, leasesDeclared } from "./data/lease-ops.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, SHARE_ROUTES, type ShareLevel, type ShareRoute, ShareStore } from "./data/shares.ts";
 import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
-import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, renderHoldView } from "./hold-view.ts";
+import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, readableTitle, renderGenericHold, renderHoldView } from "./hold-view.ts";
+import { type ChannelLookup, draftCheck, isPostizChannelList, isPostizCreatePost, parseChannels, renderPostizPost } from "./postiz.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
 import { CatalogError, CatalogSource } from "./sources/catalog/source.ts";
@@ -57,9 +58,9 @@ import { McpError } from "./sources/mcp/client.ts";
 import { OAuthError } from "./sources/mcp/oauth.ts";
 import { McpSource } from "./sources/mcp/source.ts";
 import { resyncToolClasses, toolClassMarker } from "./tool-resync.ts";
-import { ACCOUNT_ARGUMENT, FIRST_CONTACT_SUFFIX, ToolRegistry } from "./tools.ts";
+import { ACCOUNT_ARGUMENT, FIRST_CONTACT_SUFFIX, splitVariant, ToolRegistry, type ToolRow } from "./tools.ts";
 import { type FetchLike, UpstreamError } from "./util/http.ts";
-import { newId } from "./util/ids.ts";
+import { newId, sha256Hex } from "./util/ids.ts";
 import { type Lookup, NetPolicyError } from "./util/net-policy.ts";
 import { pinnedFetch } from "./util/pinned-fetch.ts";
 import { scrubSecrets } from "./util/redact.ts";
@@ -153,6 +154,8 @@ export interface ConnectEnv {
   databaseLookup?: Lookup;
   /** Tests: exact database host names that skip the address policy. No owner-facing exception exists in this release (C41). */
   databaseAllowHosts?: readonly string[];
+  /** C368: IANA time zone for dates on hold cards (env CONNECT_TIME_ZONE; the SDK has no workspace zone yet). Default UTC. */
+  timeZone?: string | null;
 }
 
 /** The SDK passes `SdkOpContext` (publicUrl, workspace, scopes, secrets: C31) where the frozen types say OpContext. */
@@ -189,6 +192,7 @@ interface Services {
 }
 
 export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
+  const timeZone = validTimeZone(env.timeZone);
   const Err: ErrorCtor = env.ErrorClass ?? ConnectError;
   /**
    * C354a: the lease operations are NOT in the shipped manifest (no `secretOutput` in the pinned spec), so this is false in
@@ -636,13 +640,27 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       return guard(async () => {
         const s = services(ctx);
         // X-02: `<tool>__first_contact` = the same send tool, resolved with hold family first_contact (owner approved it).
-        const firstContact = tool.endsWith(FIRST_CONTACT_SUFFIX);
-        const baseName = firstContact ? tool.slice(0, -FIRST_CONTACT_SUFFIX.length) : tool;
+        const { base: baseName, variant } = splitVariant(tool);
+        const firstContact = variant === "first_contact";
+        const draft = variant === "draft";
         const row = s.tools.get(baseName) ?? fail("tool_unknown", `Unknown tool ${tool}. Search first.`, 404);
         const send = isSendTool(row);
         if (firstContact && !send) fail("tool_unknown", `Unknown tool ${tool}. Only send tools have a first-contact form.`, 404);
+        if (draft && !isPostizCreatePost(row)) fail("tool_unknown", `Unknown tool ${tool}. Only the Postiz create-post tool has a draft form.`, 404);
         if (firstContact) refuseUnheldFirstContact(ctx);
         const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
+        // C368: the draft form is a plain write by NAME, so this check on the EXACT input is the gate. Nothing is sent upstream
+        // unless the input is a new draft that cannot change or publish an existing post (src/postiz.ts draftCheck).
+        if (draft) {
+          const check = draftCheck(upstreamArgs);
+          if (!check.ok)
+            fail(
+              "draft_not_plain",
+              `${tool} runs without approval only for a plain new draft, and ${check.reason}. Nothing was sent. Call ${row.name} instead (the owner approves it), or send a draft that has only body.type "draft" and new posts.`,
+              409,
+              { retryable: false, tool: row.name },
+            );
+        }
         const account = await pickAccount(ctx, s, row, selector);
         // C276c: a catalog send names where its recipients are; other send tools use the top-level recipient arguments (X-02).
         const recipients = !send ? [] : row.sendRecipients !== undefined ? recipientsAt(upstreamArgs, row.sendRecipients) : recipientsOf(upstreamArgs);
@@ -661,7 +679,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
             });
           }
         }
-        ctx.receipt.summary(`${row.title} via ${account.label}${firstContact ? " (first contact)" : ""}`.slice(0, 280));
+        ctx.receipt.summary(`${row.title} via ${account.label}${firstContact ? " (first contact)" : ""}${draft ? " (draft)" : ""}`.slice(0, 280));
         ctx.receipt.meta({ subjectKind: account.kind, tool: row.upstream, service: row.service, account: account.label });
         let data: unknown;
         if (row.source === "composio") data = await s.composio.execute(account, row.upstream, upstreamArgs, workspace(ctx));
@@ -673,17 +691,45 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       });
     },
     /**
-     * SDK-HV-1 / QA R-1 (miniapp-sdk 0.1.23): the owner sees what a held SEND tool would send — recipients, subject, the first
-     * 500 characters as plain text, attachment names and sizes. A Gmail draft send (and a forward) READS the draft/message
-     * with the same account the call would use (read only; never sends, never renders HTML). Other tools: null (default view).
-     * A throw here (draft not found, upstream down) makes the SDK show the default view with "could not read"; the hold stays.
+     * SDK-HV-1 / QA R-1 (miniapp-sdk 0.1.23): the owner sees what a held tool call would do. A SEND tool: recipients, subject, the
+     * first 500 characters as plain text, attachment names and sizes; a Gmail draft send (and a forward) READS the draft/message
+     * with the same account the call would use (read only; never sends, never renders HTML). C368/C369: the Postiz create-post
+     * tool has its own card (channel, type, date, text, images); every other dynamic tool gets a labelled-lines card (title, account,
+     * arguments as text), never raw JSON. The technical data (tool, upstream operation, account, arguments) is kept for the owner's
+     * "More details" (op hold_details). A throw here (draft not found, upstream down) makes the SDK show the default view with
+     * "could not read"; the hold stays.
      */
     async holdView(tool, args, ctx) {
       const s = services(ctx);
-      const firstContact = tool.endsWith(FIRST_CONTACT_SUFFIX);
-      const row = s.tools.get(firstContact ? tool.slice(0, -FIRST_CONTACT_SUFFIX.length) : tool);
-      if (!row || !isSendTool(row)) return null;
+      const { base, variant } = splitVariant(tool);
+      const firstContact = variant === "first_contact";
+      const row = s.tools.get(base);
+      if (!row) return null;
+      if (variant === "draft" && !isPostizCreatePost(row)) return null;
       const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
+      const key = row.source === "composio" ? await ctx.getKey(COMPOSIO_KEY) : null;
+      const scrub = (t: string) => (key ? scrubSecrets(t, [key]) : t);
+      const finish = async (account: Account | null, out: { summary: string; view: string }) => {
+        const result = { summary: scrub(out.summary), view: scrub(out.view) };
+        await recordHoldDetails(ctx, s, row, tool, account, scrub(sortedJson(upstreamArgs)), result.view);
+        return result;
+      };
+      if (!isSendTool(row)) {
+        // no account is a hold card too: the call fails later with account_ambiguous / scope_denied, the owner still reads the rest
+        let refusal = "(not chosen yet)";
+        const account = await pickAccount(ctx, s, row, selector).catch((error: unknown) => {
+          const code = (error as { code?: string }).code;
+          refusal = code === "account_ambiguous" ? "(several accounts fit; the agent has not picked one)" : "(no account of this agent can run this tool)";
+          return null;
+        });
+        const accountLabel = account?.label ?? refusal;
+        if (isPostizCreatePost(row)) {
+          const channels = account ? await postizChannels(s, account) : null;
+          const card = renderPostizPost({ heading: `Create a Postiz post${variant === "draft" ? " (draft form)" : ""}`, account: accountLabel, args: upstreamArgs, channels, timeZone });
+          return finish(account, card);
+        }
+        return finish(account, renderGenericHold({ heading: `${readableTitle(row.title, row.upstream)} (${row.service})${variant === "draft" ? ", draft" : ""}`, account: accountLabel, args: upstreamArgs }));
+      }
       const account = await pickAccount(ctx, s, row, selector);
       const heading = `${row.title} (${row.service})${firstContact ? ", first contact" : ""}`;
       // Review #19 S2-2: catalog arguments are grouped ({path, query, body}); the owner must see the recipient, subject and text.
@@ -710,10 +756,63 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           notes.push(`Forwards message ${String(upstreamArgs.message_id)} (read from the mailbox now)`);
         }
       }
-      const key = row.source === "composio" ? await ctx.getKey(COMPOSIO_KEY) : null;
-      const scrub = (t: string) => (key ? scrubSecrets(t, [key]) : t);
-      return { summary: scrub(holdSummary(heading, mail)), view: scrub(renderHoldView({ heading, account: account.label, mail, notes })) };
+      return finish(account, { summary: holdSummary(heading, mail), view: renderHoldView({ heading, account: account.label, mail, notes }) });
     },
+  };
+
+  /** Channel names of a Postiz account (GET /public/v1/integrations, read only, 60 s cache, 3 s budget). Null when it cannot be read. */
+  const channelCache = new Map<string, { at: number; channels: ChannelLookup }>();
+  const postizChannels = async (s: Services, account: Account): Promise<ChannelLookup | null> => {
+    const hit = channelCache.get(account.id);
+    if (hit && Date.now() - hit.at < 60_000) return hit.channels;
+    const list = s.tools.listService("catalog", "postiz").find(isPostizChannelList);
+    if (!list) return null;
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), 3000);
+      });
+      try {
+        const data = await Promise.race([s.catalog.execute(account, list.name, {}), timeout]);
+        const channels = parseChannels(data);
+        if (channels.size === 0) return null;
+        channelCache.set(account.id, { at: Date.now(), channels });
+        return channels;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * C369: keep the technical data of a hold card for the owner ("More details"): tool, upstream operation, account and the call
+   * arguments (scrubbed, capped). Keyed by the hash of the hold text, which the SDK also stores as the receipt's meta.viewSha256.
+   * Rows older than a day are deleted on write. Never blocks the hold: a failure only means the modal has no input to show.
+   */
+  const recordHoldDetails = async (ctx: OpContext, s: Services, row: ToolRow, tool: string, account: Account | null, argumentsJson: string, view: string): Promise<void> => {
+    try {
+      const op = row.source === "catalog" ? await s.catalog.operationOf(row.service, row.name).catch(() => null) : null;
+      const details = {
+        tool,
+        title: row.title.slice(0, 300),
+        service: row.service,
+        source: row.source,
+        upstream: row.upstream,
+        method: (op?.method ?? row.httpMethod ?? null)?.toUpperCase() ?? null,
+        path: op?.path ?? row.httpPath ?? null,
+        account: account ? { id: account.id, label: account.label } : null,
+        arguments: argumentsJson.length > 60_000 ? `${argumentsJson.slice(0, 60_000)}\n(cut: too long)` : argumentsJson,
+      };
+      const now = Date.now();
+      ctx.db.prepare("DELETE FROM connect_hold_details WHERE created_at < ?").run(now - 24 * 3_600_000);
+      ctx.db
+        .prepare("INSERT INTO connect_hold_details (view_sha256, tool, details, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (view_sha256) DO UPDATE SET details = excluded.details, created_at = excluded.created_at")
+        .run(`sha256:${sha256Hex(view)}`, tool, JSON.stringify(details), now);
+    } catch {
+      // the card itself is what matters; details are best effort
+    }
   };
 
   // ── data_* op family (C230 R3): apps only, one confused-deputy rule for all three ops ──
@@ -1529,6 +1628,19 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         return { entries } as unknown as Json;
       });
     },
+    /**
+     * C369: the technical data behind a hold card, for the owner's "More details" modal. Person only. The caller sends the hash of
+     * the hold text (the receipt's meta.viewSha256); Connect answers what holdView kept: tool, upstream operation, account, arguments.
+     */
+    async hold_details(input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner sees the details of a hold.", 403);
+        const sha = str(asInput(input).viewSha256) ?? "";
+        if (!/^sha256:[0-9a-f]{64}$/u.test(sha)) fail("input_invalid", "viewSha256 must be sha256: and 64 hex digits.", 400);
+        const row = ctx.db.prepare("SELECT details FROM connect_hold_details WHERE view_sha256 = ?").get(sha);
+        return (row ? { found: true, details: JSON.parse(String(row.details)) } : { found: false }) as unknown as Json;
+      });
+    },
     async account_connect(input, ctx) {
       return guard(async () => {
         const s = services(ctx);
@@ -2113,6 +2225,31 @@ function ownerReadOf(db: Db, name: string): boolean {
  * read money records stays money (CORE §7: always held; D4b); a class above the name inference came from the server's
  * `destructiveHint`; otherwise the server makes no read-only claim.
  */
+/** JSON with sorted keys and two-space indent: the same arguments always give the same text (owner "More details"). */
+function sortedJson(value: unknown): string {
+  const sort = (v: unknown, depth: number): unknown => {
+    if (Array.isArray(v)) return depth > 12 ? "(too deep)" : v.map((x) => sort(x, depth + 1));
+    if (v && typeof v === "object") {
+      if (depth > 12) return "(too deep)";
+      return Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, x]) => [k, sort(x, depth + 1)]));
+    }
+    return v;
+  };
+  return JSON.stringify(sort(value, 0), null, 2) ?? "null";
+}
+
+/** An IANA zone name the runtime knows, else UTC. */
+function validTimeZone(zone: string | null | undefined): string {
+  const name = zone?.trim();
+  if (!name) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: name });
+    return name;
+  } catch {
+    return "UTC";
+  }
+}
+
 function notConfirmableText(tool: { upstream: string; effect: string }): string {
   // QA-CONNECT22-5: a name with characters Connect cannot check is money (C340); say that, not "it names money"
   if (!plainName(tool.upstream)) return "This tool's name has characters Connect cannot check (only plain letters, digits and punctuation are checked), so it is treated as a money tool and cannot be marked read.";

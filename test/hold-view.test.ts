@@ -196,11 +196,13 @@ test("Slack post (Composio): the channel and the text; Gmail forward reads the f
   assert.deepEqual(s.executed().map((e) => e.slug), ["GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID"]);
 });
 
-test("non-send tools keep the SDK default view (null); the Composio key never appears in a view", async () => {
+test("C368: non-send tools get a readable card of labelled lines (no raw JSON); an unknown tool keeps the SDK default (null); the Composio key never appears in a view", async () => {
   const s = setup();
   const me = s.ctx({ [s.work.id]: "read_update" });
-  assert.equal(await s.dyn.holdView("gmail_delete_message", { message_id: "m1" }, me), null);
-  assert.equal(await s.dyn.holdView("gmail_fetch_emails", {}, me), null);
+  const del = await s.dyn.holdView("gmail_delete_message", { message_id: "m1" }, me);
+  assert.match(del?.view ?? "", /^GMAIL_DELETE_MESSAGE \(gmail\)\nAccount: .*\n\nMessage id: m1$/u);
+  assert.doesNotMatch(del?.view ?? "", /[{}"]/u, "no JSON on the card");
+  assert.match((await s.dyn.holdView("gmail_fetch_emails", {}, me))?.view ?? "", /No arguments\.$/u);
   assert.equal(await s.dyn.holdView("nope", {}, me), null);
   s.state.draft = rawDraft({ to: "bob@x.example", subject: `key ${KEY}`, plain: `the key is ${KEY}` });
   const out = await s.dyn.holdView("gmail_send_draft__first_contact", { draft_id: "r-1" }, me);
