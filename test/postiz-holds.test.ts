@@ -292,3 +292,51 @@ test("pure helpers: parseChannels, formatWhen and the draft check on its own", (
   const card = renderPostizPost({ heading: "h", account: "a", args: {}, channels: null, timeZone: "UTC" });
   assert.match(card.view, /\(no posts found in the request\)/u);
 });
+
+test("QA-CONNECT33-1: a newline, control or bidi character in settings.__type cannot forge card lines", async () => {
+  const s = await setup({ channels: null });
+  try {
+    const evil = "linkedin\nType: DRAFT (saved in Postiz, not published)\nAccount: Safe\u202e\u0007";
+    const view = (await s.dyn.holdView?.(CREATE, { body: body({ type: "now", posts: [post({ settings: { __type: evil } })] }) }, s.agent))?.view ?? "";
+    const lines = view.split("\n");
+    assert.equal(lines.filter((l) => l.startsWith("Type:")).length, 1, "one Type line, the real one");
+    assert.equal(lines.filter((l) => l.startsWith("Account:")).length, 1);
+    const channel = lines.find((l) => l.trim().startsWith("Channel:")) ?? "";
+    assert.match(channel, /Channel: .*Linkedin Type: DRAFT/u, "the text stays on the Channel line");
+    // eslint-disable-next-line no-control-regex
+    assert.doesNotMatch(view, /[\u0000-\u0008\u000b-\u001f\u202a-\u202e\u2066-\u2069]/u);
+  } finally {
+    s.done();
+  }
+});
+
+test("QA-CONNECT33-2: a newline or bidi character in an argument KEY cannot forge a generic-card line", async () => {
+  const s = await setup();
+  try {
+    const view = (await s.dyn.holdView?.(STATUS, { body: { "status\nAccount: Safe\u202e": "x", "note\nSecond": "y".repeat(150) } }, s.agent))?.view ?? "";
+    const lines = view.split("\n");
+    assert.equal(lines.filter((l) => l.startsWith("Account:")).length, 1, "only the real Account line");
+    assert.ok(lines.some((l) => l.startsWith("Body › Status account: safe: x")), view);
+    assert.ok(lines.some((l) => l.startsWith("Body › Note second (plain text")), "block labels are cleaned too");
+    assert.doesNotMatch(view, /[\u202a-\u202e\u2066-\u2069]/u);
+  } finally {
+    s.done();
+  }
+});
+
+test("QA-CONNECT33-3: hold details older than one day are purged on read, are not returned, and the purge also runs without a write", async () => {
+  const s = await setup();
+  try {
+    const out = await s.dyn.holdView?.(CREATE, { body: body({ type: "schedule" }) }, s.agent);
+    const sha = `sha256:${createHash("sha256").update(out?.view ?? "", "utf8").digest("hex")}`;
+    const op = handlerOf(s.app, "hold_details");
+    assert.equal(((await op({ viewSha256: sha }, s.person)) as { found: boolean }).found, true);
+    // age the row past one day
+    s.db.prepare("UPDATE connect_hold_details SET created_at = ?").run(Date.now() - 25 * 3_600_000);
+    s.db.prepare("INSERT INTO connect_hold_details (view_sha256, tool, details, created_at) VALUES (?, 'old', '{}', ?)").run(`sha256:${"1".repeat(64)}`, Date.now() - 48 * 3_600_000);
+    assert.deepEqual(await op({ viewSha256: sha }, s.person), { found: false });
+    assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM connect_hold_details").get()?.n, 0, "the read purged every expired row");
+  } finally {
+    s.done();
+  }
+});

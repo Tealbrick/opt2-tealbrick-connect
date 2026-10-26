@@ -307,7 +307,8 @@ interface Field {
 }
 
 function collectFields(value: unknown, path: string[], out: Field[], state: { more: number }, depth: number): void {
-  const label = path.map((p) => (/^#\d+$/u.test(p) ? p : humanize(p))).join(" › ");
+  // QA-CONNECT33-2: a key is agent text; one() removes newlines, control and bidi characters so it cannot forge a card line
+  const label = one(path.map((p) => (/^#\d+$/u.test(p) ? p : humanize(p))).join(" › "), 160);
   const push = (field: Field) => {
     if (out.length >= FIELDS_SHOWN) state.more += 1;
     else out.push(field);

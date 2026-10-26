@@ -162,7 +162,8 @@ export function renderPostizPost(card: PostCard): { summary: string; view: strin
     const id = isObj(post.integration) && typeof post.integration.id === "string" ? post.integration.id : "";
     const found = card.channels?.get(id);
     const typed = isObj(post.settings) && typeof post.settings.__type === "string" ? post.settings.__type : "";
-    const provider = found?.provider || typed;
+    // QA-CONNECT33-1: the provider can come from the agent (settings.__type): no newline, control or bidi character reaches a card line
+    const provider = clean(found?.provider || typed, 60);
     const pretty = provider ? providerName(provider) : "";
     const prefix = pretty ? `${pretty} · ` : "";
     if (found?.name) return { line: `${prefix}${clean(found.name, 100)}`, short: pretty || clean(found.name, 40) };

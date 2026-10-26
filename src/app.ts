@@ -98,6 +98,9 @@ export function actionRelay(callApp: (product: string, op: string, input: Json, 
 export const PRODUCT_SCOPE = "account";
 /** Characters of a Buzz post a hold view shows (a hold view over 16 000 characters is refused by the SDK). */
 export const BUZZ_POST_VIEW_CHARS = 12_000;
+/** C369: how long Connect keeps the technical details of a hold card. */
+const HOLD_DETAILS_TTL_MS = 24 * 3_600_000;
+
 export const COMPOSIO_KEY = "COMPOSIO_API_KEY";
 export const COMPOSIO_CALLBACK_PATH = "/oauth/composio/callback";
 export const MCP_CALLBACK_PATH = "/oauth/mcp/callback";
@@ -806,7 +809,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         arguments: argumentsJson.length > 60_000 ? `${argumentsJson.slice(0, 60_000)}\n(cut: too long)` : argumentsJson,
       };
       const now = Date.now();
-      ctx.db.prepare("DELETE FROM connect_hold_details WHERE created_at < ?").run(now - 24 * 3_600_000);
+      ctx.db.prepare("DELETE FROM connect_hold_details WHERE created_at < ?").run(now - HOLD_DETAILS_TTL_MS);
       ctx.db
         .prepare("INSERT INTO connect_hold_details (view_sha256, tool, details, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (view_sha256) DO UPDATE SET details = excluded.details, created_at = excluded.created_at")
         .run(`sha256:${sha256Hex(view)}`, tool, JSON.stringify(details), now);
@@ -1637,7 +1640,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         if (ctx.caller.type !== "person") fail("no_access", "Only the owner sees the details of a hold.", 403);
         const sha = str(asInput(input).viewSha256) ?? "";
         if (!/^sha256:[0-9a-f]{64}$/u.test(sha)) fail("input_invalid", "viewSha256 must be sha256: and 64 hex digits.", 400);
-        const row = ctx.db.prepare("SELECT details FROM connect_hold_details WHERE view_sha256 = ?").get(sha);
+        // QA-CONNECT33-3: the one-day retention holds on a read too, not only on the next write
+        const cutoff = Date.now() - HOLD_DETAILS_TTL_MS;
+        ctx.db.prepare("DELETE FROM connect_hold_details WHERE created_at < ?").run(cutoff);
+        const row = ctx.db.prepare("SELECT details FROM connect_hold_details WHERE view_sha256 = ? AND created_at >= ?").get(sha, cutoff);
         return (row ? { found: true, details: JSON.parse(String(row.details)) } : { found: false }) as unknown as Json;
       });
     },
