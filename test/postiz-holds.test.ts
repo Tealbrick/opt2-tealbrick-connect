@@ -303,8 +303,11 @@ test("QA-CONNECT33-1: a newline, control or bidi character in settings.__type ca
     assert.equal(lines.filter((l) => l.startsWith("Account:")).length, 1);
     const channel = lines.find((l) => l.trim().startsWith("Channel:")) ?? "";
     assert.match(channel, /Channel: .*Linkedin Type: DRAFT/u, "the text stays on the Channel line");
-    // eslint-disable-next-line no-control-regex
-    assert.doesNotMatch(view, /[\u0000-\u0008\u000b-\u001f\u202a-\u202e\u2066-\u2069]/u);
+    const bad = [...view].filter((ch) => {
+      const cp = ch.codePointAt(0) ?? 0;
+      return (cp < 0x20 && cp !== 0x0a) || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069);
+    });
+    assert.deepEqual(bad, [], "no control or bidi character on the card");
   } finally {
     s.done();
   }
