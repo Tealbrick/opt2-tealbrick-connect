@@ -59,6 +59,7 @@ import { loadPolicies } from "./sources/composio/policy.ts";
 import { ComposioSource, connectMode } from "./sources/composio/source.ts";
 import { McpError } from "./sources/mcp/client.ts";
 import { OAuthError } from "./sources/mcp/oauth.ts";
+import { type McpPolicy, parseMcpPolicy } from "./sources/mcp/policy.ts";
 import { McpSource } from "./sources/mcp/source.ts";
 import { resyncToolClasses, toolClassMarker } from "./tool-resync.ts";
 import { ACCOUNT_ARGUMENT, FIRST_CONTACT_SUFFIX, splitVariant, ToolRegistry, type ToolRow } from "./tools.ts";
@@ -1973,6 +1974,31 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           ownerConfirmedRead: ownerReadOf(ctx.db, t.name),
         }));
         return { service, tools } as unknown as Json;
+      });
+    },
+    // C373 T3: a hold policy per MCP server; it can only raise classes (a budget change named update_* becomes money).
+    async mcp_policy_get(input, ctx) {
+      return guard(async () => {
+        const service = str(asInput(input).service) ?? fail("service_required", "Pick an MCP server.");
+        return { service, policy: (services(ctx).mcp.policyGet(service) ?? {}) as unknown as Json };
+      });
+    },
+    async mcp_policy_set(input, ctx) {
+      return guard(async () => {
+        const i = asInput(input);
+        const service = str(i.service) ?? fail("service_required", "Pick an MCP server.");
+        let policy: McpPolicy;
+        try {
+          policy = parseMcpPolicy(i.policy);
+        } catch (error) {
+          return fail("mcp_policy_invalid", error instanceof Error ? error.message : "The policy is invalid.");
+        }
+        const tools = await services(ctx).mcp.policySet(service, policy);
+        const raised = services(ctx)
+          .tools.listService("mcp", service)
+          .filter((t) => t.effect !== "read")
+          .map((t) => ({ name: t.name, effect: t.effect, holdFamily: t.holdFamily ?? null }));
+        return { service, tools, classes: raised } as unknown as Json;
       });
     },
     // C373 T2 "bring your own API": the owner or the developer adds an OpenAPI description; Connect compiles it with the catalog

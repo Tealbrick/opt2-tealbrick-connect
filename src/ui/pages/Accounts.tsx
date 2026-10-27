@@ -1,4 +1,4 @@
-import { Button, Card, EmptyState, Field, Select, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { Button, Card, EmptyState, Field, Select, Table, Tag, Textarea, TextInput } from "@opt2-tealbrick/ui";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog, KindBadge, LoadError, Notice, PageHead, ServiceTile, StatusLabel } from "../components.tsx";
@@ -20,7 +20,10 @@ import {
   databaseAccountConnect,
   dataLeaseRevoke,
   dataLeasesList,
+  type McpPolicy,
   type McpToolRow,
+  mcpPolicyGet,
+  mcpPolicySet,
   mcpToolReadSet,
   mcpToolsList,
   type ShareLevel,
@@ -156,6 +159,7 @@ export function Accounts() {
             {list.some((a) => a.status === "connected" && a.source !== "database") ? <RefreshTools service={service} /> : null}
           </div>
           {list.some((a) => a.source === "mcp" && a.status === "connected") ? <McpTools service={service} /> : null}
+          {list.some((a) => a.source === "mcp" && a.status === "connected") ? <McpPolicyCard service={service} /> : null}
           <ul className="cards cards-wide">
             {list.map((account) => (
               <li key={account.id}>
@@ -274,6 +278,55 @@ function McpTools({ service }: { service: string }) {
           </li>
         ))}
       </ul>
+    </Card>
+  );
+}
+
+const POLICY_LISTS: { key: keyof McpPolicy; title: string; hint: string }[] = [
+  { key: "money", title: "Spends money (always held)", hint: "For example *budget* or *_payment" },
+  { key: "destructive", title: "Removes data (held)", hint: "For example archive_*" },
+  { key: "outward", title: "Reaches people or the public (held)", hint: "For example *comment*" },
+  { key: "writes", title: "Changes data", hint: "" },
+];
+const policyLines = (v: string) =>
+  v
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+/** C373 T3: name tools of this MCP server that Connect must hold more strictly. A policy only raises a class. */
+function McpPolicyCard({ service }: { service: string }) {
+  const current = useLoad(() => mcpPolicyGet(service), service);
+  const [text, setText] = useState<Record<string, string> | null>(null);
+  const [state, setState] = useState<{ busy: boolean; note: string | null; error: boolean }>({ busy: false, note: null, error: false });
+  const shown = text ?? Object.fromEntries(POLICY_LISTS.map((l) => [l.key, (current.data?.policy[l.key] ?? []).join("\n")]));
+  const save = async () => {
+    setState({ busy: true, note: null, error: false });
+    try {
+      const out = await mcpPolicySet(service, Object.fromEntries(POLICY_LISTS.map((l) => [l.key, policyLines(shown[l.key] ?? "")])) as McpPolicy);
+      setText(null);
+      await current.reload();
+      setState({ busy: false, note: `Saved. ${out.tools} tools re-classed.`, error: false });
+    } catch (e) {
+      setState({ busy: false, note: errorText(e), error: true });
+    }
+  };
+  if (current.error) return <LoadError message={`The hold policy couldn’t be loaded: ${current.error}`} busy={current.loading} onRetry={() => void current.reload()} />;
+  return (
+    <Card as="section" className="tool-claims" aria-label="Hold policy of this server">
+      <p>
+        <strong>Hold policy.</strong> Name tools that Connect must treat more strictly than their names say, one tool name or * pattern per line. A policy only makes a tool
+        stricter; to trust a read-only claim use the button above.
+      </p>
+      {POLICY_LISTS.map((l) => (
+        <Field key={l.key} label={l.title} hint={l.hint}>
+          <Textarea value={shown[l.key] ?? ""} onChange={(e) => setText({ ...shown, [l.key]: e.target.value })} rows={2} spellCheck={false} />
+        </Field>
+      ))}
+      {state.note ? <Notice tone={state.error ? "error" : "ok"}>{state.note}</Notice> : null}
+      <Button size="sm" onClick={() => void save()} disabled={state.busy || current.loading}>
+        Save hold policy
+      </Button>
     </Card>
   );
 }
