@@ -42,7 +42,7 @@ import {
   leaseState,
 } from "./data/database.ts";
 import { DatabaseService } from "./data/database-service.ts";
-import { clearSeen, DOCUMENTS_CONTRACT, DOCUMENTS_DATASET, type DocumentsPullInput, mcpDocumentsCatalog, pullMcpDocuments } from "./data/documents.ts";
+import { clearSeen, DOCUMENTS_CONTRACT, DOCUMENTS_DATASET, type DocumentsPullInput, mcpDataFailure, mcpDocumentsCatalog, pullMcpDocuments } from "./data/documents.ts";
 import { LEASE_OP_IDS, leasesDeclared } from "./data/lease-ops.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, SHARE_ROUTES, type ShareLevel, type ShareRoute, ShareStore } from "./data/shares.ts";
@@ -1062,7 +1062,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
               delivery: "lease",
               relation: t.relation,
               ...(t.approxRows === undefined ? {} : { approxRows: t.approxRows }),
-              columns: t.columns,
+              columns: t.columns.map((c) => ({ name: c.name, type: c.type })),
             }))];
             return { account: account.id, service: DATABASE_SERVICE[account.kind], label: account.label, level, source: "database", datasets, untrusted: true } as unknown as Json;
           }
@@ -1070,7 +1070,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           note.account = account.id;
           if (account.source === "mcp") {
             // C373: collection names and counts from resources/list; never a resource text, never a tool call
-            const documents = await s.mcp.withResources(account, (session) => mcpDocumentsCatalog(session, account.label));
+            // QA-CONNECT35-8: the MCP server's own error text never reaches the caller
+            const documents = await s.mcp.withResources(account, (session) => mcpDocumentsCatalog(session, account.label)).catch((e: unknown) => {
+              throw mcpDataFailure(e);
+            });
             note.rows = documents.collections.length;
             return { account: account.id, service: account.service, label: account.label, level, source: "mcp", datasets: [documents], untrusted: true } as unknown as Json;
           }
@@ -1103,7 +1106,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
             if (str(i.dataset) !== DOCUMENTS_DATASET) fail("not_found", "No such dataset on this account.", 404);
             // C373: MCP resources as documents (resources/list + resources/read only; never a tool call)
             const pull = documentsInput(i);
-            const page = await s.mcp.withResources(account, (session) => pullMcpDocuments({ db: ctx.db, log: ctx.log, fallbackName: account.label }, session, account.id, pull));
+            const page = await s.mcp.withResources(account, (session) => pullMcpDocuments({ db: ctx.db, log: ctx.log, fallbackName: account.label }, session, account.id, pull)).catch((e: unknown) => {
+              throw mcpDataFailure(e);
+            });
             note.rows = page.rows.length;
             note.quarantined = page.quarantined ?? 0;
             return { ...page, schema: DOCUMENTS_CONTRACT, untrusted: true } as unknown as Json;
@@ -1151,6 +1156,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           note.dataset = datasets.join(",").slice(0, 2000);
           const { account } = dataDbAccount(s, ctx, i.account, "shared", note);
           note.account = account.id;
+          // QA-CONNECT35-11: a share at `shared` gives rows as documents (data_pull) and NOTHING more. The sealed database
+          // credential needs its own explicit flag on the share (`lease`, set by nobody until leases ship); `shared` alone never grants it.
+          if (s.dbShares.forCaller(account.id, product, instance)?.lease !== true) fail("lease_unavailable", "The owner has not enabled leases of this database for this app. Reading rows as documents (data_pull) needs no lease.", 403);
           const { grant, row } = await s.dbService.lease({ account, product, instance, datasets, ttlS });
           note.leaseId = row.id;
           note.leaseExpiresAt = row.expiresAt;

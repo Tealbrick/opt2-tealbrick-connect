@@ -107,10 +107,17 @@ async function setup(options: { callers?: { product: string; ins: string; name: 
   const form = (extra: Record<string, unknown> = {}) => ({ label: "Shop DB", host: "db.example.com", port: 5432, database: "shop", user: "readonly", password: CANARY, sslmode: "verify-full", ...extra });
   const connect = async (extra: Record<string, unknown> = {}): Promise<string> => ((await op("database_account_connect", form(extra))) as unknown as { account: { id: string } }).account.id;
   const instanceOf: Record<string, string> = { knowledge: KNOWLEDGE, observer: OBSERVER };
-  const share = (account: string, product: string, level: string, extra: Record<string, unknown> = {}) =>
+  /** share WITHOUT a lease flag (what the owner page does today) */
+  const plainShare = (account: string, product: string, level: string, extra: Record<string, unknown> = {}) =>
     op("account_app_share", { account, product, level, ...(level === "none" ? {} : { instance: instanceOf[product] }), ...extra });
+  /** QA-CONNECT35-11: a lease needs its own flag; tests of the lease code set it after sharing at `shared` */
+  const share = async (account: string, product: string, level: string, extra: Record<string, unknown> = {}) => {
+    const out = await plainShare(account, product, level, extra);
+    if (level === "shared") db.prepare("UPDATE connect_db_shares SET lease = 1 WHERE account_id = ? AND product = ? AND route = 'direct'").run(account, product);
+    return out;
+  };
   const lease = (account: string, datasets: string[], extra: Record<string, unknown> = {}, ctx = observer) => op("data_lease", { account, datasets, ...extra }, ctx);
-  return { db, app, fake, logs, op, form, connect, share, lease, ctx: { person, knowledge, observer, agent }, receipts: person.receipts };
+  return { db, app, fake, logs, op, form, connect, share, plainShare, lease, ctx: { person, knowledge, observer, agent }, receipts: person.receipts };
 }
 
 async function refusal(p: Promise<unknown>): Promise<{ code: string; httpStatus: number; message: string }> {
@@ -664,4 +671,23 @@ test("migration 0018 is expand only: numbering has no gap, old rows survive unto
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0, "leases follow their database");
   // the chat accounts were never touched by a database being removed
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_account_shares").get()?.n, 1);
+});
+
+test("QA-CONNECT35-11: a share at `shared` (rows as documents) never grants a lease; the lease needs its own flag, and any change of the share resets it", async () => {
+  const t = await setup();
+  const id = await t.connect();
+  await t.plainShare(id, "observer", "shared");
+  assert.equal(t.db.prepare("SELECT lease FROM connect_db_shares WHERE product = 'observer'").get()?.lease, 0, "the default is no lease");
+  const refused = await refusal(t.lease(id, DATASETS, {}, t.ctx.observer));
+  assert.deepEqual([refused.code, refused.httpStatus], ["lease_unavailable", 403]);
+  assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0, "no lease row, no credential");
+  assert.ok(!JSON.stringify(refused).includes(CANARY));
+  // the explicit flag grants it
+  t.db.prepare("UPDATE connect_db_shares SET lease = 1 WHERE product = 'observer'").run();
+  assert.match(((await t.lease(id, DATASETS, {}, t.ctx.observer)) as unknown as { leaseId: string }).leaseId, /^lse_/u);
+  // a changed share (level, then back) starts without a lease again
+  await t.plainShare(id, "observer", "available");
+  await t.plainShare(id, "observer", "shared");
+  assert.equal(t.db.prepare("SELECT lease FROM connect_db_shares WHERE product = 'observer'").get()?.lease, 0);
+  assert.equal((await refusal(t.lease(id, DATASETS, {}, t.ctx.observer))).code, "lease_unavailable");
 });

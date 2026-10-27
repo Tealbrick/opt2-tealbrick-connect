@@ -12,8 +12,26 @@ import type { JsonSchemaObject, Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json } from "@opt2-tealbrick/spec/sdk";
 
 import { createConnectApp } from "../src/app.ts";
-import { assertDocumentsConform, authorOf, collectionOf, type DocumentsPage, documentText, htmlToMarkdown, safeId, safeUrl } from "../src/data/documents.ts";
+import {
+  assertDocumentsConform,
+  authorOf,
+  buildMcpRow,
+  collectionOf,
+  DOC_PULL_MAX_READS,
+  type DocumentsPage,
+  type DocumentsPullInput,
+  documentText,
+  encodeDocCursor,
+  htmlToMarkdown,
+  mcpDocumentsCatalog,
+  pullMcpDocuments,
+  rowProblems,
+  safeId,
+  safeUrl,
+} from "../src/data/documents.ts";
 import { DataError } from "../src/data/messages.ts";
+import { McpError } from "../src/sources/mcp/client.ts";
+import type { McpResourceSession } from "../src/sources/mcp/source.ts";
 import { handlerOf, root, testCtx, testDb } from "./helpers.ts";
 
 const manifest = JSON.parse(readFileSync(join(root, "tealbrick.manifest.json"), "utf8")) as Manifest;
@@ -49,7 +67,7 @@ function corpus(): { resources: Resource[]; contents: Map<string, Content[]> } {
   return { resources, contents };
 }
 
-function fakeMcp(options: { pageSize?: number; rateLimitList?: boolean } = {}) {
+function fakeMcp(options: { pageSize?: number; rateLimitList?: boolean; listRpcError?: string } = {}) {
   const methods: string[] = [];
   const data = corpus();
   const pageSize = options.pageSize ?? 3;
@@ -64,6 +82,7 @@ function fakeMcp(options: { pageSize?: number; rateLimitList?: boolean } = {}) {
     if (body.method === "initialize") result = { protocolVersion: "2025-06-18", capabilities: { resources: {} }, serverInfo: { name: "acme-data-sources" } };
     else if (body.method === "tools/list") result = { tools: [{ name: "search_docs", annotations: { readOnlyHint: true } }] };
     else if (body.method === "resources/list") {
+      if (options.listRpcError) return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32603, message: options.listRpcError } }), { headers: { "content-type": "application/json" } });
       if (rateLimit) {
         rateLimit = false;
         return new Response("slow down", { status: 429 });
@@ -112,6 +131,16 @@ async function refusal(p: Promise<unknown>): Promise<{ code: string; httpStatus:
   } catch (e) {
     const { code, httpStatus } = e as { code: string; httpStatus: number };
     return { code, httpStatus };
+  }
+  throw new Error("expected a refusal, the call succeeded");
+}
+
+async function refusalWithMessage(p: Promise<unknown>): Promise<{ code: string; httpStatus: number; message: string }> {
+  try {
+    await p;
+  } catch (e) {
+    const { code, httpStatus, message } = e as { code: string; httpStatus: number; message: string };
+    return { code, httpStatus, message };
   }
   throw new Error("expected a refusal, the call succeeded");
 }
@@ -293,4 +322,325 @@ test("collection rule, HTML conversion, author and NUL handling", () => {
   assert.equal(safeId("drive://acme/Finance/a.md"), "drive://acme/Finance/a.md");
   assert.match(safeId("https://u:p@x.example.com/a"), /^h:[0-9a-f]{64}$/u);
   assert.match(safeId("s3://bucket/a?X-Amz-Credential=k"), /^h:[0-9a-f]{64}$/u);
+});
+
+
+// ── QA round 1 (C373, PR #35) ──
+
+const memDb = () => testDb();
+const NO_WINDOW = { since: null, until: null } as const;
+const pullInput = (extra: Partial<DocumentsPullInput> = {}): DocumentsPullInput => ({ cursor: null, collection: null, ...NO_WINDOW, limit: 20, ...extra });
+type Listed = { uri: string; mimeType?: string; name?: string; _meta?: Record<string, unknown> };
+
+/** An in-memory MCP session: `pages` of listed resources; `read` decides each read. It counts calls. */
+function session(pages: Listed[][], read: (uri: string) => Promise<{ uri: string; text?: string; mimeType?: string }[]> | { uri: string; text?: string }[] = (uri) => [{ uri, text: `text of ${uri}` }]) {
+  const calls = { list: 0, read: 0, uris: [] as string[] };
+  const impl: McpResourceSession = {
+    serverName: "srv",
+    async listResources(cursor) {
+      calls.list += 1;
+      const i = cursor === null ? 0 : Number(cursor.replace(/\D/gu, "").slice(-6));
+      const resources = pages[i] ?? [];
+      return { resources, nextCursor: i + 1 < pages.length ? `c${i + 1}` : null };
+    },
+    async readResource(uri) {
+      calls.read += 1;
+      calls.uris.push(uri);
+      return await read(uri);
+    },
+  };
+  return { impl, calls };
+}
+
+async function scanAll(db: ReturnType<typeof memDb>, s: McpResourceSession, input: Partial<DocumentsPullInput> = {}, now = () => Date.now(), maxPulls = 300) {
+  const pages: DocumentsPage[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < maxPulls; i += 1) {
+    const page: DocumentsPage = await pullMcpDocuments({ db, fallbackName: "srv", now }, s, "acc", pullInput({ ...input, cursor }));
+    pages.push(page);
+    if (page.exhausted) {
+      assert.equal(page.nextCursor, null);
+      return pages;
+    }
+    assert.ok(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+  throw new Error("the scan did not end");
+}
+
+test("QA-CONNECT35-1: a resource that cannot be read is skipped and counted; the scan goes on (rpc error, too large, 5xx); unauthorized stops; 429 retries", async () => {
+  const db = memDb();
+  const list = [[{ uri: "x://c/f/1", mimeType: "text/plain" }, { uri: "x://c/f/2", mimeType: "text/plain" }, { uri: "x://c/f/3", mimeType: "text/plain" }, { uri: "x://c/f/4", mimeType: "text/plain" }, { uri: "x://c/f/5", mimeType: "text/plain" }]];
+  const logs: unknown[] = [];
+  const log = { error: (_m: string, f: unknown) => logs.push(f), warn() {}, info() {}, debug() {} } as never;
+  const s = session(list, (uri) => {
+    if (uri.endsWith("1")) throw new McpError("mcp_rpc_error", "MCP error -32002: SERVER-TEXT-secret-path");
+    if (uri.endsWith("2")) throw new McpError("mcp_response_too_large", "The MCP server response was too large.");
+    if (uri.endsWith("3")) throw new McpError("mcp_http_error", "The MCP server answered 500.", 500);
+    return [{ uri, text: "ok" }];
+  });
+  const page = await pullMcpDocuments({ db, fallbackName: "srv", log }, s.impl, "acc", pullInput());
+  assert.deepEqual([page.rows.map((r) => r.id), page.skipped, page.exhausted, page.nextCursor], [["x://c/f/4", "x://c/f/5"], 3, true, null]);
+  assert.ok(!JSON.stringify(logs).includes("SERVER-TEXT"), "the code is logged, never the server's text");
+  assert.ok(logs.some((l) => (l as { code?: string }).code === "mcp_rpc_error"));
+  // unauthorized is a whole-server problem: the pull stops with it
+  const auth = session(list, () => {
+    throw new McpError("mcp_unauthorized", "The MCP server answered 401.", 401);
+  });
+  await assert.rejects(pullMcpDocuments({ db, fallbackName: "srv" }, auth.impl, "acc", pullInput()), (e) => (e as McpError).code === "mcp_unauthorized");
+  // 429/503 on a read: an empty page, the cursor at that resource, retryAfterS
+  const slow = session(list, () => {
+    throw new McpError("mcp_http_error", "The MCP server answered 429.", 429);
+  });
+  const wait = await pullMcpDocuments({ db, fallbackName: "srv" }, slow.impl, "acc", pullInput());
+  assert.deepEqual([wait.rows.length, wait.exhausted, wait.retryAfterS, typeof wait.nextCursor], [0, false, 30, "string"]);
+  // a server that does not answer at all: stop after three, retry later (no walk of the whole list)
+  const down = session([Array.from({ length: 50 }, (_v, i) => ({ uri: `x://c/f/${i}`, mimeType: "text/plain" }))], () => {
+    throw new McpError("mcp_unreachable", "unreachable");
+  });
+  const stop = await pullMcpDocuments({ db, fallbackName: "srv" }, down.impl, "acc", pullInput());
+  assert.deepEqual([down.calls.read, stop.exhausted, stop.retryAfterS], [3, false, 30]);
+});
+
+test("QA-CONNECT35-2: reads per pull are bounded also with zero rows; the window decides before any version record is written", async () => {
+  const db = memDb();
+  // 20 list pages x 1000 text resources, a window that keeps none: used to be 20000 reads in ONE call
+  const pages = Array.from({ length: 20 }, (_v, p) => Array.from({ length: 1000 }, (_w, k) => ({ uri: `x://c/f/${p}-${k}`, mimeType: "text/plain" })));
+  const s = session(pages);
+  const future = Date.now() + 86_400_000;
+  const first = await pullMcpDocuments({ db, fallbackName: "srv" }, s.impl, "acc", pullInput({ since: future }));
+  assert.ok(s.calls.read <= DOC_PULL_MAX_READS, `${s.calls.read} reads`);
+  assert.deepEqual([first.rows.length, first.exhausted, typeof first.nextCursor], [0, false, "string"]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_doc_versions").get()?.n, 0, "no version record for a row outside the window");
+  // the cursor moves: following it reads everything in bounded pulls
+  const readsBefore = s.calls.read;
+  const all = await scanAll(db, s.impl, { since: future });
+  assert.equal(s.calls.read - readsBefore, 20_000, "every resource is read once in a whole scan");
+  assert.ok(all.every((p) => p.rows.length === 0));
+  assert.ok(all.length >= 20_000 / DOC_PULL_MAX_READS - 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_doc_versions").get()?.n, 0);
+  // a listed lastModified outside the window is decided without a read at all
+  const dated = session([Array.from({ length: 300 }, (_w, k) => ({ uri: `x://c/g/${k}`, mimeType: "text/plain", _meta: { lastModified: "2020-01-01T00:00:00Z" } }))]);
+  const none = await pullMcpDocuments({ db, fallbackName: "srv" }, dated.impl, "acc", pullInput({ since: Date.parse("2026-01-01T00:00:00Z") }));
+  assert.deepEqual([dated.calls.read, none.rows.length, none.exhausted], [0, 0, true]);
+  // the time budget also applies with no row: a slow server stops the pull, the cursor moves by at least one entry
+  let clock = 1_000_000;
+  const slowSession = session(
+    [Array.from({ length: 50 }, (_w, k) => ({ uri: `x://c/h/${k}`, mimeType: "text/plain" }))],
+    (uri) => {
+      clock += 8_000;
+      return [{ uri, text: "t" }];
+    },
+  );
+  const timed = await pullMcpDocuments({ db: memDb(), fallbackName: "srv", now: () => clock }, slowSession.impl, "acc", pullInput({ since: Date.now() + 1e9 }));
+  assert.ok(slowSession.calls.read >= 1 && slowSession.calls.read <= 4, `${slowSession.calls.read} reads`);
+  assert.deepEqual([timed.rows.length, timed.exhausted], [0, false]);
+});
+
+test("QA-CONNECT35-3: collection, title and path come from the parsed uri: no user info, query or fragment in any member", () => {
+  const db = memDb();
+  const secrets = ["pw", "abc123", "SECRETFRAG", "tok", "user"];
+  const cases: { uri: string; collection: string; title: string; path: string }[] = [
+    { uri: "https://user:pw@host.example.com/file.txt", collection: "host.example.com", title: "", path: "" },
+    { uri: "https://host.example.com/doc?token=abc123", collection: "host.example.com", title: "", path: "" },
+    { uri: "https://host.example.com/a/b.md#SECRETFRAG", collection: "", title: "", path: "" },
+    { uri: "https://tok@host.example.com:8443/folder/doc.md", collection: "", title: "", path: "" },
+    { uri: "slack://general/2026-10-27", collection: "general", title: "2026-10-27", path: "general/2026-10-27" },
+  ];
+  for (const c of cases) {
+    const { row } = buildMcpRow(db, "acc", "srv", { uri: c.uri, mimeType: "text/plain" }, { uri: c.uri, text: "body" }, "text/plain");
+    const members = JSON.stringify({ ...row, text: undefined });
+    for (const word of secrets) assert.ok(!members.includes(word), `${c.uri}: "${word}" in ${members}`);
+    assert.equal(rowProblems(row), null);
+    if (c.collection) assert.equal(row.collection, c.collection, c.uri);
+    if (c.title) assert.equal(row.title, c.title, c.uri);
+    if (c.path) assert.equal(row.path, c.path, c.uri);
+  }
+  const withQuery = buildMcpRow(db, "acc", "srv", { uri: "https://host.example.com/doc?token=abc123" }, { uri: "x", text: "b" }, "text/plain").row;
+  assert.match(withQuery.title, /^Untitled [0-9a-f]{8}$/u);
+  assert.match(withQuery.id, /^h:[0-9a-f]{64}$/u);
+  assert.equal(withQuery.collection, "host.example.com");
+  // a server title or name is the server's own text and stays
+  assert.equal(buildMcpRow(db, "acc", "srv", { uri: "https://u:p@h.example.com/x?t=1", name: "Q3 memo" }, { uri: "x", text: "b" }, "text/plain").row.title, "Q3 memo");
+  // an unparseable uri gives no part of itself
+  assert.match(buildMcpRow(db, "acc", "srv", { uri: "not a uri?secret=1" }, { uri: "x", text: "b" }, "text/plain").row.title, /^Untitled /u);
+  assert.equal(collectionOf({ uri: "https://user:pw@host.example.com/file.txt" }, "srv"), "host.example.com");
+});
+
+test("QA-CONNECT35-8: the MCP server's error text never reaches the caller of data_pull or data_catalog", async () => {
+  const t = await setup({ listRpcError: "INTERNAL-PATH /srv/secret/keys.db" });
+  const id = await t.connect();
+  await t.share(id, "observer", "shared");
+  for (const call of [t.op("data_pull", { account: id, dataset: "documents" }, t.ctx.observer), t.op("data_catalog", { account: id }, t.ctx.observer)]) {
+    const r = await refusalWithMessage(call);
+    assert.equal(r.code, "mcp_rpc_error");
+    assert.ok(!r.message.includes("INTERNAL-PATH"), r.message);
+    assert.equal(r.message, "The MCP server could not answer the request.");
+  }
+});
+
+test("QA-CONNECT35-9: a long list cursor of the server fits (stored under a token); the scan never gets stuck", async () => {
+  const db = memDb();
+  const longCursor = (i: number) => `${"L".repeat(3000)}${String(i).padStart(6, "0")}`;
+  const pages = Array.from({ length: 4 }, (_v, p) => [{ uri: `x://c/f/${p}a`, mimeType: "text/plain" }, { uri: `x://c/f/${p}b`, mimeType: "text/plain" }]);
+  const impl: McpResourceSession = {
+    serverName: "srv",
+    async listResources(cursor) {
+      const i = cursor === null ? 0 : Number(cursor.slice(-6));
+      return { resources: pages[i] ?? [], nextCursor: i + 1 < pages.length ? longCursor(i + 1) : null };
+    },
+    async readResource(uri) {
+      return [{ uri, text: uri }];
+    },
+  };
+  const seen: string[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < 20; i += 1) {
+    const page: DocumentsPage = await pullMcpDocuments({ db, fallbackName: "srv" }, impl, "acc", pullInput({ limit: 1, cursor }));
+    if (cursor) assert.ok(cursor.length <= 512, `${cursor.length}`);
+    seen.push(...page.rows.map((r) => r.id));
+    if (page.exhausted) break;
+    cursor = page.nextCursor;
+  }
+  assert.deepEqual(seen, pages.flat().map((r) => r.uri));
+  assert.ok(Number(db.prepare("SELECT COUNT(*) AS n FROM connect_doc_cursors").get()?.n) > 0);
+  // a cursor of another collection or account is still refused, also when stored
+  const stored = encodeDocCursor(db, "acc", null, { m: longCursor(1), o: 0, p: 1 });
+  await assert.rejects(pullMcpDocuments({ db, fallbackName: "srv" }, impl, "other", pullInput({ cursor: stored })), (e) => (e as DataError).code === "cursor_invalid");
+  await assert.rejects(pullMcpDocuments({ db, fallbackName: "srv" }, impl, "acc", pullInput({ cursor: stored, collection: "x" })), (e) => (e as DataError).code === "cursor_invalid");
+  // a list cursor beyond 8 KiB is refused with a fixed message
+  const huge: McpResourceSession = { ...impl, async listResources() { return { resources: [], nextCursor: "H".repeat(9000) }; } };
+  await assert.rejects(pullMcpDocuments({ db, fallbackName: "srv" }, huge, "acc", pullInput()), (e) => (e as DataError).code === "source_cursor_too_long");
+});
+
+test("QA-CONNECT35-10: a server whose list never ends ends the scan at the cap (partial); the catalog has an overall time bound", async () => {
+  const db = memDb();
+  let n = 0;
+  const forever: McpResourceSession = {
+    serverName: "srv",
+    async listResources() {
+      n += 1;
+      return { resources: [], nextCursor: `next-${n}` };
+    },
+    async readResource(uri) {
+      return [{ uri, text: "t" }];
+    },
+  };
+  const pages = await scanAll(db, forever, {}, undefined, 100);
+  const last = pages.at(-1);
+  assert.deepEqual([last?.exhausted, last?.partial, last?.nextCursor], [true, true, null]);
+  assert.ok(n >= 1000 && n <= 1000 + 20, `${n} list calls`);
+  // the catalog: a clock that jumps stops it
+  let clock = 0;
+  let calls = 0;
+  const slowList: McpResourceSession = {
+    serverName: "srv",
+    async listResources() {
+      calls += 1;
+      clock += 20_000;
+      return { resources: [{ uri: `x://c/${calls}`, mimeType: "text/plain" }], nextCursor: `n${calls}` };
+    },
+    async readResource(uri) {
+      return [{ uri }];
+    },
+  };
+  const cat = await mcpDocumentsCatalog(slowList, "srv", () => clock);
+  assert.deepEqual([cat.partial, calls <= 3], [true, true]);
+});
+
+test("QA-CONNECT35-12: htmlToMarkdown — svg, an unclosed template or head or noscript do not drop the rest of the page", () => {
+  assert.equal(htmlToMarkdown("<p>a</p><svg/><p>after svg</p>"), "a\n\nafter svg");
+  assert.equal(htmlToMarkdown("<p>a</p><svg width=1 />after"), "a\n\nafter");
+  assert.equal(htmlToMarkdown("<p>a</p><template><p>x</p><p>after</p>"), "a\n\nx\n\nafter");
+  assert.equal(htmlToMarkdown("<noscript><p>after</p>"), "after");
+  assert.equal(htmlToMarkdown("<head><title>t</title><body><p>after</p></body>"), "after", "<body> ends an open head");
+  assert.equal(htmlToMarkdown("<p>a</p><svg><path d='x'/><text>drawn</text></svg><p>b</p>"), "a\n\nb", "a closed svg is hidden");
+  assert.equal(htmlToMarkdown("<p>a</p><script>var x = 1;</p><p>never</p>"), "a", "an unclosed script hides the rest, as a browser reads it");
+  assert.equal(htmlToMarkdown("<p>a</p></template><p>b</p>"), "a\n\nb", "a stray closing tag hides nothing");
+  assert.equal(htmlToMarkdown("<style>p{}</style><p>x</p><style>q{}</style>y"), "x\n\ny");
+});
+
+test("QA-CONNECT35-13: a document that is gone since the last full scan is delivered once as deleted:true; the scan end is exhausted with no cursor", async () => {
+  const db = memDb();
+  let clock = 1_800_000_000_000;
+  const now = () => (clock += 1000);
+  const docs = new Map<string, string>([["x://c/a", "A"], ["x://c/b", "B"], ["x://c/d", "D"]]);
+  const hidden = new Set<string>(); // listed no more, but still readable (a list that moved)
+  const s = session([[]], (uri) => (docs.has(uri) ? [{ uri, text: docs.get(uri) ?? "" }] : (() => { throw new McpError("mcp_rpc_error", "MCP error -32002: Resource not found"); })()));
+  const impl: McpResourceSession = {
+    ...s.impl,
+    async listResources() {
+      return { resources: [...docs.keys()].filter((u) => !hidden.has(u)).map((uri) => ({ uri, mimeType: "text/plain" })), nextCursor: null };
+    },
+  };
+  const live = (pages: DocumentsPage[]) => pages.flatMap((p) => p.rows);
+  const first = live(await scanAll(db, impl, {}, now));
+  assert.deepEqual(first.map((r) => r.id), ["x://c/a", "x://c/b", "x://c/d"]);
+  // nothing changed: no deletion row, no more calls than needed
+  assert.equal(live(await scanAll(db, impl, {}, now)).filter((r) => r.deleted).length, 0);
+  // b is removed at the source
+  docs.delete("x://c/b");
+  const second = await scanAll(db, impl, {}, now);
+  const rows = live(second);
+  assert.deepEqual(rows.map((r) => [r.id, r.deleted === true]), [["x://c/a", false], ["x://c/d", false], ["x://c/b", true]]);
+  const gone = rows.find((r) => r.deleted);
+  const before = first.find((r) => r.id === "x://c/b");
+  assert.ok(gone && before);
+  assert.notEqual(gone.rev, before.rev);
+  assert.ok(Date.parse(gone.updatedAt) >= Date.parse(before.updatedAt));
+  assert.deepEqual([gone.text, gone.title, gone.collection, gone.untrusted, rowProblems(gone)], ["", "", before.collection, true, null]);
+  assert.deepEqual([second.at(-1)?.exhausted, second.at(-1)?.nextCursor], [true, null], "a full scan ends with exhausted:true and no cursor");
+  // once only
+  assert.equal(live(await scanAll(db, impl, {}, now)).filter((r) => r.deleted).length, 0);
+  // it comes back: a live row with a NEW rev
+  docs.set("x://c/b", "B");
+  const back = live(await scanAll(db, impl, {}, now)).find((r) => r.id === "x://c/b");
+  assert.ok(back && !back.deleted);
+  assert.notEqual(back.rev, before.rev);
+  assert.notEqual(back.rev, gone.rev);
+  // a list that moved (d is not listed this time but is still readable): no deletion
+  hidden.add("x://c/d");
+  assert.equal(live(await scanAll(db, impl, {}, now)).filter((r) => r.deleted).length, 0, "a document that can still be read is not deleted");
+  hidden.clear();
+  // access revoked (the read answers not found) and not listed: deleted
+  const revoked = new Set(["x://c/a"]);
+  const impl2: McpResourceSession = {
+    ...impl,
+    async listResources() {
+      return { resources: [...docs.keys()].filter((u) => !revoked.has(u)).map((uri) => ({ uri, mimeType: "text/plain" })), nextCursor: null };
+    },
+    async readResource(uri) {
+      if (revoked.has(uri)) throw new McpError("mcp_rpc_error", "MCP error -32002: gone");
+      return [{ uri, text: docs.get(uri) ?? "" }];
+    },
+  };
+  assert.deepEqual(live(await scanAll(db, impl2, {}, now)).filter((r) => r.deleted).map((r) => r.id), ["x://c/a"]);
+  // a filtered scan or one with `until` deletes nothing
+  docs.delete("x://c/d");
+  assert.equal(live(await scanAll(db, impl, { collection: "c" }, now)).filter((r) => r.deleted).length, 0);
+  assert.equal(live(await scanAll(db, impl, { until: Date.now() + 1e12 }, now)).filter((r) => r.deleted).length, 0);
+  assert.deepEqual(live(await scanAll(db, impl, {}, now)).filter((r) => r.deleted).map((r) => r.id), ["x://c/d"]);
+  // a tombstone is dropped after 30 days
+  clock += 31 * 24 * 3600 * 1000;
+  await scanAll(db, impl, {}, now);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_doc_versions WHERE deleted = 1").get()?.n, 0);
+});
+
+test("QA-CONNECT35-13: a cut scan (a list that repeats a cursor) deletes nothing", async () => {
+  const db = memDb();
+  const mk = (loop: boolean): McpResourceSession => ({
+    serverName: "srv",
+    async listResources(cursor) {
+      if (loop && cursor === null) return { resources: [{ uri: "x://c/a", mimeType: "text/plain" }], nextCursor: "same" };
+      if (loop) return { resources: [], nextCursor: "same" };
+      return { resources: [{ uri: "x://c/a", mimeType: "text/plain" }, { uri: "x://c/b", mimeType: "text/plain" }], nextCursor: null };
+    },
+    async readResource(uri) {
+      return [{ uri, text: uri }];
+    },
+  });
+  await scanAll(db, mk(false));
+  const cut = await scanAll(db, mk(true));
+  assert.equal(cut.flatMap((p) => p.rows).filter((r) => r.deleted).length, 0);
+  assert.equal(cut.at(-1)?.partial, true);
 });

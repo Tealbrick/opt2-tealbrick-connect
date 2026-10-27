@@ -119,8 +119,11 @@ export const POSTGRES_SQL = {
 } as const;
 
 export interface DbColumn {
+  /** the name as Connect shows it (control and format characters removed, at most 128 characters) */
   name: string;
   type: string;
+  /** the name in the database when `name` differs from it (QA-CONNECT35-5): SQL uses this one, rows are keyed by `name` */
+  real?: string;
 }
 export interface DbTable {
   /** `schema.table` */
@@ -162,7 +165,10 @@ export async function readCatalog(kind: DatabaseKind, session: DbSession): Promi
       if (approx !== undefined) entry.approxRows = approx;
       tables.set(dataset, entry);
     }
-    if (entry.columns.length < MAX_COLUMNS) entry.columns.push({ name: clean(r.column_name), type: clean(r.data_type) });
+    const rawName = String(r.column_name ?? "");
+    const name = clean(rawName);
+    // two columns that clean to one name would share one key in a row: the first one stays
+    if (entry.columns.length < MAX_COLUMNS && name !== "" && !entry.columns.some((c) => c.name === name)) entry.columns.push({ name, type: clean(r.data_type), ...(rawName === name ? {} : { real: rawName }) });
   }
   return [...tables.values()];
 }

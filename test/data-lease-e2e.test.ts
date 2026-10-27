@@ -209,6 +209,7 @@ const everything = (): string => {
 
 test("data_lease on the real SDK: the answer carries the password; the receipt row (digest + redacted summary) and every table do not (M-OP-12)", async () => {
   shares.set(account, "knowledge", "shared", false, w.liar);
+  shares.setLease(account, "knowledge", true);
   const r = await call(w.liar, "data_lease", { account, datasets: ["public.customers"], ttlS: 120 });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.output.password, CANARY, "the one place it is allowed");
@@ -233,6 +234,7 @@ test("data_lease on the real SDK: the answer carries the password; the receipt r
 
 test("data_lease on the real SDK: an agent is refused no_access (spec code secret_output_app_only after the pin moves); an error carries a fixed message", async () => {
   shares.set(account, "knowledge", "shared", false, w.liar);
+  shares.setLease(account, "knowledge", true);
   const agent = await call(w.agent, "data_lease", { account, datasets: ["public.customers"] });
   assert.deepEqual([agent.status, code(agent)], [403, "no_access"]);
   assert.equal(agent.body.output, undefined);

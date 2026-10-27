@@ -49,6 +49,12 @@ export interface ShareRow {
   setAt: number;
   /** `direct` unless the owner chose `via_observer` (database and MCP shares only) */
   route: ShareRoute;
+  /**
+   * Database shares only (migration 0021, QA-CONNECT35-11): the owner enabled a LEASE (the sealed database credential) for this
+   * share. `shared` means "rows as documents" and never implies it. Nothing sets it today (leases are not shipped); a change of
+   * the share resets it.
+   */
+  lease: boolean;
 }
 
 const rowOf = (r: Record<string, unknown>): ShareRow => ({
@@ -58,6 +64,7 @@ const rowOf = (r: Record<string, unknown>): ShareRow => ({
   includeHistory: Number(r.include_history) === 1,
   setAt: Number(r.set_at),
   route: r.route === "via_observer" ? "via_observer" : "direct",
+  lease: Number(r.lease ?? 0) === 1,
 });
 
 export class ShareStore {
@@ -105,6 +112,14 @@ export class ShareStore {
          ON CONFLICT (account_id, product) DO UPDATE SET level = excluded.level, route = excluded.route, include_history = excluded.include_history, set_at = excluded.set_at, instance_id = excluded.instance_id`,
       )
       .run(account, product, level, route, includeHistory ? 1 : 0, now, instance);
+    // a changed share starts without a lease (database shares only; the other table has no such column)
+    if (this.#table === "connect_db_shares") this.#db.prepare("UPDATE connect_db_shares SET lease = 0 WHERE account_id = ? AND product = ?").run(account, product);
+  }
+
+  /** Database shares only: the explicit lease flag. There is no owner operation for it yet (leases are not shipped). */
+  setLease(account: string, product: string, enabled: boolean): void {
+    if (this.#table !== "connect_db_shares") throw new Error("only a database share has a lease flag");
+    this.#db.prepare("UPDATE connect_db_shares SET lease = ? WHERE account_id = ? AND product = ? AND level = 'shared'").run(enabled ? 1 : 0, account, product);
   }
 
   forAccount(account: string): ShareRow[] {

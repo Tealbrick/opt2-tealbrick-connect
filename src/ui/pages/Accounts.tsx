@@ -371,6 +371,7 @@ function AccountRow(props: {
       {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
       {account.source === "database" && account.endpoint ? <p className="tb-soft">{account.endpoint} (Postgres). Agents never see this account; only the apps you share it with.</p> : null}
       {account.source === "database" && account.sslmode ? <p className="tb-soft">{`Connection: ${SSL_OPTIONS.find((o) => o.value === account.sslmode)?.label ?? account.sslmode}.`}</p> : null}
+      {account.source === "database" && account.sslmode === "disable" ? <Notice tone="error">The connection to this database is not encrypted. The password and the rows that you share travel in clear text. Switch it to an encrypted connection when your database allows it.</Notice> : null}
       {account.status === "connected" && account.source !== "database" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} ownerRowsEffective={props.ownerRowsEffective} /> : null}
       {account.status === "connected" && (account.source === "channel" || account.source === "database" || account.source === "mcp") && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
@@ -657,7 +658,7 @@ function documentsShareSentence(level: ShareLevel, route: ShareRoute, app: strin
       ? "This app sees the names of the tables and views, their columns and types, and about how many rows each holds. It sees no values. You can stop sharing at any time."
       : "This app sees the names of the collections on this server and how many documents each holds. It reads no document. You can stop sharing at any time.";
   return database
-    ? "This app reads the rows of every table and view, 200 rows per document, in a read-only transaction. It cannot change anything. You can stop sharing at any time."
+    ? "This app reads the rows of every table and view, 200 rows per document, in a read-only transaction. It cannot change anything. Columns whose name looks like a secret (password, token, key) are left out; this is a guess by name, so check your tables. You can stop sharing at any time."
     : "This app reads the text files this server lists, as documents. Connect never runs a tool of the server for it. You can stop sharing at any time.";
 }
 

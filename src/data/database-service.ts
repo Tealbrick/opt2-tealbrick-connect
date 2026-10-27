@@ -124,7 +124,7 @@ export class DatabaseService {
    * the current catalog and one READ ONLY transaction.
    */
   pullDocuments(account: DbAccount, input: DocumentsPullInput, deps: TableDocumentsDeps): Promise<DocumentsPage> {
-    tableCursorState(account.id, input);
+    tableCursorState(deps.db, account.id, input);
     return sealed({ code: "pull_failed", message: "The rows could not be read.", status: 500 }, async () => {
       const { target } = await this.#target(account);
       return withSession(this.#driver(account.kind), target, async (session) => {

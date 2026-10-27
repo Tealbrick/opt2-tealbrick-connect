@@ -46,7 +46,8 @@ const stub: { shares: Share[]; leases: Lease[]; sent: { op: string; input: Recor
   asked: [],
 };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const database = () => ({ id: "cdb_1", service: "postgres", source: "database", kind: "as_me", label: "Shop DB", ownerAgent: null, status: "connected", detail: "", endpoint: "db.example.com:5432/shop", shares: stub.shares });
+let sslmodeShown: string | undefined;
+const database = () => ({ id: "cdb_1", service: "postgres", source: "database", kind: "as_me", label: "Shop DB", ownerAgent: null, status: "connected", detail: "", endpoint: "db.example.com:5432/shop", ...(sslmodeShown ? { sslmode: sslmodeShown } : {}), shares: stub.shares });
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
@@ -177,12 +178,27 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     stub.shares = [{ product: "observer", instance: O1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" }];
     const rows = await mount(h(mod.Accounts));
     assert.match(notes(rows.host)[1] ?? "", /reads the rows of every table and view, 200 rows per document, in a read-only transaction/u);
+    assert.match(notes(rows.host)[1] ?? "", /looks like a secret \(password, token, key\) are left out; this is a guess by name, so check your tables/u);
     await rows.unmount();
 
     stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "via_observer" }];
     const routed = await mount(h(mod.Accounts));
     assert.match(notes(routed.host)[0] ?? "", /Knowledge reads this database only through Observer\. Share it with Observer too/u);
     await routed.unmount();
+  });
+
+  it("QA-CONNECT35-11: a connection without encryption (sslmode disable) shows a plain warning; an encrypted one does not", async () => {
+    reset();
+    sslmodeShown = "disable";
+    const open = await mount(h(mod.Accounts));
+    assert.match(text(open.host), /Connection: .*\./u);
+    assert.match(text(open.host), /The connection to this database is not encrypted\. The password and the rows that you share travel in clear text\./u);
+    await open.unmount();
+    sslmodeShown = "verify-full";
+    const safe = await mount(h(mod.Accounts));
+    assert.doesNotMatch(text(safe.host), /not encrypted/u);
+    await safe.unmount();
+    sslmodeShown = undefined;
   });
 
   it("C322(6): sends the route with the share: via_observer for Knowledge, direct for Observer; no route select; a chat share sends none", async () => {
