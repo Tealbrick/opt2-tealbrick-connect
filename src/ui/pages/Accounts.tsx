@@ -595,7 +595,13 @@ function ToolSharing({ account, apps, onChanged }: { account: Account; apps: Too
     setBusy(true);
     setError(null);
     try {
+      // Two rows make a share (C373 Jarvis): Connect's share (product + exact instance) and the SDK scope row of that instance
+      // (read on this account), because the SDK checks the caller's scope before Connect runs. Stop removes Connect's row
+      // first (the kill path), then the scope row.
+      const current = (account.toolShares ?? []).find((t) => t.product === product)?.instance;
       await accountToolsShare(account.id, product, share, instance);
+      const who = share ? instance : current;
+      if (who) await scopesSet(who, account.id, share ? "read" : null);
       await onChanged();
     } catch (e) {
       setError(errorText(e));
@@ -614,12 +620,18 @@ function ToolSharing({ account, apps, onChanged }: { account: Account; apps: Too
               <span>
                 {share ? (
                   <>
-                    <strong>{app.name}</strong> can call the <strong>read</strong> tools of this account{share.current ? "" : " (that app instance was removed; it can no longer read)"}. Sends, changes, deletions and payments never go to apps.
+                    <strong>{app.name}</strong> can call the <strong>read</strong> tools of this account{share.current ? "" : " (that app instance was removed; it can no longer read)"}
+                    {share.scopeRow === false ? " — not complete: press Share again" : ""}. Sends, changes, deletions and payments never go to apps.
                   </>
                 ) : (
                   <>Let {app.name} read this account in your workflows (read tools only; sends, changes, deletions and payments stay with agents and your approval).</>
                 )}
               </span>
+              {share?.scopeRow === false ? (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, share.instance)} aria-label={`Complete the share of ${account.label} with ${app.name}`}>
+                  Share again
+                </Button>
+              ) : null}
               {share ? (
                 <Button size="sm" disabled={busy} onClick={() => void run(app.product, false)} aria-label={`Stop sharing ${account.label} with ${app.name}`}>
                   Stop sharing

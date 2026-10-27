@@ -168,6 +168,17 @@ export interface ConnectEnv {
 
 /** The SDK passes `SdkOpContext` (publicUrl, workspace, scopes, secrets: C31) where the frozen types say OpContext. */
 const extras = (ctx: OpContext): SdkOpContext => ctx as SdkOpContext;
+/**
+ * C373 Jarvis: does the SDK hold a read scope row for this app instance on this account? The SDK checks it before Connect runs,
+ * so a tool share needs it too (the owner page writes it with tb.scopes_set). Read only; the SDK's own table, never written here.
+ */
+const scopeRowOf = (db: Db, instance: string, account: string): boolean => {
+  try {
+    return !!db.prepare("SELECT 1 FROM tb_scopes WHERE agent = ? AND type = ? AND instance_id = ? AND access IS NOT NULL").get(instance, PRODUCT_SCOPE, account);
+  } catch {
+    return false;
+  }
+};
 type ServiceCtx = { db: Db; getKey(name: string): Promise<string | null>; secrets?: AppSecrets; log?: Logger };
 
 type Input = Record<string, unknown>;
@@ -1624,7 +1635,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const toolCallers = companionCallersFor(ctx).filter((c) => isToolShareApp(c.product));
       const withToolShares = accounts.map((a) => {
         const row = a as { id?: string; source?: string };
-        return row.id && ["composio", "catalog", "mcp"].includes(String(row.source)) ? { ...a, toolShares: toolShares.forAccount(row.id).map((t) => ({ product: t.product, instance: t.instance, current: toolCallers.some((c) => c.product === t.product && c.instance === t.instance), setAt: new Date(t.setAt).toISOString() })) } : a;
+        return row.id && ["composio", "catalog", "mcp"].includes(String(row.source)) ? { ...a, toolShares: toolShares.forAccount(row.id).map((t) => ({ product: t.product, instance: t.instance, current: toolCallers.some((c) => c.product === t.product && c.instance === t.instance), setAt: new Date(t.setAt).toISOString(), scopeRow: scopeRowOf(ctx.db, t.instance, row.id ?? "") })) } : a;
       });
       const toolApps = Object.entries(TOOL_SHARE_APPS).map(([product, name]) => ({ product, name, instances: toolCallers.filter((c) => c.product === product).map((c) => ({ instance: c.instance, name: c.name })) }));
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so

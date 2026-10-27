@@ -130,6 +130,8 @@ export interface ToolShareView {
   instance: string;
   current: boolean;
   setAt: string;
+  /** false = the SDK scope row of the instance is missing, so the SDK refuses the calls (press Share again) */
+  scopeRow?: boolean;
 }
 export const accountToolsShare = (account: string, product: string, share: boolean, instance?: string) =>
   callOp<{ account: string; product: string; shared: boolean }>("account_tools_share", { account, product, share, ...(share && instance ? { instance } : {}) });
