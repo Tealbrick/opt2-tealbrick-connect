@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "toolkit": "whatsapp",
+  "version": "2026-10-27",
+  "notes": "WhatsApp Business Cloud API. Outward: every send (text, template, media, location, contacts, buttons, lists), blocks, template submissions to Meta, flow publishing, phone registration, automatic replies and two-step verification. Money: price agreements. Destructive: deletes, removals, phone deregistration. WHO_AM_I is a read. SUBSCRIBE_APP stays money by name.",
+  "money": [
+    "WHATSAPP_*PRICE_AGREEMENT*"
+  ],
+  "destructive": [
+    "WHATSAPP_DELETE_*",
+    "WHATSAPP_REMOVE_*",
+    "WHATSAPP_DEREGISTER_*"
+  ],
+  "outward": [
+    "WHATSAPP_SEND_*",
+    "WHATSAPP_BLOCK_*",
+    "WHATSAPP_UNBLOCK_*",
+    "WHATSAPP_*TEMPLATE*",
+    "WHATSAPP_PUBLISH_*",
+    "WHATSAPP_REGISTER_*",
+    "WHATSAPP_CONFIGURE_*",
+    "WHATSAPP_SET_TWO_STEP_VERIFICATION",
+    "WHATSAPP_UNSUBSCRIBE_*"
+  ],
+  "writes": [
+    "WHATSAPP_VERIFY_CODE",
+    "WHATSAPP_CREATE_*",
+    "WHATSAPP_UPDATE_*",
+    "WHATSAPP_UPLOAD_*",
+    "WHATSAPP_UPSERT_*",
+    "WHATSAPP_SET_*"
+  ],
+  "reads": [
+    "WHATSAPP_WHO_AM_I",
+    "WHATSAPP_GET_*",
+    "WHATSAPP_LIST_*"
+  ]
+}

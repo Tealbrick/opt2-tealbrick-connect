@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "toolkit": "wordpress_com",
+  "version": "2026-10-27",
+  "notes": "WordPress.com sites. The Composio toolkit only creates and edits DRAFT posts (no status field, nothing goes public), so they are writes. Destructive: deletes. GET_POST is a read. Publishing on a self-hosted site goes through a catalog or MCP account, not this toolkit.",
+  "destructive": [
+    "WORDPRESS_COM_DELETE_*"
+  ],
+  "outward": [
+    "WORDPRESS_COM_PUBLISH_*",
+    "WORDPRESS_COM_*COMMENT*"
+  ],
+  "writes": [
+    "WORDPRESS_COM_CREATE_DRAFT_POST",
+    "WORDPRESS_COM_UPDATE_DRAFT_POST",
+    "WORDPRESS_COM_CREATE_*",
+    "WORDPRESS_COM_UPDATE_*"
+  ],
+  "reads": [
+    "WORDPRESS_COM_GET_POST",
+    "WORDPRESS_COM_GET_*",
+    "WORDPRESS_COM_LIST_*"
+  ]
+}

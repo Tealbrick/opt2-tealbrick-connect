@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "toolkit": "tiktok",
+  "version": "2026-10-27",
+  "notes": "TikTok Content Posting API. Outward: publish, photo posts and uploads (UPLOAD_VIDEO takes publish=true and a privacy level, so an upload can go public). FETCH_PUBLISH_STATUS is a read.",
+  "destructive": [
+    "TIKTOK_DELETE_*"
+  ],
+  "outward": [
+    "TIKTOK_PUBLISH_*",
+    "TIKTOK_POST_*",
+    "TIKTOK_UPLOAD_*"
+  ],
+  "writes": [
+    "TIKTOK_UPDATE_*",
+    "TIKTOK_CREATE_*"
+  ],
+  "reads": [
+    "TIKTOK_FETCH_PUBLISH_STATUS",
+    "TIKTOK_GET_*",
+    "TIKTOK_LIST_*",
+    "TIKTOK_QUERY_*"
+  ]
+}

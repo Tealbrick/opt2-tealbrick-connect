@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "toolkit": "youtube",
+  "version": "2026-10-27",
+  "notes": "YouTube Data API. Outward: video uploads and video updates (privacy can turn public), comments, replies, moderation (SET_COMMENT_MODERATION_STATUS can ban an author), spam marks, ratings, abuse reports, subscriptions, thumbnails and the channel banner. Writes: playlists, channel sections, captions, channel settings. Destructive: deletes. YOUTUBE_SUBSCRIBE_CHANNEL stays money by name (Connect never lowers a money name). LOAD_CAPTIONS and GET_VIDEO_DETAILS_BATCH are reads.",
+  "destructive": [
+    "YOUTUBE_DELETE_*"
+  ],
+  "outward": [
+    "YOUTUBE_*UPLOAD_VIDEO*",
+    "YOUTUBE_UPDATE_VIDEO",
+    "YOUTUBE_*COMMENT*",
+    "YOUTUBE_RATE_*",
+    "YOUTUBE_REPORT_*",
+    "YOUTUBE_*SUBSCRIBE*",
+    "YOUTUBE_UPDATE_THUMBNAIL",
+    "YOUTUBE_UPLOAD_CHANNEL_BANNER"
+  ],
+  "writes": [
+    "YOUTUBE_ADD_*",
+    "YOUTUBE_CREATE_*",
+    "YOUTUBE_UPDATE_*",
+    "YOUTUBE_UPLOAD_*"
+  ],
+  "reads": [
+    "YOUTUBE_LOAD_CAPTIONS",
+    "YOUTUBE_GET_VIDEO_DETAILS_BATCH",
+    "YOUTUBE_GET_*",
+    "YOUTUBE_LIST_*",
+    "YOUTUBE_SEARCH_*",
+    "YOUTUBE_QUERY_*"
+  ]
+}

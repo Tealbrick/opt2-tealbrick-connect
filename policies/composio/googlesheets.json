@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "toolkit": "googlesheets",
+  "version": "2026-10-27",
+  "notes": "Google Sheets. Destructive: deletes and every clear of cell values (data loss), and EXECUTE_SQL (it can run UPDATE and DELETE). Writes: everything that adds or changes cells, sheets, charts, filters and formats inside the spreadsheet. Sharing is a Drive tool, not here. Batch and aggregate reads are listed by exact name because their slug holds BATCH.",
+  "destructive": [
+    "GOOGLESHEETS_DELETE_*",
+    "GOOGLESHEETS_CLEAR_VALUES",
+    "GOOGLESHEETS_*BATCH_CLEAR*",
+    "GOOGLESHEETS_EXECUTE_SQL"
+  ],
+  "outward": [],
+  "writes": [
+    "GOOGLESHEETS_CLEAR_BASIC_FILTER",
+    "GOOGLESHEETS_FORMAT_CELL",
+    "GOOGLESHEETS_AUTO_RESIZE_DIMENSIONS",
+    "GOOGLESHEETS_SORT_RANGE",
+    "GOOGLESHEETS_SHEET_FROM_JSON",
+    "GOOGLESHEETS_ADD_*",
+    "GOOGLESHEETS_APPEND_*",
+    "GOOGLESHEETS_BATCH_UPDATE*",
+    "GOOGLESHEETS_CREATE_*",
+    "GOOGLESHEETS_INSERT_*",
+    "GOOGLESHEETS_MOVE_*",
+    "GOOGLESHEETS_MUTATE_*",
+    "GOOGLESHEETS_SET_*",
+    "GOOGLESHEETS_SPREADSHEETS_SHEETS_COPY_TO",
+    "GOOGLESHEETS_SPREADSHEETS_VALUES_APPEND",
+    "GOOGLESHEETS_UPDATE_*",
+    "GOOGLESHEETS_UPSERT_*",
+    "GOOGLESHEETS_VALUES_UPDATE"
+  ],
+  "reads": [
+    "GOOGLESHEETS_AGGREGATE_COLUMN_DATA",
+    "GOOGLESHEETS_BATCH_GET",
+    "GOOGLESHEETS_GET_BATCH_VALUES",
+    "GOOGLESHEETS_SPREADSHEETS_VALUES_BATCH_GET_BY_DATA_FILTER",
+    "GOOGLESHEETS_GET_*",
+    "GOOGLESHEETS_LIST_*",
+    "GOOGLESHEETS_SEARCH_*",
+    "GOOGLESHEETS_FIND_*",
+    "GOOGLESHEETS_LOOKUP_*",
+    "GOOGLESHEETS_VALUES_GET"
+  ]
+}
