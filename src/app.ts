@@ -29,7 +29,6 @@ import {
 import { channelProviders } from "./channels/registry.ts";
 import { ACTIONS_EXPIRED_NOTE, type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
-import { isToolShareApp, TOOL_SHARE_APPS, ToolShareStore } from "./data/tool-shares.ts";
 import {
   DATABASE_KINDS,
   DATABASE_RECOMMENDATION,
@@ -48,6 +47,7 @@ import { LEASE_OP_IDS, leasesDeclared } from "./data/lease-ops.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, SHARE_ROUTES, type ShareLevel, type ShareRoute, ShareStore } from "./data/shares.ts";
 import { tableDocumentsCatalog } from "./data/table-documents.ts";
+import { isToolShareApp, TOOL_SHARE_APPS, ToolShareStore } from "./data/tool-shares.ts";
 import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, readableTitle, renderGenericHold, renderHoldView } from "./hold-view.ts";
 import { type ChannelLookup, draftCheck, isPostizChannelList, isPostizCreatePost, parseChannels, renderPostizPost } from "./postiz.ts";

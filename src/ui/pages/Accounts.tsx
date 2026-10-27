@@ -9,9 +9,9 @@ import {
   type Account,
   type AgentInfo,
   accountAppShare,
-  accountToolsShare,
   accountDisconnect,
   accountsOverview,
+  accountToolsShare,
   accountUpdate,
   agentsList,
   catalogAccountTest,
@@ -28,11 +28,11 @@ import {
   mcpToolReadSet,
   mcpToolsList,
   type ShareLevel,
-  type ToolApp,
   type ShareRoute,
   type SslMode,
   scopesAcceptOffer,
   scopesSet,
+  type ToolApp,
   toolsRefresh,
 } from "../ops.ts";
 
@@ -604,7 +604,7 @@ function ToolSharing({ account, apps, onChanged }: { account: Account; apps: Too
     }
   };
   return (
-    <div className="app-sharing" aria-label={`Workflow access to ${account.label}`}>
+    <section className="app-sharing" aria-label={`Workflow access to ${account.label}`}>
       {apps
         .filter((a) => a.instances.length > 0)
         .map((app) => {
@@ -633,7 +633,7 @@ function ToolSharing({ account, apps, onChanged }: { account: Account; apps: Too
           );
         })}
       {error ? <Notice tone="error">{error}</Notice> : null}
-    </div>
+    </section>
   );
 }
 
