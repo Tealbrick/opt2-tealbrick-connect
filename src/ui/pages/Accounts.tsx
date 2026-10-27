@@ -11,6 +11,7 @@ import {
   accountAppShare,
   accountDisconnect,
   accountsOverview,
+  accountToolsShare,
   accountUpdate,
   agentsList,
   catalogAccountTest,
@@ -31,6 +32,7 @@ import {
   type SslMode,
   scopesAcceptOffer,
   scopesSet,
+  type ToolApp,
   toolsRefresh,
 } from "../ops.ts";
 
@@ -170,6 +172,7 @@ export function Accounts() {
                   onAgentsChanged={agents.reload}
                   ownerRowsEffective={accounts.data?.ownerRowsEffective === true}
                   dataApps={accounts.data?.dataApps ?? []}
+                  toolApps={accounts.data?.toolApps ?? []}
                   callersKnown={callersKnown}
                   leasesEnabled={leasesEnabled}
                   onShared={async () => {
@@ -357,6 +360,7 @@ function RefreshTools({ service }: { service: string }) {
 }
 
 function AccountRow(props: {
+  toolApps: ToolApp[];
   account: Account;
   ownerName: string;
   agents: AgentInfo[];
@@ -426,6 +430,9 @@ function AccountRow(props: {
       {account.source === "database" && account.sslmode ? <p className="tb-soft">{`Connection: ${SSL_OPTIONS.find((o) => o.value === account.sslmode)?.label ?? account.sslmode}.`}</p> : null}
       {account.source === "database" && account.sslmode === "disable" ? <Notice tone="error">The connection to this database is not encrypted. The password and the rows that you share travel in clear text. Switch it to an encrypted connection when your database allows it.</Notice> : null}
       {account.status === "connected" && account.source !== "database" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} ownerRowsEffective={props.ownerRowsEffective} /> : null}
+      {account.status === "connected" && account.kind === "as_me" && (account.source === "composio" || account.source === "catalog" || account.source === "mcp") && props.toolApps.some((t) => t.instances.length > 0) ? (
+        <ToolSharing account={account} apps={props.toolApps} onChanged={props.onShared} />
+      ) : null}
       {account.status === "connected" && (account.source === "channel" || account.source === "database" || account.source === "mcp") && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
         <div className="tb-ctas">
@@ -580,6 +587,56 @@ function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }:
  *   - moving a share to another instance is a new share: "Include the last 30 days" starts unticked again.
  * An instance on the owner's own server is named as such.
  */
+/** C373 Jarvis: share this account with one Evolving Workflows instance for READ tools only (off by default; Stop = at once). */
+function ToolSharing({ account, apps, onChanged }: { account: Account; apps: ToolApp[]; onChanged(): Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (product: string, share: boolean, instance?: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await accountToolsShare(account.id, product, share, instance);
+      await onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="app-sharing" aria-label={`Workflow access to ${account.label}`}>
+      {apps
+        .filter((a) => a.instances.length > 0)
+        .map((app) => {
+          const share = (account.toolShares ?? []).find((t) => t.product === app.product);
+          return (
+            <p key={app.product} className="tb-row">
+              <span>
+                {share ? (
+                  <>
+                    <strong>{app.name}</strong> can call the <strong>read</strong> tools of this account{share.current ? "" : " (that app instance was removed; it can no longer read)"}. Sends, changes, deletions and payments never go to apps.
+                  </>
+                ) : (
+                  <>Let {app.name} read this account in your workflows (read tools only; sends, changes, deletions and payments stay with agents and your approval).</>
+                )}
+              </span>
+              {share ? (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, false)} aria-label={`Stop sharing ${account.label} with ${app.name}`}>
+                  Stop sharing
+                </Button>
+              ) : (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, app.instances[0]?.instance)} aria-label={`Share read tools of ${account.label} with ${app.name}`}>
+                  Share read tools with {app.name}
+                </Button>
+              )}
+            </p>
+          );
+        })}
+      {error ? <Notice tone="error">{error}</Notice> : null}
+    </section>
+  );
+}
+
 function AppSharing({ account, apps, callersKnown, onChanged }: { account: Account; apps: DataApp[]; callersKnown: boolean; onChanged(): Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

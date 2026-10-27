@@ -1,6 +1,15 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.8 (catalog 0.3.1; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.9 (catalog 0.3.1; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.9 (2026-10-27; C373 Jarvis, Coordinator approval: workflow apps read shared accounts)
+
+Found live on DEV: every Evolving Workflows step that calls `connect.tools` failed `scope_denied`, because Connect gave account access only to agents. A deterministic workflow (C366) must read a mailbox, a sheet or an own API with an owner-approved grant.
+- **Person op** `account_tools_share {account, product: "evolution", instance, share}`: the owner shares ONE connected tool account (Composio, catalog, own API, MCP; "as me" only) with ONE installed Evolving Workflows instance, picked from the signed slice. Off by default; `share: false` removes it at once (the kill path).
+- **Per call, for an app caller:** the verified product must be a tool-share app (`no_access` otherwise), without a verified product `caller_unverified`; the tool's resolved class must be READ (`app_read_only` for write, outward, destructive and money tools: they stay with agents and holds); the instance must still be listed (`share_instance_gone`); the account must be shared with that exact instance (`scope_denied` otherwise; a reinstall = new instance = no share). Agents keep their access unchanged.
+- `accounts_overview` lists `toolShares` per tool account (with `current`) and `toolApps` (the instances one can share with). Accounts page: "Share read tools with Evolving Workflows" / "Stop sharing".
+- **Storage:** migration 0024 (expand only) `connect_tool_shares` (account, product, instance; cascade on account delete).
+- Tests: `tool-shares.test.ts` (fire-on-bad: unshared, another app, another instance, write and outward tools, unverified, unlisted, revoked; agent access unchanged; no write reaches the service).
 
 ## 0.7.8 (2026-10-27; C373 Jarvis T3 "MCP hold policy")
 
