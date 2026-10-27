@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.tealbrick.com/opt2/contracts/documents/1.schema.json",
+  "title": "documents/1 — one document row of the Connect `documents` dataset (data_pull)",
+  "description": "v0.1.83 (C373 second-brain lead, 2026-10-27; packages lead review points a-g applied; QA specs#62 S2/S3 applied). Producer: connect (data_pull dataset `documents`): MCP accounts (MCP resources/list + resources/read), database accounts (one table page rendered as CSV per row), later Composio Drive/Notion/Gmail. Consumers: observer (read-only ingest + normalisation; C322(6) ingest = Observer only), knowledge/foundry via Observer deliveries. The account is the data_pull scope instance of the request (the row carries no account); consumers key a document on (account, collection, id). Versions: `rev` is opaque and is compared for EQUALITY only (same rev = same content: skip the row). Order is by `updatedAt` (the newer wins); equal `updatedAt` with a different `rev`: the later-received row wins. A deletion row MUST carry a new `rev` and an `updatedAt` at or after the last live row. Every string member is untrusted input (APP-11(f)), not only `text`: `title`, `path`, `collection`, `author.display`, `url` and `id` too; `untrusted` is always true. Control, bidi and zero-width characters MAY remain and consumers strip them before display or indexing; producers remove NUL. Markdown may carry raw HTML or remote images and CSV may carry formulas (a cell starting with =, +, - or @): consumers never render HTML, never fetch images or links automatically, and escape CSV formulas on export. `url` and `id` carry no credentials, userinfo, tokens or signed query parameters (the producer strips them), and producers drop secret columns from table pages. HTML sources are converted to text/markdown by the producer (no text/html rows). Extra members are allowed and ignored (L24). A source deletion arrives as a row with deleted: true, empty text and title \"\" (or the last title).",
+  "$defs": {
+    "row": {
+      "type": "object",
+      "required": [
+        "id",
+        "collection",
+        "title",
+        "mime",
+        "updatedAt",
+        "rev",
+        "text",
+        "untrusted"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "stable source id (MCP resource uri, `<schema>.<table>:<page>` for a table page); no credentials, userinfo or tokens"
+        },
+        "collection": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "folder / channel / table the document belongs to; the unit an owner shares and an app picks"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "human path, e.g. `Acme LLC/Finance/Q3 board memo`"
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^https://[^\\s@/?#]+(/[^\\s?#]*)?(\\?[^\\s#]*)?$",
+          "description": "https link to the original, when the source has one; no userinfo, no control chars, no fragment; no credentials, tokens or signed query parameters (the producer strips them)"
+        },
+        "mime": {
+          "enum": [
+            "text/plain",
+            "text/markdown",
+            "text/csv"
+          ]
+        },
+        "updatedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?Z$",
+          "description": "UTC; orders versions of one document (newer wins); a deletion row has updatedAt at or after the last live row"
+        },
+        "rev": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "content version, opaque; compared for equality only (same rev = same content); a deletion row carries a new rev"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "author": {
+          "type": "object",
+          "required": [
+            "handle"
+          ],
+          "properties": {
+            "handle": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "canonical normalizeHandle form (`<channel>:<value>`) when the source maps to one, else the raw source string with raw: true",
+              "minLength": 1
+            },
+            "raw": {
+              "type": "boolean"
+            },
+            "display": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "if": {
+            "properties": {
+              "raw": {
+                "const": true
+              }
+            },
+            "required": [
+              "raw"
+            ]
+          },
+          "else": {
+            "properties": {
+              "handle": {
+                "pattern": "^[a-z0-9_-]{1,32}:.+$"
+              }
+            }
+          }
+        },
+        "kind": {
+          "enum": [
+            "document",
+            "chat_transcript",
+            "table",
+            "report",
+            "record"
+          ],
+          "description": "hint for normalisers; `table` = CSV of rows with a header line"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 262144,
+          "description": "≤ 262,144 code points; the page stays ≤ 2 MiB UTF-8 (the producer pages by bytes; 50 rows is a ceiling, not a promise)"
+        },
+        "untrusted": {
+          "const": true
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "text was cut to the 262,144 code point cap"
+        }
+      },
+      "if": {
+        "properties": {
+          "deleted": {
+            "const": true
+          }
+        },
+        "required": [
+          "deleted"
+        ]
+      },
+      "then": {
+        "properties": {
+          "text": {
+            "maxLength": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "title": {
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "description": "data_pull answer for dataset documents: ≤ 50 rows, ≤ 2 MiB (S-7).",
+      "required": [
+        "rows",
+        "nextCursor",
+        "exhausted"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/row"
+          }
+        },
+        "nextCursor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exhausted": {
+          "type": "boolean"
+        },
+        "retryAfterS": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        }
+      }
+    }
+  },
+  "$ref": "#/$defs/page"
+}

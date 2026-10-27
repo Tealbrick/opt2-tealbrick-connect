@@ -10,9 +10,10 @@
  *  - `connect_db_accounts` keeps a label, the kind, a display string `host:port/database` (no user, no password) and the state;
  *  - `connect_data_leases` keeps who got a lease for which datasets until when. NEVER the credential.
  *
- * Connect itself reads METADATA only: table and column names, column types, approximate row counts (data_catalog) and the
- * role flags of the connecting user (a superuser or replication role is refused). It never runs a query on table data.
- * The queries are the constants in POSTGRES_SQL; tests check that no other statement is sent.
+ * Connect reads METADATA here: table and column names, column types, approximate row counts (data_catalog) and the role
+ * flags of the connecting user (a superuser or replication role is refused). The queries are the constants in POSTGRES_SQL.
+ * C373: table rows are read in exactly one place, the `documents` dataset (`table-documents.ts`): a READ ONLY transaction,
+ * fixed statements plus one generated page SELECT over catalog names, secret-looking columns never selected.
  *
  * The password leaves this module in exactly one place: `DatabaseAccountStore.dsn()`, used by the lease handler and the
  * driver call. Errors of a driver are mapped to fixed text plus an allow-listed code: a driver message is never forwarded.
@@ -206,6 +207,8 @@ export interface DbAccount {
   endpoint: string;
   status: "connected" | "revoked";
   detail: string;
+  /** the TLS mode (libpq meaning; C373 migration 0020); null for an account from before it until `tlsMode` fills it */
+  sslmode: SslMode | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -219,6 +222,7 @@ const accountOf = (r: DbRow): DbAccount => ({
   endpoint: String(r.endpoint),
   status: r.status === "revoked" ? "revoked" : "connected",
   detail: String(r.detail),
+  sslmode: (SSL_MODES as readonly unknown[]).includes(r.sslmode) ? (r.sslmode as SslMode) : null,
   createdAt: Number(r.created_at),
   updatedAt: Number(r.updated_at),
 });
@@ -240,8 +244,8 @@ export class DatabaseAccountStore {
     await this.#secrets.put(secretName(id), JSON.stringify(input.dsn));
     try {
       this.#db
-        .prepare("INSERT INTO connect_db_accounts (id, kind, label, endpoint, status, detail, created_at, updated_at) VALUES (?, ?, ?, ?, 'connected', '', ?, ?)")
-        .run(id, input.kind, input.label, endpointOf(input.dsn), now, now);
+        .prepare("INSERT INTO connect_db_accounts (id, kind, label, endpoint, status, detail, sslmode, created_at, updated_at) VALUES (?, ?, ?, ?, 'connected', '', ?, ?, ?)")
+        .run(id, input.kind, input.label, endpointOf(input.dsn), input.dsn.sslmode, now, now);
     } catch (error) {
       await this.#secrets.delete(secretName(id)).catch(() => undefined);
       throw error;
@@ -276,6 +280,18 @@ export class DatabaseAccountStore {
       return parseDsn(parsed, account.kind);
     } catch {
       throw new DataError("database_credentials_invalid", "The stored database credentials cannot be read; connect it again.", 409);
+    }
+  }
+
+  /** The TLS mode for the owner page. An account from before migration 0020 has none in its row: read once from the seal. */
+  async tlsMode(account: DbAccount): Promise<SslMode | null> {
+    if (account.sslmode !== null || account.status !== "connected") return account.sslmode;
+    try {
+      const { sslmode } = await this.dsn(account);
+      this.#db.prepare("UPDATE connect_db_accounts SET sslmode = ? WHERE id = ?").run(sslmode, account.id);
+      return sslmode;
+    } catch {
+      return null;
     }
   }
 

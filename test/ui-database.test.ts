@@ -159,44 +159,47 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     assert.equal(none.host.querySelector('button[aria-label="Refresh tools of postgres"]'), null);
     assert.equal(none.host.querySelector('[aria-label="Which Knowledge gets Shop DB"]'), null, "one instance: no instance picker");
     assert.deepEqual(notes(none.host), ["This app sees nothing of this database. Pick a level to share; you can revoke it at any time.", "This app sees nothing of this database. Pick a level to share; you can revoke it at any time."]);
+    // C373: the dataset is named once, in plain words
+    assert.match(text(none.host), /Dataset: documents\. Each table is a collection; every 200 rows are one document\./u);
     await none.unmount();
 
-    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" }];
+    stub.shares = [{ product: "observer", instance: O1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" }];
     const mixed = await mount(h(mod.Accounts));
-    const [names] = notes(mixed.host);
-    assert.match(names ?? "", /names of the tables and views, their columns and types, and about how many rows each holds\. It sees no values\. Access to the rows is not offered yet\./u);
+    const observerNote = notes(mixed.host)[1];
+    assert.match(observerNote ?? "", /names of the tables and views, their columns and types, and about how many rows each holds\. It sees no values\./u);
     assert.doesNotMatch(text(mixed.host), /lease/iu, "C354a: nothing on the page speaks of leases while Connect offers none");
-    // the share menu offers no row access
-    await click(mixed.host.querySelector('[aria-label="Share Shop DB with Knowledge"]'));
-    const labels = [...(mixed.host.querySelector('[aria-label="Share Shop DB with Knowledge"]')?.parentElement?.querySelectorAll('[role="option"]') ?? [])].map((o) => (o.textContent ?? "").trim());
-    assert.deepEqual(labels, ["Not shared", "Table names only"]);
+    // C373: the share menu offers the rows as documents
+    await click(mixed.host.querySelector('[aria-label="Share Shop DB with Observer"]'));
+    const labels = [...(mixed.host.querySelector('[aria-label="Share Shop DB with Observer"]')?.parentElement?.querySelectorAll('[role="option"]') ?? [])].map((o) => (o.textContent ?? "").trim());
+    assert.deepEqual(labels, ["Not shared", "Table names only", "Share rows as documents (read only)"]);
     await mixed.unmount();
+
+    stub.shares = [{ product: "observer", instance: O1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" }];
+    const rows = await mount(h(mod.Accounts));
+    assert.match(notes(rows.host)[1] ?? "", /reads the rows of every table and view, 200 rows per document, in a read-only transaction/u);
+    await rows.unmount();
 
     stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "via_observer" }];
     const routed = await mount(h(mod.Accounts));
-    assert.match(notes(routed.host)[0] ?? "", /Knowledge gets nothing from this database\. Only Observer reads it/u);
+    assert.match(notes(routed.host)[0] ?? "", /Knowledge reads this database only through Observer\. Share it with Observer too/u);
     await routed.unmount();
   });
 
-  it("sends the route with the share: direct by default, via_observer on choice; the route select is for Knowledge only and a chat share sends none", async () => {
+  it("C322(6): sends the route with the share: via_observer for Knowledge, direct for Observer; no route select; a chat share sends none", async () => {
     reset();
     const page = await mount(h(mod.Accounts));
-    assert.equal(page.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'), null, "no route before a share");
+    assert.equal(page.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'), null, "the direct route is not offered");
     await choose(page.host, "Share Shop DB with Knowledge", "Table names only");
-    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "available", includeHistory: false, instance: K1, route: "direct" } }]);
+    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "available", includeHistory: false, instance: K1, route: "via_observer" } }]);
     await page.unmount();
 
     stub.sent = [];
-    stub.shares = [
-      { product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" },
-      { product: "observer", instance: O1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "direct" },
-    ];
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "via_observer" }];
     const shared = await mount(h(mod.Accounts));
-    assert.ok(shared.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'));
-    assert.equal(shared.host.querySelector('[aria-label="How Observer reaches Shop DB"]'), null, "Observer has no route");
+    assert.equal(shared.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'), null);
     assert.equal(shared.host.querySelector('input[type="checkbox"]'), null, "no 30-day history for a database");
-    await choose(shared.host, "How Knowledge reaches Shop DB", "Only through Observer");
-    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "available", includeHistory: false, instance: K1, route: "via_observer" } }]);
+    await choose(shared.host, "Share Shop DB with Observer", "Share rows as documents (read only)");
+    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "observer", level: "shared", includeHistory: false, instance: O1, route: "direct" } }]);
     await shared.unmount();
   });
 
@@ -304,10 +307,10 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
   it("when Connect offers leases (kept code): the level appears, the lease sentence is honest, the list shows no credential and an active lease can be ended", async () => {
     reset();
     stub.leasesEnabled = true;
-    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" }];
+    // C373: a `shared` database share gives rows as documents; the share sentence says that, not a lease
+    stub.shares = [{ product: "observer", instance: O1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" }];
     const offered = await mount(h(mod.Accounts));
-    assert.match(notes(offered.host)[0] ?? "", /short lease \(up to 15 minutes\) on the read-only user you stored/u);
-    assert.match(notes(offered.host)[0] ?? "", /the password stays valid in your database until you change it there/u);
+    assert.match(notes(offered.host)[1] ?? "", /200 rows per document/u);
     await offered.unmount();
     stub.leases = [lease(2), lease(1, { state: "revoked", revokedAt: "2026-10-18T09:01:00.000Z", datasets: ["a.b", "c.d", "e.f", "g.h", "i.j"] }), lease(0, { state: "expired" })];
     const page = await mount(h(mod.Accounts));

@@ -2,6 +2,8 @@
  * Remote MCP client, Streamable HTTP only (harvest: v1 mcp-remote-client.ts). Legacy SSE transport is not ported.
  * - `initialize` with protocol version negotiation, `notifications/initialized`, `mcp-session-id` and
  *   `mcp-protocol-version` headers, `tools/list` paging (cursor loop guard), `tools/call`, DELETE on close.
+ * - C373: `resources/list` (one page per call, the caller keeps the MCP cursor) and `resources/read` for the `documents`
+ *   dataset. Those two never call a tool.
  * - Replies as JSON or as an SSE stream (incremental parser, byte cap); `redirect: "error"`; timeouts
  *   connect/request 10 s, call 30 s; body cap 2 MiB; at most 200 tools.
  */
@@ -25,6 +27,29 @@ export class McpError extends Error {
     this.status = status;
   }
 }
+
+/** One entry of `resources/list` (MCP 2025-06-18 `Resource`), kept as the server sent it apart from type checks. */
+export interface McpResource {
+  uri: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+  annotations?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
+
+/** One entry of `resources/read` contents: text or base64 blob. */
+export interface McpResourceContent {
+  uri: string;
+  mimeType?: string;
+  text?: string;
+  blob?: string;
+  _meta?: Record<string, unknown>;
+}
+
+export const MCP_MAX_RESOURCES_PER_PAGE = 1000;
 
 export interface McpTool {
   name: string;
@@ -94,6 +119,7 @@ export class McpClient {
   readonly #clientVersion: string;
   #session: string | null = null;
   #protocol: string | null = null;
+  #serverName: string | null = null;
   #nextId = 1;
 
   private constructor(options: McpClientOptions) {
@@ -111,6 +137,8 @@ export class McpClient {
     const version = init?.protocolVersion;
     if (typeof version !== "string" || !/^[\w.-]{1,32}$/u.test(version)) throw new McpError("mcp_protocol_error", "Invalid initialize result.");
     client.#protocol = version;
+    const info = rec(init?.serverInfo);
+    if (typeof info?.name === "string" && info.name.trim()) client.#serverName = info.name.trim().slice(0, 200);
     await client.#post({ jsonrpc: "2.0", method: "notifications/initialized" }, MCP_REQUEST_TIMEOUT_MS, null);
     return client;
   }
@@ -217,6 +245,57 @@ export class McpClient {
       cursor = next;
     }
     return tools;
+  }
+
+  /** `serverInfo.name` from initialize, when the server sent one. */
+  get serverName(): string | null {
+    return this.#serverName;
+  }
+
+  /** One page of `resources/list`. The caller pages with `nextCursor` (opaque, as the server sent it). */
+  async listResources(cursor?: string): Promise<{ resources: McpResource[]; nextCursor: string | null }> {
+    const result = rec(await this.request("resources/list", cursor ? { cursor } : {}, MCP_REQUEST_TIMEOUT_MS));
+    if (!result || !Array.isArray(result.resources)) throw new McpError("mcp_protocol_error", "Invalid resources/list result.");
+    const resources: McpResource[] = [];
+    for (const raw of result.resources.slice(0, MCP_MAX_RESOURCES_PER_PAGE)) {
+      const r = rec(raw);
+      if (!r || typeof r.uri !== "string" || !r.uri.trim() || r.uri.length > 4096) continue;
+      resources.push({
+        uri: r.uri,
+        ...(typeof r.name === "string" ? { name: r.name.slice(0, 1000) } : {}),
+        ...(typeof r.title === "string" ? { title: r.title.slice(0, 1000) } : {}),
+        ...(typeof r.description === "string" ? { description: r.description.slice(0, 2000) } : {}),
+        ...(typeof r.mimeType === "string" ? { mimeType: r.mimeType.slice(0, 200) } : {}),
+        ...(typeof r.size === "number" && Number.isFinite(r.size) ? { size: r.size } : {}),
+        ...(rec(r.annotations) ? { annotations: rec(r.annotations) as Rec } : {}),
+        ...(rec(r._meta) ? { _meta: rec(r._meta) as Rec } : {}),
+      });
+    }
+    const next = typeof result.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
+    return { resources, nextCursor: next };
+  }
+
+  /** `resources/read` of one uri: the contents entries with a string `uri` and a string `text` or `blob`. */
+  async readResource(uri: string): Promise<McpResourceContent[]> {
+    const result = rec(await this.request("resources/read", { uri }, MCP_REQUEST_TIMEOUT_MS));
+    if (!result || !Array.isArray(result.contents)) throw new McpError("mcp_protocol_error", "Invalid resources/read result.");
+    const out: McpResourceContent[] = [];
+    for (const raw of result.contents) {
+      const c = rec(raw);
+      if (!c) continue;
+      const text = typeof c.text === "string" ? c.text : undefined;
+      const blob = typeof c.blob === "string" ? c.blob : undefined;
+      if (text === undefined && blob === undefined) continue;
+      out.push({
+        uri: typeof c.uri === "string" ? c.uri : uri,
+        ...(typeof c.mimeType === "string" ? { mimeType: c.mimeType.slice(0, 200) } : {}),
+        ...(text !== undefined ? { text } : {}),
+        // the blob bytes are dropped here: the documents dataset carries text only (a blob is counted as skipped)
+        ...(blob !== undefined ? { blob: "" } : {}),
+        ...(rec(c._meta) ? { _meta: rec(c._meta) as Rec } : {}),
+      });
+    }
+    return out;
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<{ content: unknown[]; structuredContent?: unknown; isError: boolean }> {

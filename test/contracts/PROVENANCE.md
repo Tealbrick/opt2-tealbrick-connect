@@ -17,3 +17,17 @@ How this app uses them: `src/data/messages.ts` validates EVERY `data_pull` page 
 the JSON Schema 2020-12 validator that `@opt2-tealbrick/manifest` exports (`validateAgainstSchema`, ajv 8, formats as
 annotations) before it returns the page. A mismatch is a producer bug: the op answers `data_contract_violation` (500), logs it,
 and never returns the page. The fixtures `valid` and `invalid` run through the same validator in `test/data-contract.test.ts`.
+
+## documents/1 (C373, DRAFT for spec 0.1.83)
+
+- Source: `coordination/leads/second-brain/documents.1.schema.json` of the C373 second-brain lead (2026-10-27; packages lead review points a-g and QA specs#62 S2/S3 applied). The spec release that knows the id comes later via the packages lead; then this copy is replaced by the file at that spec tag and this section names the tag. Not in the manifest `contracts` field yet.
+- Contract: `documents/1` (one page of the Connect `documents` dataset, answer of `data_pull`; producer: this app, from MCP accounts and database accounts; consumer: Observer, Knowledge through Observer, C322(6)).
+
+| File here | Source | sha256 |
+|---|---|---|
+| `documents.1.schema.json` | the lead's file above | `77d581d1455084b385aef85223bc3d5cb698ede19d954fe92d5921ddec3c4bd0` |
+| `../../src/contracts/documents.1.schema.json` (runtime copy) | same as the schema above | `77d581d1455084b385aef85223bc3d5cb698ede19d954fe92d5921ddec3c4bd0` |
+
+How this app uses it: `src/data/documents.ts` validates EVERY `data_pull` page for dataset `documents` against the schema
+(`validateAgainstSchema`, as for messages) and every row before it is added; a page that does not conform answers
+`data_contract_violation` (500) and is never returned, a row that does not conform is skipped and counted (`quarantined`).

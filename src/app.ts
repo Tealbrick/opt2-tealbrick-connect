@@ -42,9 +42,11 @@ import {
   leaseState,
 } from "./data/database.ts";
 import { DatabaseService } from "./data/database-service.ts";
+import { clearSeen, DOCUMENTS_CONTRACT, DOCUMENTS_DATASET, type DocumentsPullInput, mcpDocumentsCatalog, pullMcpDocuments } from "./data/documents.ts";
 import { LEASE_OP_IDS, leasesDeclared } from "./data/lease-ops.ts";
 import { DataError, MESSAGES_DATASET, messagesCatalog, type PullInput, pullMessages } from "./data/messages.ts";
 import { DATA_APPS, isDataApp, SHARE_LEVELS, SHARE_ROUTES, type ShareLevel, type ShareRoute, ShareStore } from "./data/shares.ts";
+import { tableDocumentsCatalog } from "./data/table-documents.ts";
 import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, readableTitle, renderGenericHold, renderHoldView } from "./hold-view.ts";
 import { type ChannelLookup, draftCheck, isPostizChannelList, isPostizCreatePost, parseChannels, renderPostizPost } from "./postiz.ts";
@@ -327,7 +329,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
   });
 
   /** A database account as the owner page lists it: label, endpoint display string and state. No user, no password. */
-  const dbAccountView = (a: DbAccount) => ({
+  const dbAccountView = (a: DbAccount, sslmode: DbAccount["sslmode"] = a.sslmode) => ({
     id: a.id,
     service: DATABASE_SERVICE[a.kind],
     source: "database",
@@ -337,6 +339,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     status: a.status,
     detail: a.detail,
     endpoint: a.endpoint,
+    // C373: the TLS mode (libpq meaning: require = encrypted, certificate not checked; verify-full = checked); never a credential
+    ...(sslmode ? { sslmode } : {}),
   });
 
   /** Workspace id: from the SDK context (slice / person principal), else the verified grant. C12: Composio user_id. */
@@ -842,17 +846,20 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     if (state === "gone") fail("share_instance_gone", "This app instance is not in the workspace list now, so it cannot read shared accounts. Try again later.", 403, LIST_RETRY);
     if (state === "unknown") fail("companion_list_unavailable", "Connect cannot check that this app is still installed. Update Connect.", 503, LIST_RETRY);
   };
-  /** The ONE refusal for every account the calling app cannot see (unknown, not a chat account, not connected, not shared with it). */
+  /** The ONE refusal for every account the calling app cannot see (unknown, not a chat or MCP account, not connected, not shared with it). */
   const noSuchAccount = (): never => fail("not_found", "No such account.", 404);
+  /** C373: the accounts of `connect_accounts` that serve data: chat accounts (messages) and MCP accounts (documents). */
+  const isDataSource = (a: Account | null | undefined): a is Account => (a?.source === "channel" || a?.source === "mcp") && a.status === "connected";
   const dataAccount = (s: Services, ctx: OpContext, raw: unknown, need: "available" | "shared", note?: { product?: string | null }): { account: Account; level: "available" | "shared"; product: string; since: number | null } => {
     const { product, instance } = dataCaller(ctx);
     if (note) note.product = product;
     const id = str(raw);
     const account = id ? s.accounts.get(id) : null;
-    if (account?.source !== "channel" || account.status !== "connected") return noSuchAccount();
-    // C240: the share must be bound to this product AND this instance (a row from before 0013 has no instance: no match)
+    if (!isDataSource(account)) return noSuchAccount();
+    // C240: the share must be bound to this product AND this instance (a row from before 0013 has no instance: no match).
+    // C373: an MCP share with route via_observer gives its product nothing (like a database share).
     const share = s.shares.forCaller(account.id, product, instance);
-    if (!share) return noSuchAccount();
+    if (share?.route !== "direct") return noSuchAccount();
     stillListed(ctx);
     if (need === "shared" && share.level !== "shared") fail("scope_denied", "This account is shared with you for its catalog only. Ask the owner to share it for reading.", 403);
     return { account, level: share.level, product, since: share.includeHistory ? null : share.setAt };
@@ -879,9 +886,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
    * current signed slice). false = the app was removed or reinstalled, or the row is from before 0013: it serves no call
    * and the owner shares again.
    */
-  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number; route?: ShareRoute }, callers: { product: string; instance: string }[]) => ({
+  const shareView = (r: { product: string; instance: string | null; level: string; includeHistory: boolean; setAt: number; route: ShareRoute }, callers: { product: string; instance: string }[], withRoute = true) => ({
     product: r.product,
-    ...(r.route ? { route: r.route } : {}),
+    // a chat share has no route (always direct); database and MCP shares show theirs
+    ...(withRoute ? { route: r.route } : {}),
     instance: r.instance,
     current: r.instance !== null && callers.some((c) => c.instance === r.instance && c.product === r.product),
     level: r.level,
@@ -914,6 +922,18 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       }
     },
   });
+  /** C373: data_pull input for dataset `documents` (forward only: a backward pull answers `direction_unsupported`). */
+  const documentsInput = (i: Input): DocumentsPullInput => {
+    if (i.direction === "backward") fail("direction_unsupported", "The documents dataset is pulled forward only. Pull again from the start to see changes.");
+    const collection = i.collection === undefined || i.collection === null ? null : (str(i.collection) ?? fail("collection_invalid", "collection must be a name from data_catalog."));
+    return {
+      cursor: str(i.cursor) ?? null,
+      collection,
+      since: timeArg(i.since, "since"),
+      until: timeArg(i.until, "until"),
+      limit: typeof i.limit === "number" ? i.limit : 20,
+    };
+  };
   const timeArg = (value: unknown, name: string): number | null => {
     const v = str(value);
     if (v === undefined) return null;
@@ -999,20 +1019,25 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const s = services(ctx);
           const { product, instance } = dataCaller(ctx);
           note.product = product;
-          const bound = s.shares.accountsForCaller(product, instance);
+          // C373: chat and MCP shares; an MCP share with route via_observer gives its product nothing, not even a line
+          const bound = s.shares.accountsForCaller(product, instance).filter((share) => share.route === "direct");
           // C336 RQ-3: database shares of this caller; a share with route via_observer gives its product nothing, not even a line
           const boundDb = s.dbShares.accountsForCaller(product, instance).filter((share) => share.route === "direct");
           if (bound.length > 0 || boundDb.length > 0) stillListed(ctx);
           const accounts = [
             ...bound.flatMap((share) => {
               const a = s.accounts.get(share.account);
-              return a?.source === "channel" && a.status === "connected"
-                ? [{ account: a.id, service: a.service, label: a.label, kinds: ["messages"], level: share.level }]
-                : [];
+              if (!isDataSource(a)) return [];
+              // `datasets`: what data_pull serves for the account (messages for a chat account, documents for an MCP account)
+              return a.source === "channel"
+                ? [{ account: a.id, service: a.service, label: a.label, kinds: ["messages"], datasets: [MESSAGES_DATASET], level: share.level }]
+                : [{ account: a.id, service: a.service, label: a.label, kinds: ["documents"], datasets: [DOCUMENTS_DATASET], level: share.level, source: "mcp" }];
             }),
             ...boundDb.flatMap((share) => {
               const a = s.databases.get(share.account);
-              return a?.status === "connected" ? [{ account: a.id, service: DATABASE_SERVICE[a.kind], label: a.label, kinds: ["table"], level: share.level, source: "database" }] : [];
+              return a?.status === "connected"
+                ? [{ account: a.id, service: DATABASE_SERVICE[a.kind], label: a.label, kinds: ["table", "documents"], datasets: [DOCUMENTS_DATASET], level: share.level, source: "database" }]
+                : [];
             }),
           ];
           return { accounts } as unknown as Json;
@@ -1029,7 +1054,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
             note.account = account.id;
             const tables = await s.dbService.catalog(account);
             note.rows = tables.length;
-            const datasets = tables.map((t) => ({
+            // C373: the pullable `documents` dataset (one collection per table, a document per page of rows) comes first
+            const datasets = [tableDocumentsCatalog(tables), ...tables.map((t) => ({
               dataset: t.dataset,
               title: t.dataset,
               kind: "table",
@@ -1037,11 +1063,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
               relation: t.relation,
               ...(t.approxRows === undefined ? {} : { approxRows: t.approxRows }),
               columns: t.columns,
-            }));
+            }))];
             return { account: account.id, service: DATABASE_SERVICE[account.kind], label: account.label, level, source: "database", datasets, untrusted: true } as unknown as Json;
           }
           const { account, level } = dataAccount(s, ctx, asInput(input).account, "available", note);
           note.account = account.id;
+          if (account.source === "mcp") {
+            // C373: collection names and counts from resources/list; never a resource text, never a tool call
+            const documents = await s.mcp.withResources(account, (session) => mcpDocumentsCatalog(session, account.label));
+            note.rows = documents.collections.length;
+            return { account: account.id, service: account.service, label: account.label, level, source: "mcp", datasets: [documents], untrusted: true } as unknown as Json;
+          }
           const history = messagesDeps(s, ctx).history(account.service);
           const reports = s.channels.provider(account.service).reports ?? { edits: false, deletions: false };
           return { account: account.id, service: account.service, label: account.label, level, datasets: [messagesCatalog(ctx.db, account, history, INBOX_RETENTION_MS, reports)], untrusted: true } as unknown as Json;
@@ -1054,12 +1086,28 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const s = services(ctx);
           const i = asInput(input);
           if (isDatabaseId(str(i.account) ?? "")) {
-            // a database dataset is delivered by lease (data_lease), never by pull; the share is checked first so a stranger learns nothing
-            dataDbAccount(s, ctx, i.account, "shared", note);
-            return fail("delivery_lease", "Database tables are not pulled through Connect.", 400);
+            // the share is checked first so a stranger learns nothing
+            const { account } = dataDbAccount(s, ctx, i.account, "shared", note);
+            note.account = account.id;
+            // a table dataset (schema.table) is delivered by lease (data_lease), never by pull
+            if (str(i.dataset) !== DOCUMENTS_DATASET) return fail("delivery_lease", "Database tables are not pulled through Connect. Pull the dataset documents.", 400);
+            // C373: table rows as CSV documents, read in one READ ONLY transaction
+            const page = await s.dbService.pullDocuments(account, documentsInput(i), { db: ctx.db, log: ctx.log });
+            note.rows = page.rows.length;
+            note.quarantined = page.quarantined ?? 0;
+            return { ...page, schema: DOCUMENTS_CONTRACT, untrusted: true } as unknown as Json;
           }
           const { account, since: ingestedFrom } = dataAccount(s, ctx, i.account, "shared", note);
           note.account = account.id;
+          if (account.source === "mcp") {
+            if (str(i.dataset) !== DOCUMENTS_DATASET) fail("not_found", "No such dataset on this account.", 404);
+            // C373: MCP resources as documents (resources/list + resources/read only; never a tool call)
+            const pull = documentsInput(i);
+            const page = await s.mcp.withResources(account, (session) => pullMcpDocuments({ db: ctx.db, log: ctx.log, fallbackName: account.label }, session, account.id, pull));
+            note.rows = page.rows.length;
+            note.quarantined = page.quarantined ?? 0;
+            return { ...page, schema: DOCUMENTS_CONTRACT, untrusted: true } as unknown as Json;
+          }
           if (str(i.dataset) !== MESSAGES_DATASET) fail("not_found", "No such dataset on this account.", 404);
           const direction = i.direction === "backward" ? "backward" : "forward";
           const pull: PullInput = {
@@ -1525,9 +1573,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       // miniapp-sdk >= 0.1.32), each with its provider; `ownInfra` marks one that runs on the owner's own infrastructure.
       const { callers, dataApps } = dataTargets(ctx);
       const accounts = [
-        ...s.accounts.list().map((a) => (a.source === "channel" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers)) } : accountView(a))),
+        // C373: MCP accounts list their shares too (dataset documents, with a route)
+        ...s.accounts.list().map((a) => (a.source === "channel" || a.source === "mcp" ? { ...accountView(a), shares: s.shares.forAccount(a.id).map((r) => shareView(r, callers, a.source === "mcp")) } : accountView(a))),
         // C336 RQ-3: database accounts, apart from the tool accounts; shares carry their route; never a user or a password
-        ...s.databases.list().map((a) => ({ ...dbAccountView(a), shares: s.dbShares.forAccount(a.id).map((r) => shareView(r, callers)) })),
+        ...(await Promise.all(s.databases.list().map(async (a) => ({ ...dbAccountView(a, await s.databases.tlsMode(a)), shares: s.dbShares.forAccount(a.id).map((r) => shareView(r, callers)) })))),
       ];
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
       return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION, leasesEnabled } as unknown as Json;
@@ -1543,18 +1592,23 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         if (!isDataApp(product)) fail("product_unknown", `Pick an app that reads data: ${Object.values(DATA_APPS).join(" or ")}.`);
         const level = str(i.level) as ShareLevel | undefined;
         if (!level || !SHARE_LEVELS.includes(level)) fail("level_invalid", "Pick none, available or shared.");
-        // C336 RQ-3: a database account is shared the same way, with a route (direct = the app may lease; via_observer = only Observer reads it)
+        // C336 RQ-3: a database account is shared the same way, with a route (direct = the app may read it; via_observer = only Observer reads it)
         const database = isDatabaseId(id) ? (s.databases.get(id) ?? fail("account_not_found", "No such database.", 404)) : null;
         const account = database ? null : s.accounts.get(id);
-        if (!database && account?.source !== "channel") fail("account_not_found", "No such chat connection.", 404);
-        if (level !== "none" && (database ? database.status !== "connected" : account?.status !== "connected")) fail("channel_account_not_connected", database ? "This database is not connected. Add it again first." : "This chat connection is not connected. Connect it again first.", 409);
-        // C354a: access to rows (a lease) is not offered yet, so a database is shared at `available` (table list) at most. A
-        // stored `shared` would silently turn into row access the day leases ship: refused now, the owner shares again then.
-        if (database && level === "shared" && !leasesEnabled) fail("lease_unavailable", "Access to the rows of a database is not offered yet. Share the database at “Table names only”.", 409);
-        const route = (str(i.route) ?? "direct") as ShareRoute;
+        // C373: an MCP account is shared like a database (dataset documents, with a route)
+        const mcp = account?.source === "mcp";
+        if (!database && account?.source !== "channel" && !mcp) fail("account_not_found", "No such chat connection or MCP server.", 404);
+        if (level !== "none" && (database ? database.status !== "connected" : account?.status !== "connected")) fail("channel_account_not_connected", database ? "This database is not connected. Add it again first." : "This connection is not connected. Connect it again first.", 409);
+        // C373: a database share at `shared` gives the documents dataset (rows as CSV, data_pull). It does not enable a lease:
+        // leases stay unshipped (C354a) and need their own decision before a `shared` share can ever mean a lease.
+        // C322(6) (Coordinator, C373): every source is ingested by Observer. A database or MCP share with Knowledge is
+        // `via_observer` (the default); `direct` is not offered for it. Observer itself is shared `direct`.
+        const routed = database !== null || mcp;
+        const route = (str(i.route) ?? (routed && product === "knowledge" ? "via_observer" : "direct")) as ShareRoute;
         if (!SHARE_ROUTES.includes(route)) fail("route_invalid", "Pick direct or via_observer.");
-        if (route !== "direct" && !database) fail("route_invalid", "Only a database share has a route.");
-        if (route === "via_observer" && product !== "knowledge") fail("route_invalid", "A share through Observer is for Knowledge. Share the database with Observer itself as direct.");
+        if (route !== "direct" && !routed) fail("route_invalid", "Only a database or MCP share has a route.");
+        if (route === "via_observer" && product !== "knowledge") fail("route_invalid", "A share through Observer is for Knowledge. Share the source with Observer itself as direct.");
+        if (routed && product === "knowledge" && route === "direct" && level !== "none") fail("route_invalid", "Knowledge reads databases and MCP servers through Observer. Share the source with Observer.");
         // C240: bind the share to the verified product AND the instance the owner picked, from the CURRENT signed slice.
         // Not listed (not installed, removed, reinstalled, an SDK without companionCallers, an expired slice) = refused.
         const { callers } = dataTargets(ctx);
@@ -1574,8 +1628,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const ended = changed && before ? s.leases.revokeOpen(id, product) : 0;
           ctx.log.info("database shared with an app", { account: id, product, instance, level: level as string, route, leasesEnded: ended });
         } else {
-          s.shares.set(id, product, level as ShareLevel, i.includeHistory === true, instance);
-          ctx.log.info("account shared with an app", { account: id, product, instance, level: level as string });
+          s.shares.set(id, product, level as ShareLevel, !mcp && i.includeHistory === true, instance, Date.now(), route);
+          ctx.log.info("account shared with an app", { account: id, product, instance, level: level as string, ...(mcp ? { route } : {}) });
         }
         // which instance, and whether it runs on the owner's own server (C240 item 3), not only the product
         const who = target ? `${DATA_APPS[product]} “${target.name}”${target.provider === OWN_INFRA_PROVIDER ? " (your own server)" : ""}` : DATA_APPS[product];
@@ -1586,16 +1640,24 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
               ? "only Observer reads it"
               : level === "available"
                 ? "table names only"
-                : "read-only database access on request"
+                : "rows as documents, read only"
+          : mcp
+            ? level === "none"
+              ? "not shared"
+              : route === "via_observer"
+                ? "only Observer reads it"
+                : level === "available"
+                  ? "collection names and counts only"
+                  : "documents, read only"
           : level === "none"
             ? "not shared"
             : level === "available"
               ? "names and counts only"
               : "messages, read only";
         ctx.receipt.summary(`Sharing of “${label}” with ${who}: ${what}`);
-        ctx.receipt.meta({ account: id, product, instance, level: level as string, includeHistory: !database && i.includeHistory === true, ...(database ? { route } : {}) });
-        const shares = (database ? s.dbShares : s.shares).forAccount(id).map((r) => shareView(r, callers));
-        return { account: id, product, instance, level, ...(database ? { route } : {}), shares } as unknown as Json;
+        ctx.receipt.meta({ account: id, product, instance, level: level as string, includeHistory: !routed && i.includeHistory === true, ...(routed ? { route } : {}) });
+        const shares = (database ? s.dbShares : s.shares).forAccount(id).map((r) => shareView(r, callers, routed));
+        return { account: id, product, instance, level, ...(routed ? { route } : {}), shares } as unknown as Json;
       });
     },
     // The owner (a person) sees which app asked for what: the last ACCESS_LOG_LIMIT audit lines, newest first. No message text.
@@ -1840,6 +1902,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const db = s.databases.get(id) ?? fail("account_not_found", "Account not found.", 404);
           s.leases.revokeOpen(id);
           s.dbShares.clearAccount(id);
+          clearSeen(ctx.db, id);
           return { account: dbAccountView(await s.databases.revoke(db.id)) } as unknown as Json;
         }
         const account = s.accounts.get(id) ?? fail("account_not_found", "Account not found.", 404);
@@ -1855,6 +1918,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
                   : s.accounts.update(id, { status: "revoked" });
         // C230 R3: a disconnected account is shared with no app any more (a new connection starts at none).
         s.shares.clearAccount(id);
+        clearSeen(ctx.db, id);
         return { account: accountView(revoked) };
       });
     },

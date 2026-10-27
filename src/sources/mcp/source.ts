@@ -13,8 +13,15 @@ import { entrySchema, type ToolRegistry, toolName } from "../../tools.ts";
 import type { FetchLike } from "../../util/http.ts";
 import { sha256Hex } from "../../util/ids.ts";
 import { assertEndpointAllowed, type Lookup } from "../../util/net-policy.ts";
-import { McpClient, McpError } from "./client.ts";
+import { McpClient, McpError, type McpResource, type McpResourceContent } from "./client.ts";
 import { authorization, discover, exchangeCode, type OAuthClient, type OAuthServer, type OAuthTokens, refresh, register } from "./oauth.ts";
+
+/** C373: what the documents producer may do with an MCP server: list and read resources. Never a tool call. */
+export interface McpResourceSession {
+  serverName: string | null;
+  listResources(cursor: string | null): Promise<{ resources: McpResource[]; nextCursor: string | null }>;
+  readResource(uri: string): Promise<McpResourceContent[]>;
+}
 
 /** What Connect keeps per MCP account in ctx.secrets (one name per account). */
 type StoredAuth =
@@ -233,6 +240,33 @@ export class McpSource {
       const oauth = (await this.#stored(account)).kind === "oauth";
       if (oauth && error instanceof McpError && error.code === "mcp_unauthorized") return run(true);
       throw error;
+    }
+  }
+
+  /**
+   * C373: a READ-ONLY session for the `documents` dataset: the server name, `resources/list` and `resources/read` only. The
+   * object handed to `fn` has no way to call a tool. An OAuth account whose token the server refuses at the start is
+   * refreshed once, as `execute` does.
+   */
+  async withResources<T>(account: Account, fn: (session: McpResourceSession) => Promise<T>): Promise<T> {
+    if (account.source !== "mcp" || account.status !== "connected" || !account.externalRef) throw new McpError("account_not_connected", "This account is not connected.");
+    const open = async (forceRefresh: boolean) => this.#client(account.externalRef as string, await this.#headers(account, forceRefresh));
+    let client: McpClient;
+    try {
+      client = await open(false);
+    } catch (error) {
+      const oauth = (await this.#stored(account)).kind === "oauth";
+      if (!(oauth && error instanceof McpError && error.code === "mcp_unauthorized")) throw error;
+      client = await open(true);
+    }
+    try {
+      return await fn({
+        serverName: client.serverName,
+        listResources: (cursor) => client.listResources(cursor ?? undefined),
+        readResource: (uri) => client.readResource(uri),
+      });
+    } finally {
+      await client.close();
     }
   }
 
