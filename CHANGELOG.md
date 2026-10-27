@@ -1,6 +1,16 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.6 (catalog 0.3.1; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.7 (catalog 0.3.1; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.7 (2026-10-27; C373 Jarvis T2 "bring your own API")
+
+A developer (or the owner) adds a service that no catalog entry and no Composio toolkit covers, in minutes and without a Connect release: give Connect the service's OpenAPI 3 / Swagger 2 description (JSON).
+- **Person ops** `api_preview` (compile and show every tool with its hold class; nothing saved), `api_add` (save; same name = replace; idempotency required) and `api_remove` (refused while an account is connected). The service id is `api_<name>`; it is listed by `services_search` (`own: true`, source `catalog`) and its accounts connect with `catalog_account_connect` (address + key sealed in Connect, the same https/public-address policy, Test with an optional GET `healthOperation`).
+- **Hold classes** come from the catalog compiler (`src/sources/catalog/openapi.ts`): GET/HEAD read, DELETE destructive, money by name always. New for own APIs: the developer's labels (`outward`, `destructive`, `money`, `reads` for a POST that only reads, `excluded`; operationId, "METHOD /path" or `*` patterns) and **fail-closed names** (`inferNames`): a write that no label names takes the class of its operationId (send, post, publish, schedule: outward; remove: destructive; a name with no known verb: outward). Catalog entries keep the method rule.
+- **Limits:** 2 MiB description, 500 operations, 50 own APIs, 200 patterns per label, plain-ASCII names and patterns. No key value is ever stored in the API row.
+- **Storage:** migration 0022 (expand only) `connect_own_apis`. Own APIs never shadow a catalog app; a failed catalog download does not hide them.
+- **Owner page:** Services gets "Your own API" (describe → check the tools and their classes → save).
+- Tests: `own-api.test.ts` (classes, input checks, preview/add/list/connect/call/remove end to end).
 
 ## 0.7.6 (2026-10-27; C373 Jarvis)
 

@@ -5,7 +5,7 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "sdkMajor": 1,
   "publisher": {
     "name": "Tealbrick",
@@ -2734,6 +2734,289 @@
       "effect": "read",
       "idempotency": "none",
       "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "api_preview",
+      "title": "Preview your own API",
+      "description": "Compile an OpenAPI 3 or Swagger 2 description (JSON) and show its tools and the hold class of each: GET reads, DELETE destructive, money by name or label, and a write that no label names takes the class of its name (send, post, publish: outward). Nothing is saved.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "spec",
+          "auth"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "description": "The service name shown in Connect (its id becomes api_<name>)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "spec": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2097152,
+            "description": "The OpenAPI 3.x or Swagger 2.0 description as JSON text (at most 2 MiB, 500 operations)."
+          },
+          "auth": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "header",
+                  "query",
+                  "basic",
+                  "none"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "prefix": {
+                "type": "string",
+                "maxLength": 32
+              }
+            }
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Hold labels: operationId, \"METHOD /path\" or * patterns. outward = reaches people or the public; destructive = removes; money = spends; reads = a POST that only reads; excluded = never offered.",
+            "properties": {
+              "outward": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "destructive": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "money": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "reads": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "excluded": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              }
+            }
+          },
+          "basePath": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "healthOperation": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "api_add",
+      "title": "Add your own API",
+      "description": "Save an OpenAPI description as a service of your own (same name = replace). It shows in the services list; connect an account of it with its address and key like a catalog app. The key stays in Connect.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "spec",
+          "auth"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "description": "The service name shown in Connect (its id becomes api_<name>)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "spec": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2097152,
+            "description": "The OpenAPI 3.x or Swagger 2.0 description as JSON text (at most 2 MiB, 500 operations)."
+          },
+          "auth": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "header",
+                  "query",
+                  "basic",
+                  "none"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "prefix": {
+                "type": "string",
+                "maxLength": 32
+              }
+            }
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Hold labels: operationId, \"METHOD /path\" or * patterns. outward = reaches people or the public; destructive = removes; money = spends; reads = a POST that only reads; excluded = never offered.",
+            "properties": {
+              "outward": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "destructive": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "money": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "reads": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "excluded": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              }
+            }
+          },
+          "basePath": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "healthOperation": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "create",
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "api_remove",
+      "title": "Remove your own API",
+      "description": "Remove a service you added. Refused while an account of it is connected.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string",
+            "maxLength": 64
+          }
+        }
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true,
       "audience": "person"
     },
     {

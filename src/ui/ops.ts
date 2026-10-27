@@ -22,6 +22,8 @@ export interface ServiceHit {
   baseUrlExample?: string;
   /** Catalog entries only: what credential the owner should use (e.g. "a dedicated View-only user"). */
   credentialHint?: string;
+  /** C373 T2: a service the owner added from their own OpenAPI description */
+  own?: boolean;
 }
 
 export interface Account {
@@ -156,6 +158,27 @@ export const catalogAccountConnect = (input: {
   kind: AccountKind;
   agent?: string;
 }) => callOp<{ account: Account }>("catalog_account_connect", input);
+/** C373 T2 "bring your own API": the input of api_preview / api_add and what they answer. */
+export interface OwnApiInput {
+  name: string;
+  description?: string;
+  spec: string;
+  auth: { type: "header" | "query" | "basic" | "none"; name?: string; prefix?: string };
+  labels?: { outward?: string[]; destructive?: string[]; money?: string[]; reads?: string[]; excluded?: string[] };
+  basePath?: string;
+  healthOperation?: string;
+}
+export interface OwnApiPreview {
+  service: string;
+  name: string;
+  operations: number;
+  counts: Record<string, number>;
+  tools: { operationId: string; method: string; path: string; effect: string; holdFamily?: string }[];
+  warnings: string[];
+}
+export const apiPreview = (input: OwnApiInput) => callOp<{ preview: OwnApiPreview }>("api_preview", input as unknown as Json);
+export const apiAdd = (input: OwnApiInput) => callOp<{ preview: OwnApiPreview }>("api_add", input as unknown as Json);
+export const apiRemove = (service: string) => callOp<{ removed: string }>("api_remove", { service });
 export const accountUpdate = (id: string, label: string) => callOp<{ account: Account }>("account_update", { id, label });
 export const accountDisconnect = (id: string) => callOp<{ account: Account }>("account_disconnect", { id });
 export const toolsRefresh = (service: string) => callOp<{ service: string; tools: Json }>("tools_refresh", { service });

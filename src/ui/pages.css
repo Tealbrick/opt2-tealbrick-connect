@@ -56,3 +56,8 @@
 .hold-details .hold-facts dd { margin: 0; overflow-wrap: anywhere; }
 .hold-details pre.view { margin: 4px 0 0; padding: 10px 12px; max-height: 360px; overflow: auto; border-radius: var(--tb-radius-brick); background: var(--tb-plate); color: var(--tb-ink); font-family: var(--tb-font-mono); font-size: var(--tb-text-tag); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 560px) { .hold-details .hold-facts div { grid-template-columns: 1fr; gap: 0; } }
+
+/* C373 T2: own API card and the tools table of the check step */
+.own-api { margin-top: var(--tb-space-6, 24px); display: grid; gap: var(--tb-space-2, 8px); justify-items: start; }
+.own-api-tools { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.own-api-tools th, .own-api-tools td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--tb-border); overflow-wrap: anywhere; }

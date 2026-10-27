@@ -52,6 +52,7 @@ import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, readableTit
 import { type ChannelLookup, draftCheck, isPostizChannelList, isPostizCreatePost, parseChannels, renderPostizPost } from "./postiz.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
+import { type OwnApiInput, OwnApiStore } from "./sources/catalog/own-api.ts";
 import { CatalogError, CatalogSource } from "./sources/catalog/source.ts";
 import { ComposioClient, ComposioError, type ComposioToolkit } from "./sources/composio/client.ts";
 import { loadPolicies } from "./sources/composio/policy.ts";
@@ -170,6 +171,19 @@ type ServiceCtx = { db: Db; getKey(name: string): Promise<string | null>; secret
 type Input = Record<string, unknown>;
 const asInput = (value: Json): Input => (value && typeof value === "object" && !Array.isArray(value) ? (value as Input) : {});
 const str = (value: unknown): string | undefined => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+/** C373 T2: the own-API op input as given; buildOwnApi checks every field and answers own_api_invalid with a sentence. */
+const ownApiInput = (value: Json): OwnApiInput => {
+  const i = asInput(value);
+  return {
+    name: String(i.name ?? ""),
+    spec: typeof i.spec === "string" ? i.spec : "",
+    auth: (i.auth ?? { type: "none" }) as OwnApiInput["auth"],
+    ...(typeof i.description === "string" ? { description: i.description } : {}),
+    ...(i.labels && typeof i.labels === "object" ? { labels: i.labels as NonNullable<OwnApiInput["labels"]> } : {}),
+    ...(typeof i.basePath === "string" ? { basePath: i.basePath } : {}),
+    ...(typeof i.healthOperation === "string" ? { healthOperation: i.healthOperation } : {}),
+  };
+};
 /** Optional agent argument `relays` (C73): narrow to some of the agent's own relays. */
 const relaysArg = (value: unknown): { relays?: string[] } => {
   if (!Array.isArray(value)) return {};
@@ -263,6 +277,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       secrets,
       fetchImpl: outbound,
       ...(env.catalogAllowOrigins ? { allowOrigins: env.catalogAllowOrigins } : {}),
+      ownApis: new OwnApiStore(db),
     });
     const mcp = new McpSource({
       db,
@@ -1564,6 +1579,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
             fields: a.fields,
             baseUrlExample: a.baseUrlExample,
             ...(a.credentialHint ? { credentialHint: a.credentialHint } : {}),
+            ...(a.own ? { own: true } : {}),
           }));
         if (!(await ctx.getKey(COMPOSIO_KEY))) return { composioKey: false, catalogAvailable, services: catalog };
         const toolkits = await toolkitCache.get(() => composioClient(ctx.getKey));
@@ -1957,6 +1973,25 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           ownerConfirmedRead: ownerReadOf(ctx.db, t.name),
         }));
         return { service, tools } as unknown as Json;
+      });
+    },
+    // C373 T2 "bring your own API": the owner or the developer adds an OpenAPI description; Connect compiles it with the catalog
+    // compiler (same hold classes, own labels, fail-closed names) and lists it as a service. Accounts: catalog_account_connect.
+    async api_preview(input, ctx) {
+      return guard(async () => ({ preview: (await services(ctx).catalog.previewOwn(ownApiInput(input))) as unknown as Json }));
+    },
+    async api_add(input, ctx) {
+      return guard(async () => {
+        const preview = await services(ctx).catalog.addOwn(ownApiInput(input));
+        ctx.log.info("own api saved", { service: preview.service, operations: preview.operations });
+        return { preview: preview as unknown as Json };
+      });
+    },
+    async api_remove(input, ctx) {
+      return guard(async () => {
+        const service = str(asInput(input).service) ?? fail("service_required", "Name the API to remove.");
+        await services(ctx).catalog.removeOwn(service);
+        return { removed: service };
       });
     },
     async mcp_tool_read_set(input, ctx) {

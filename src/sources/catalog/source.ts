@@ -18,6 +18,7 @@ import type { FetchLike } from "../../util/http.ts";
 import { assertEndpointAllowed, type Lookup } from "../../util/net-policy.ts";
 import { type CatalogAuth, callOperation, credentialFields } from "./http.ts";
 import { type CompiledOperation, compile, type EntryLabels } from "./openapi.ts";
+import { buildOwnApi, OWN_APIS_MAX, type OwnApiInput, type OwnApiPreview, type OwnApiStore } from "./own-api.ts";
 
 export const CATALOG_FORMAT = "tealbrick.catalog/1";
 /**
@@ -127,6 +128,8 @@ export interface CatalogDeps {
   fetchImpl?: FetchLike;
   lookup?: Lookup;
   allowOrigins?: readonly string[];
+  /** C373 T2: the owner's own API descriptions (migration 0022); absent = none */
+  ownApis?: OwnApiStore;
 }
 
 export class CatalogSource {
@@ -138,9 +141,25 @@ export class CatalogSource {
     this.#d = deps;
   }
 
-  /** Load the pinned artifact (cached on the data volume, verified on every load). */
+  /** The pinned catalog plus the owner's own APIs (C373 T2). An own API never shadows a catalog app (its id starts with `api_`). */
   async apps(): Promise<Map<string, CatalogApp>> {
     if (this.#apps) return this.#apps;
+    const own = this.#d.ownApis?.list() ?? [];
+    let apps: Map<string, CatalogApp>;
+    try {
+      apps = await this.#catalogApps();
+    } catch (error) {
+      // the catalog download failing must not hide the owner's own APIs; not cached, so the catalog is tried again next time
+      if (own.length === 0) throw error;
+      return new Map(own.map((a) => [a.id, a]));
+    }
+    for (const a of own) if (!apps.has(a.id)) apps.set(a.id, a);
+    this.#apps = apps;
+    return apps;
+  }
+
+  /** Load the pinned artifact (cached on the data volume, verified on every load). */
+  async #catalogApps(): Promise<Map<string, CatalogApp>> {
     const artifact = this.#d.artifact ?? (() => {
       throw new CatalogError("catalog_not_declared", "The manifest declares no catalog artifact.");
     })();
@@ -156,8 +175,44 @@ export class CatalogSource {
       writeFileSync(`${file}.tmp`, gz);
       renameSync(`${file}.tmp`, file);
     }
-    this.#apps = new Map(parseBundle(gz, artifact.sha256).map((a) => [a.id, a]));
-    return this.#apps;
+    return new Map(parseBundle(gz, artifact.sha256).map((a) => [a.id, a]));
+  }
+
+  /** C373 T2: compile an own API description and show its tools and hold classes; nothing is saved. */
+  async previewOwn(input: OwnApiInput): Promise<OwnApiPreview> {
+    return buildOwnApi(input, await this.#reserved()).preview;
+  }
+
+  /**
+   * C373 T2: save an own API (same name = replace) and re-make its tools when accounts of it are connected. The service then
+   * shows in services_search; its accounts connect with catalog_account_connect.
+   */
+  async addOwn(input: OwnApiInput): Promise<OwnApiPreview> {
+    const store = this.#d.ownApis ?? (() => {
+      throw new CatalogError("own_api_unavailable", "Own APIs are not available here.");
+    })();
+    const { app, row, preview } = buildOwnApi(input, await this.#reserved());
+    if (!store.exists(app.id) && store.count() >= OWN_APIS_MAX) throw new CatalogError("own_api_limit", `At most ${OWN_APIS_MAX} own APIs.`);
+    store.put(row);
+    this.#apps = null;
+    this.#compiled.delete(app.id);
+    if (this.#d.accounts.list({ service: app.id, status: "connected" }).length > 0) await this.syncTools(app.id);
+    return preview;
+  }
+
+  /** C373 T2: remove an own API. Refused while an account of it is connected (disconnect them first). */
+  async removeOwn(service: string): Promise<void> {
+    const store = this.#d.ownApis;
+    if (!store?.exists(service)) throw new CatalogError("catalog_app_unknown", `Unknown own API ${service}.`);
+    if (this.#d.accounts.list({ service, status: "connected" }).length > 0) throw new CatalogError("own_api_in_use", "Disconnect the accounts of this API first.");
+    store.remove(service);
+    this.#apps = null;
+    this.#compiled.delete(service);
+    this.#d.tools.removeService("catalog", service);
+  }
+
+  async #reserved(): Promise<Set<string>> {
+    return new Set((await this.#catalogApps().catch(() => new Map<string, CatalogApp>())).keys());
   }
 
   async #compiledFor(app: CatalogApp) {
@@ -171,8 +226,9 @@ export class CatalogSource {
     return c;
   }
 
-  async listApps(): Promise<{ service: string; name: string; description: string; category: string; version: string; fields: string[]; baseUrlExample: string; credentialHint?: string }[]> {
+  async listApps(): Promise<{ service: string; name: string; description: string; category: string; version: string; fields: string[]; baseUrlExample: string; credentialHint?: string; own?: true }[]> {
     return [...(await this.apps()).values()].map((a) => ({
+      ...(a.id.startsWith("api_") && this.#d.ownApis?.exists(a.id) ? { own: true as const } : {}),
       service: a.id,
       name: a.displayName,
       description: a.description,

@@ -8,7 +8,7 @@
  */
 import type { CrudAction, JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
 
-import { classify, isActionWord, keepsFullCrud, nameParts, namesMoney, type ToolClass, withCrud } from "../../effect.ts";
+import { classify, inferFromName, isActionWord, keepsFullCrud, nameParts, namesMoney, type ToolClass, withCrud } from "../../effect.ts";
 import { headerDefault, isJsonType } from "./http.ts";
 
 export const METHODS = ["get", "head", "options", "post", "put", "patch", "delete"] as const;
@@ -52,6 +52,14 @@ export interface EntryLabels {
   outward?: string[];
   destructive?: string[];
   reads?: string[];
+  /** C373 T2: operations that spend money although their name does not say so (always `money`, always held). */
+  money?: string[];
+  /**
+   * C373 T2 (own APIs, fail closed): a non-read operation that no label names takes the class of its name (inferFromName on the
+   * operationId: send/post/publish → outward, delete/remove → destructive, a name with no known verb → outward). Catalog
+   * entries are curated and keep the method rule (POST/PUT/PATCH = write).
+   */
+  inferNames?: boolean;
   excluded?: { operation: string; reason: string }[];
   /** C276a review #17: every write keeps the full [create, update] (identity providers and other admin-only apps). */
   fullCrud?: boolean;
@@ -280,12 +288,18 @@ export function compile(raw: unknown, labels: EntryLabels = {}): { basePath: str
       const readMethod = READ_METHODS.has(method);
       const readByLabel = method === "post" && (labels.reads ?? []).some((pattern) => patternMatches(pattern, subject));
       // WebDAV MOVE removes the source path (Coordinator 2026-10-20: the update + delete class).
-      const destructive = method === "delete" || method === "move" || (labels.destructive ?? []).some((pattern) => patternMatches(pattern, subject));
-      const outward = (labels.outward ?? []).some((pattern) => patternMatches(pattern, subject));
+      let destructive = method === "delete" || method === "move" || (labels.destructive ?? []).some((pattern) => patternMatches(pattern, subject));
+      let outward = (labels.outward ?? []).some((pattern) => patternMatches(pattern, subject));
       const sends = (labels.firstContact ?? []).find((f) => patternMatches(f.operation, subject));
       if (sends) usedSends.add(sends.operation);
-      // Money movement on a non-read method is always `money` (always held, SEC-02).
-      const money = !readMethod && namesMoney(`${operationId} ${path}`);
+      // Money movement on a non-read method is always `money` (always held, SEC-02); C373 T2: also where a label says so.
+      let money = !readMethod && (namesMoney(`${operationId} ${path}`) || (labels.money ?? []).some((pattern) => patternMatches(pattern, subject)));
+      if (labels.inferNames && !readMethod && !readByLabel && !destructive && !outward && !money) {
+        const inferred = inferFromName(operationId).effect;
+        if (inferred === "destructive") destructive = true;
+        else if (inferred === "money") money = true;
+        else if (inferred === "outward") outward = true;
+      }
       const cls = withCrud(classify({ write: !readMethod && !readByLabel, outward, destructive, money }), labels.fullCrud ? null : catalogCrud(method, path, op["x-tealbrick-crud"], rec(pathItem.get) !== undefined, operationId));
 
       const group = (location: Parameter["in"]) => {
