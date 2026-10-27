@@ -29,6 +29,7 @@ import {
 import { channelProviders } from "./channels/registry.ts";
 import { ACTIONS_EXPIRED_NOTE, type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
+import { isToolShareApp, TOOL_SHARE_APPS, ToolShareStore } from "./data/tool-shares.ts";
 import {
   DATABASE_KINDS,
   DATABASE_RECOMMENDATION,
@@ -402,6 +403,21 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
   };
 
 
+  /**
+   * C373 Jarvis (Coordinator approval): an APP caller (the Evolving Workflows engine) uses an account only through an owner tool
+   * share (connect_tool_shares, migration 0024) bound to its verified product AND exact instance, while that instance is still
+   * listed, and only for a tool whose resolved class is READ. Every check runs per call; write, outward, destructive and money
+   * tools stay agent-only (holds). Agents and people never take this path.
+   */
+  const appToolAccounts = (ctx: OpContext, s: Services, row: { service: string; crud: readonly CrudAction[]; effect?: string }): Account[] => {
+    const caller = verifiedAppCaller(ctx) ?? fail("caller_unverified", "The calling app has no verified product, so it cannot use connected accounts.", 403);
+    if (!isToolShareApp(caller.product)) fail("no_access", "Apps cannot call connected-service tools, except a workflow app the owner shared an account with.", 403);
+    if (row.effect !== "read" || row.crud.some((a) => a !== "read")) fail("app_read_only", "An app may call only READ tools of a shared account. Writes, sends, deletions and payments stay with agents and the owner's approval.", 403);
+    stillListed(ctx);
+    const shares = new ToolShareStore(ctx.db);
+    return s.accounts.list({ service: row.service, status: "connected" }).filter((a) => a.kind === "as_me" && shares.get(a.id, caller.product)?.instance === caller.instance);
+  };
+
   // ── callers and sender identities (C86, F20) ──
 
   /** C86: an app caller with no workspace sender for this channel (409, not retryable; names the settings page). */
@@ -632,8 +648,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
   };
 
   /** The ONE account choice of a dynamic tool call (the call and its hold view use the same account). */
-  const pickAccount = async (ctx: OpContext, s: Services, row: { service: string; crud: readonly CrudAction[] }, selector: unknown): Promise<Account> => {
-    const usable = await usableAccounts(ctx, s, row.service, row.crud);
+  const pickAccount = async (ctx: OpContext, s: Services, row: { service: string; crud: readonly CrudAction[]; effect?: string }, selector: unknown): Promise<Account> => {
+    const usable = ctx.caller.type === "app" ? appToolAccounts(ctx, s, row) : await usableAccounts(ctx, s, row.service, row.crud);
     let account: Account | undefined;
     const wanted = str(selector);
     if (wanted) {
@@ -1603,8 +1619,16 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         // C336 RQ-3: database accounts, apart from the tool accounts; shares carry their route; never a user or a password
         ...(await Promise.all(s.databases.list().map(async (a) => ({ ...dbAccountView(a, await s.databases.tlsMode(a)), shares: s.dbShares.forAccount(a.id).map((r) => shareView(r, callers)) })))),
       ];
+      // C373 Jarvis: tool accounts list their read-tool shares; `toolApps` = the workflow app instances one can share with
+      const toolShares = new ToolShareStore(ctx.db);
+      const toolCallers = companionCallersFor(ctx).filter((c) => isToolShareApp(c.product));
+      const withToolShares = accounts.map((a) => {
+        const row = a as { id?: string; source?: string };
+        return row.id && ["composio", "catalog", "mcp"].includes(String(row.source)) ? { ...a, toolShares: toolShares.forAccount(row.id).map((t) => ({ product: t.product, instance: t.instance, current: toolCallers.some((c) => c.product === t.product && c.instance === t.instance), setAt: new Date(t.setAt).toISOString() })) } : a;
+      });
+      const toolApps = Object.entries(TOOL_SHARE_APPS).map(([product, name]) => ({ product, name, instances: toolCallers.filter((c) => c.product === product).map((c) => ({ instance: c.instance, name: c.name })) }));
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
-      return { accounts, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION, leasesEnabled } as unknown as Json;
+      return { accounts: withToolShares, toolApps, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION, leasesEnabled } as unknown as Json;
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
@@ -1974,6 +1998,31 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           ownerConfirmedRead: ownerReadOf(ctx.db, t.name),
         }));
         return { service, tools } as unknown as Json;
+      });
+    },
+    // C373 Jarvis: the owner shares one account with one Evolving Workflows instance for READ tools (off by default; false = kill).
+    async account_tools_share(input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner shares accounts with apps.", 403);
+        const s = services(ctx);
+        const i = asInput(input);
+        const account = s.accounts.get(str(i.account) ?? fail("account_required", "Pick the account to share.")) ?? fail("account_not_found", "No such account.", 404);
+        if (!["composio", "catalog", "mcp"].includes(account.source)) fail("account_not_found", "Only accounts with tools (Composio, catalog, own API, MCP) can be shared for read tools.", 404);
+        const product = str(i.product) ?? fail("product_required", "Pick the app to share with.");
+        if (!isToolShareApp(product)) fail("product_unknown", `Accounts can be shared for read tools with: ${Object.values(TOOL_SHARE_APPS).join(", ")}.`);
+        const store = new ToolShareStore(ctx.db);
+        if (i.share !== true) {
+          const removed = store.remove(account.id, product);
+          ctx.log.info("tool share removed", { account: account.id, product, removed });
+          return { account: account.id, product, shared: false };
+        }
+        if (account.status !== "connected") fail("account_not_connected", "This account is not connected. Connect it again first.", 409);
+        if (account.kind !== "as_me") fail("account_kind_invalid", "An account an agent owns (as itself) cannot be shared with an app.", 409);
+        const instance = str(i.instance) ?? fail("instance_required", "Pick the installed app instance.");
+        if (!companionCallersFor(ctx).some((c) => c.product === product && c.instance === instance)) fail("instance_unknown", "That app instance is not installed in this workspace (or Connect cannot check it). Pick it again from the list.", 409);
+        store.set(account.id, product, instance);
+        ctx.log.info("tool share set", { account: account.id, product, instance });
+        return { account: account.id, product, instance, shared: true };
       });
     },
     // C373 T3: a hold policy per MCP server; it can only raise classes (a budget change named update_* becomes money).
