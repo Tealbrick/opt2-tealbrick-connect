@@ -1,6 +1,14 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.7 (catalog 0.3.1; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.8 (catalog 0.3.1; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.8 (2026-10-27; C373 Jarvis T3 "MCP hold policy")
+
+An MCP server's tools are classed by its annotations and their names. Found live on DEV: `metaads_update_campaign_budget` on an MCP server was a plain write (not held). Now the owner, or the developer building for the owner, sets a hold policy per MCP server.
+- **Person ops** `mcp_policy_get` / `mcp_policy_set {service, policy: {money, destructive, outward, writes}}`: `*` patterns on the server's own tool names (case-insensitive, the Composio policy matcher). The first list that names a tool, money first, sets its class **only when that is stricter** (money > destructive > outward > write > read). A policy never lowers a class; trusting a read-only claim stays `mcp_tool_read_set` (X-03). A money name stays money. Saving re-classes the server's tools at once (one connected account is enough); an empty policy removes it.
+- **Storage:** migration 0023 (expand only) `connect_mcp_policies`.
+- **Owner page:** Accounts, under an MCP server: "Hold policy" (four lists, Save).
+- Tests: `mcp-policy.test.ts` (raise-only rules, input checks, set → re-classed tools → get → empty removes).
 
 ## 0.7.7 (2026-10-27; C373 Jarvis T2 "bring your own API")
 

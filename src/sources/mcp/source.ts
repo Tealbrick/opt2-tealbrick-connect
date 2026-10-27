@@ -15,6 +15,7 @@ import { sha256Hex } from "../../util/ids.ts";
 import { assertEndpointAllowed, type Lookup } from "../../util/net-policy.ts";
 import { McpClient, McpError, type McpResource, type McpResourceContent } from "./client.ts";
 import { authorization, discover, exchangeCode, type OAuthClient, type OAuthServer, type OAuthTokens, refresh, register } from "./oauth.ts";
+import { type McpPolicy, McpPolicyStore, raiseByPolicy } from "./policy.ts";
 
 /** C373: what the documents producer may do with an MCP server: list and read resources. Never a tool call. */
 export interface McpResourceSession {
@@ -193,6 +194,8 @@ export class McpSource {
   #register(service: string, tools: Awaited<ReturnType<McpClient["listTools"]>>): number {
     // X-03: a server's readOnlyHint is believed only for tools the owner confirmed as read in Connect.
     const ownerRead = new Set(this.#d.db.prepare("SELECT name FROM connect_tool_owner_reads").all().map((r) => String(r.name)));
+    // C373 T3: the owner's or developer's policy for this server can only raise a class (money > destructive > outward > write)
+    const policy = new McpPolicyStore(this.#d.db).get(service);
     return this.#d.tools.replaceService(
       "mcp",
       service,
@@ -205,11 +208,24 @@ export class McpSource {
           title: (t.title ?? t.name).slice(0, 200),
           description: t.description ?? t.name,
           inputSchema: entrySchema(t.inputSchema),
-          ...classifyMcpTool(t.name, t.annotations, readClaim && ownerRead.has(name)),
+          ...raiseByPolicy(t.name, classifyMcpTool(t.name, t.annotations, readClaim && ownerRead.has(name)), policy),
           ...(readClaim ? { readClaim: true } : {}),
         };
       }),
     );
+  }
+
+  /** C373 T3: the server's policy (null = none). */
+  policyGet(service: string): McpPolicy | null {
+    return new McpPolicyStore(this.#d.db).get(service);
+  }
+
+  /** C373 T3: save the policy of a connected server and re-make its tool classes now (one connected account is enough). */
+  async policySet(service: string, policy: McpPolicy): Promise<number> {
+    const account = this.#d.accounts.list({ service, status: "connected" }).find((a) => a.source === "mcp");
+    if (!account) throw new McpError("mcp_service_unknown", "No connected MCP server with this service name.", 404);
+    new McpPolicyStore(this.#d.db).set(service, policy);
+    return this.syncTools(account);
   }
 
   async syncTools(account: Account): Promise<number> {

@@ -193,6 +193,11 @@ export interface McpToolRow {
   ownerConfirmedRead: boolean;
 }
 export const mcpToolsList = (service: string) => callOp<{ service: string; tools: McpToolRow[] }>("mcp_tools_list", { service });
+/** C373 T3: the hold policy of one MCP server; it only raises classes. */
+export type McpPolicy = { money?: string[]; destructive?: string[]; outward?: string[]; writes?: string[] };
+export const mcpPolicyGet = (service: string) => callOp<{ service: string; policy: McpPolicy }>("mcp_policy_get", { service });
+export const mcpPolicySet = (service: string, policy: McpPolicy) =>
+  callOp<{ service: string; tools: number; classes: { name: string; effect: string; holdFamily: string | null }[] }>("mcp_policy_set", { service, policy });
 export const mcpToolReadSet = (name: string, read: boolean) => callOp<{ name: string; effect: string; ownerConfirmedRead: boolean }>("mcp_tool_read_set", { name, read });
 
 export const buzzIdentitiesList = () => callOp<{ relay: string | null; relays: string[]; relayProblems: string[]; agents: BuzzAgentRow[] }>("buzz_identities_list", {});
