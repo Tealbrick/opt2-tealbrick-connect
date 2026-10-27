@@ -1,8 +1,8 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.4 (catalog 0.3.1; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.5 (catalog 0.3.1; contacts_list for Governance, G-5 C373; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
 
-## Unreleased (on top of 0.7.4)
+## 0.7.5 (prepared 2026-10-27; on top of 0.7.4)
 
 G-5 (C373): `contacts_list`, who each agent has written to and on which channel, for the Governance app (`fleet`) Topology contacts layer.
 - **New agent-audience op `contacts_list`** (read, no hold, no receipt, idempotency none; `src/contacts.ts`). Input `{cursor?, since?}` (since = epoch ms, inclusive). Output `{contacts: [{agent, channel, handle, account?, firstContactAt}], nextCursor}`, 200 per page, stable order (firstContactAt, agent, handle; then channel and account). Sources: `connect_buzz_contacts` (channel `buzz`), `connect_channel_contacts` (channel = the bot account's service; agent = the account's `owner_agent`), `connect_tool_contacts` (channel `tool`, the raw recipient address). `handle` is canonical (`normalizeHandle`) for buzz, slack and telegram, `<service>:<id>` for other chat services, the raw address for tools. `agent` is null for the workspace sender, an app caller (ins_) and a bot account bound to no agent; `account` is the owner-typed account label. Never message content, conversation ids, the Buzz DM channel, account ids or secrets.
