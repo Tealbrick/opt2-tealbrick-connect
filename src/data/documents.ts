@@ -237,7 +237,7 @@ export interface ReapInput {
  * (version + 1, so a new rev) and a `deleted: true` row. `done` is true when no candidate is left; else continue with
  * `offset`. A record outside the window, or one the probe could not decide, stays a candidate for the next scan.
  */
-export async function reapDeleted(o: ReapInput): Promise<{ rows: DocumentRow[]; offset: number; done: boolean }> {
+export async function reapDeleted(o: ReapInput): Promise<{ rows: DocumentRow[]; offset: number; done: boolean; retryAfterS?: number }> {
   const rows: DocumentRow[] = [];
   let kept = o.offset;
   const next = (n: number) =>
@@ -252,7 +252,14 @@ export async function reapDeleted(o: ReapInput): Promise<{ rows: DocumentRow[]; 
       if (rows.length >= o.capacity || (o.probe && o.canProbe && !o.canProbe())) return { rows, offset: kept, done: false };
       const docId = String(v.doc_id);
       if (o.probe) {
-        const seen = await o.probe(docId);
+        let seen: Presence;
+        try {
+          seen = await o.probe(docId);
+        } catch (error) {
+          // QA delta D1: the source says "slow down": hand back the deletion rows made so far (the probed record is NOT tombstoned) and try again later
+          if (error instanceof RetryLater) return { rows, offset: kept, done: false, retryAfterS: error.retryAfterS };
+          throw error;
+        }
         if (seen === "present") {
           markSeen(o.db, o.account, docId, o.scan);
           continue;
@@ -787,9 +794,11 @@ export async function pullMcpDocuments(deps: McpDocumentsDeps, session: McpResou
   let reads = 0;
   let handled = 0;
   let unreachable = 0;
+  // the source has listed at least one resource in this scan (carried in the cursor): an empty list alone never deletes an id that cannot be read again
+  let listedAny = state.la === 1;
   const started = now();
   const cursorAt = (extra: CursorState = {}) =>
-    encodeDocCursor(deps.db, account, input.collection, reaping ? { s: scan, ...extra } : { m: listCursor, o: offset, p: listPages, ...(scan === null ? {} : { s: scan }), ...extra }, now());
+    encodeDocCursor(deps.db, account, input.collection, { m: listCursor, o: offset, p: listPages, ...(scan === null ? {} : { s: scan }), ...(listedAny ? { la: 1 } : {}), ...extra }, now());
   const finish = (page: DocumentsPage): DocumentsPage => {
     const out = { ...page, ...(quarantined > 0 ? { quarantined } : {}), ...(skipped > 0 ? { skipped } : {}) };
     assertDocumentsConform(out, deps.log);
@@ -814,6 +823,7 @@ export async function pullMcpDocuments(deps: McpDocumentsDeps, session: McpResou
         if (!wait) throw error;
         return finish({ rows, nextCursor: rows.length > 0 ? cursorAt() : input.cursor, exhausted: false, retryAfterS: wait.retryAfterS });
       }
+      if (listed.resources.length > 0) listedAny = true;
       for (; offset < listed.resources.length; offset += 1) {
         if (rows.length >= limit || spent()) return finish({ rows, nextCursor: cursorAt(), exhausted: false });
         handled += 1;
@@ -894,9 +904,10 @@ export async function pullMcpDocuments(deps: McpDocumentsDeps, session: McpResou
   if (reaping || (complete && canReap)) {
     if (!canReap) return finish({ rows, nextCursor: null, exhausted: true });
     const probe = async (docId: string): Promise<Presence> => {
-      // an id that is a hash had credentials in its uri: it cannot be read again, the list is the proof
-      if (docId.startsWith("h:")) return "gone";
+      // an id that is a hash had credentials in its uri: it cannot be read again, so the list is the proof, but only a list that was not empty (QA delta D3)
+      if (docId.startsWith("h:")) return listedAny ? "gone" : "unknown";
       reads += 1;
+      handled += 1;
       try {
         return (await session.readResource(docId)).length > 0 ? "present" : "gone";
       } catch (error) {
@@ -922,12 +933,13 @@ export async function pullMcpDocuments(deps: McpDocumentsDeps, session: McpResou
         canProbe: () => !spent(),
       });
       rows.push(...reaped.rows);
-      if (!reaped.done) return finish({ rows, nextCursor: encodeDocCursor(deps.db, account, input.collection, { rk: reaped.offset, s: scan }, now()), exhausted: false });
+      // QA delta D1/D2: a probe that hit the read or time budget, or a "slow down", continues on the next pull from the cursor
+      if (!reaped.done) return finish({ rows, nextCursor: encodeDocCursor(deps.db, account, input.collection, { rk: reaped.offset, s: scan, ...(listedAny ? { la: 1 } : {}) }, now()), exhausted: false, ...(reaped.retryAfterS === undefined ? {} : { retryAfterS: reaped.retryAfterS }) });
       pruneTombstones(deps.db, account, now());
     } catch (error) {
       const wait = error instanceof RetryLater ? error : null;
       if (!wait) throw error;
-      return finish({ rows, nextCursor: encodeDocCursor(deps.db, account, input.collection, { rk: reaping ? stateInt(state.rk) : 0, s: scan }, now()), exhausted: false, retryAfterS: wait.retryAfterS });
+      return finish({ rows, nextCursor: encodeDocCursor(deps.db, account, input.collection, { rk: reaping ? stateInt(state.rk) : 0, s: scan, ...(listedAny ? { la: 1 } : {}) }, now()), exhausted: false, retryAfterS: wait.retryAfterS });
     }
   }
   return finish({ rows, nextCursor: null, exhausted: true, ...(partial ? { partial: true as const } : {}) });

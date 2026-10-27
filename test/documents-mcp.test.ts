@@ -644,3 +644,105 @@ test("QA-CONNECT35-13: a cut scan (a list that repeats a cursor) deletes nothing
   assert.equal(cut.flatMap((p) => p.rows).filter((r) => r.deleted).length, 0);
   assert.equal(cut.at(-1)?.partial, true);
 });
+
+
+test("QA delta D1: a 429 during the deletion re-read keeps the tombstones made so far and tombstones nothing else", async () => {
+  const db = memDb();
+  const docs = Array.from({ length: 10 }, (_v, k) => `x://c/f${k}`);
+  let list: string[] = docs;
+  let mode: "ok" | "gone3-then-429" | "ok-after" = "ok";
+  let probes = 0;
+  const impl: McpResourceSession = {
+    serverName: "srv",
+    async listResources() {
+      return { resources: list.map((uri) => ({ uri, mimeType: "text/plain" })), nextCursor: null };
+    },
+    async readResource(uri) {
+      if (mode === "gone3-then-429" && uri !== docs[9]) {
+        probes += 1;
+        if (probes <= 3) throw new McpError("mcp_rpc_error", "MCP error -32002: not found");
+        throw new McpError("mcp_http_error", "The MCP server answered 429.", 429);
+      }
+      if (mode === "ok-after") throw new McpError("mcp_rpc_error", "MCP error -32002: not found");
+      return [{ uri, text: uri }];
+    },
+  };
+  await scanAll(db, impl);
+  list = [docs[9] as string];
+  mode = "gone3-then-429";
+  const page = await pullMcpDocuments({ db, fallbackName: "srv" }, impl, "acc", pullInput());
+  assert.deepEqual([page.rows.filter((r) => r.deleted).length, page.rows.length, page.retryAfterS, page.exhausted], [3, 4, 30, false]);
+  assert.ok(page.nextCursor);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_doc_versions WHERE deleted = 1").get()?.n, 3, "only the rows that were returned are tombstoned");
+  // the next pull continues; the rest is deleted then, and nothing is delivered twice
+  mode = "ok-after";
+  const rest = await pullMcpDocuments({ db, fallbackName: "srv" }, impl, "acc", pullInput({ cursor: page.nextCursor }));
+  const ids = [...page.rows, ...rest.rows].filter((r) => r.deleted).map((r) => r.id);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(ids.sort(), docs.slice(0, 9).sort());
+  assert.deepEqual([rest.exhausted, rest.nextCursor], [true, null]);
+});
+
+test("QA delta D2: the deletion phase has the same read and time budget as the scan, also with zero rows, and resumes by cursor", async () => {
+  const db = memDb();
+  const docs = Array.from({ length: 300 }, (_v, k) => `x://c/f${String(k).padStart(3, "0")}`);
+  let list: string[] = docs;
+  let reads = 0;
+  const impl: McpResourceSession = {
+    serverName: "srv",
+    async listResources() {
+      return { resources: list.map((uri) => ({ uri, mimeType: "text/plain" })), nextCursor: null };
+    },
+    async readResource(uri) {
+      reads += 1;
+      return [{ uri, text: uri }];
+    },
+  };
+  await scanAll(db, impl);
+  // the list is empty now and every document can still be read: nothing is deleted, and no pull reads more than the budget
+  list = [];
+  reads = 0;
+  let cursor: string | null = null;
+  let pulls = 0;
+  for (; pulls < 20; pulls += 1) {
+    const before = reads;
+    const page: DocumentsPage = await pullMcpDocuments({ db, fallbackName: "srv" }, impl, "acc", pullInput({ cursor, limit: 20 }));
+    assert.ok(reads - before <= DOC_PULL_MAX_READS, `${reads - before} reads in one pull`);
+    assert.equal(page.rows.length, 0);
+    if (page.exhausted) break;
+    cursor = page.nextCursor;
+  }
+  assert.equal(reads, 300);
+  assert.equal(pulls + 1, 3, "300 re-reads in 3 pulls of 100");
+  // the time budget: a slow server stops a deletion pull after the first read
+  let clock = 5_000_000;
+  const slow: McpResourceSession = { ...impl, async readResource(uri) { clock += 25_000; return [{ uri, text: uri }]; } };
+  const timed = await pullMcpDocuments({ db, fallbackName: "srv", now: () => clock }, slow, "acc", pullInput());
+  assert.ok(!timed.exhausted && timed.nextCursor);
+});
+
+test("QA delta D3: an id that cannot be read again (a hash) is not deleted by a list that is empty", async () => {
+  const db = memDb();
+  const secretUri = "https://u:p@host.example.com/a?x=1";
+  let list = [{ uri: secretUri, mimeType: "text/plain" }, { uri: "x://c/other", mimeType: "text/plain" }];
+  const impl: McpResourceSession = {
+    serverName: "srv",
+    async listResources() {
+      return { resources: list, nextCursor: null };
+    },
+    async readResource(uri) {
+      return [{ uri, text: uri }];
+    },
+  };
+  const first = (await scanAll(db, impl)).flatMap((p) => p.rows);
+  const hashed = first.find((r) => r.id.startsWith("h:"));
+  assert.ok(hashed);
+  // an empty list (a failing server that answers ok) deletes nothing
+  list = [];
+  assert.equal((await scanAll(db, impl)).flatMap((p) => p.rows).filter((r) => r.deleted).length, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_doc_versions WHERE deleted = 1").get()?.n, 0);
+  // a list with at least one resource that no longer has the hashed document deletes it
+  list = [{ uri: "x://c/other", mimeType: "text/plain" }];
+  const del = (await scanAll(db, impl)).flatMap((p) => p.rows).filter((r) => r.deleted);
+  assert.deepEqual(del.map((r) => r.id), [hashed.id]);
+});
