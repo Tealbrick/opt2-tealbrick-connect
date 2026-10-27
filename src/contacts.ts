@@ -46,9 +46,11 @@ export interface ContactRow {
 
 type Fail = (code: string, message: string, status?: number, details?: Record<string, unknown>) => never;
 
-/** Sort and cursor key: (firstContactAt, agent, handle), then channel and account so equal triples stay distinct. */
-type Key = [number, string, string, string, string];
-const keyOf = (r: ContactRow): Key => [r.firstContactAt, r.agent ?? "", r.handle, r.channel, r.account ?? ""];
+/** A row plus its source primary key (never sent): the last sort key, so two rows never share a key (QA connect#34 S3). */
+type SourcedRow = ContactRow & { src: string };
+/** Sort and cursor key: (firstContactAt, agent, handle, channel, account), then the source primary key. */
+type Key = [number, string, string, string, string, string];
+const keyOf = (r: SourcedRow): Key => [r.firstContactAt, r.agent ?? "", r.handle, r.channel, r.account ?? "", r.src];
 const compare = (a: Key, b: Key): number => {
   if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
   for (let i = 1; i < a.length; i++) if (a[i] !== b[i]) return (a[i] as string) < (b[i] as string) ? -1 : 1;
@@ -58,7 +60,7 @@ const encodeCursor = (k: Key): string => Buffer.from(JSON.stringify(k), "utf8").
 const decodeCursor = (cursor: string): Key | null => {
   try {
     const k = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
-    if (Array.isArray(k) && k.length === 5 && Number.isSafeInteger(k[0]) && k.slice(1).every((v) => typeof v === "string")) return k as Key;
+    if (Array.isArray(k) && k.length === 6 && Number.isSafeInteger(k[0]) && k.slice(1).every((v) => typeof v === "string")) return k as Key;
   } catch {
     // fall through
   }
@@ -77,8 +79,9 @@ function assertFleet(ctx: OpContext, fail: Fail): void {
 }
 
 /** Every contact row with first contact at or after `since`, sorted by keyOf. */
-export function contactRows(ctx: Pick<OpContext, "db">, since: number): ContactRow[] {
-  const rows: ContactRow[] = [];
+export function contactRows(ctx: Pick<OpContext, "db">, since: number): SourcedRow[] {
+  const rows: SourcedRow[] = [];
+  const src = (...parts: unknown[]): string => JSON.stringify(parts.map(String));
   for (const r of ctx.db.prepare("SELECT agent, pubkey, first_sent_at FROM connect_buzz_contacts WHERE first_sent_at >= ?").all(since)) {
     const pubkey = String(r.pubkey);
     const agent = String(r.agent);
@@ -87,29 +90,30 @@ export function contactRows(ctx: Pick<OpContext, "db">, since: number): ContactR
       channel: "buzz",
       handle: normalizeHandle(`buzz:${pubkey}`) ?? clean(`buzz:${pubkey}`),
       firstContactAt: Number(r.first_sent_at),
+      src: src("b", agent, pubkey),
     });
   }
   const chat = ctx.db
     .prepare(
-      `SELECT c.person_id, c.first_sent_at, a.service, a.label, a.owner_agent
+      `SELECT c.account_id, c.person_id, c.first_sent_at, a.service, a.label, a.owner_agent
          FROM connect_channel_contacts c JOIN connect_accounts a ON a.id = c.account_id
         WHERE c.first_sent_at >= ?`,
     )
     .all(since);
   for (const r of chat) {
     const service = String(r.service);
-    rows.push({ agent: agentOf(r.owner_agent), channel: service, handle: authorHandle(service, String(r.person_id)), account: clean(String(r.label)), firstContactAt: Number(r.first_sent_at) });
+    rows.push({ agent: agentOf(r.owner_agent), channel: service, handle: authorHandle(service, String(r.person_id)), account: clean(String(r.label)), firstContactAt: Number(r.first_sent_at), src: src("c", r.account_id, r.person_id) });
   }
   const tool = ctx.db
     .prepare(
-      `SELECT t.caller, t.address, t.first_sent_at, a.label
+      `SELECT t.caller, t.account, t.address, t.first_sent_at, a.label
          FROM connect_tool_contacts t JOIN connect_accounts a ON a.id = t.account
         WHERE t.first_sent_at >= ?`,
     )
     .all(since);
   for (const r of tool) {
     const address = String(r.address);
-    rows.push({ agent: agentOf(r.caller), channel: "tool", handle: normalizeHandle(address) ?? clean(address), account: clean(String(r.label)), firstContactAt: Number(r.first_sent_at) });
+    rows.push({ agent: agentOf(r.caller), channel: "tool", handle: normalizeHandle(address) ?? clean(address), account: clean(String(r.label)), firstContactAt: Number(r.first_sent_at), src: src("t", r.caller, r.account, address) });
   }
   return rows.sort((x, y) => compare(keyOf(x), keyOf(y)));
 }
@@ -134,6 +138,7 @@ export function contactsListHandler(fail: Fail): Handler {
     const page = start < 0 ? [] : rows.slice(start, start + CONTACTS_PAGE);
     const last = page.at(-1);
     const more = start >= 0 && start + CONTACTS_PAGE < rows.length;
-    return { contacts: page as unknown as Json, nextCursor: more && last ? encodeCursor(keyOf(last)) : null };
+    const contacts: ContactRow[] = page.map(({ src: _src, ...row }) => row);
+    return { contacts: contacts as unknown as Json, nextCursor: more && last ? encodeCursor(keyOf(last)) : null };
   };
 }

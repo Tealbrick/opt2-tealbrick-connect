@@ -147,3 +147,22 @@ test("pages of 200 in a stable order (firstContactAt, agent, handle); the cursor
   const again = await s.run({});
   assert.deepEqual(again.contacts, seen.slice(0, CONTACTS_PAGE));
 });
+
+test("rows with the same visible key on a page boundary are both returned (source key tie-break, QA connect#34 S3)", async () => {
+  const s = setup();
+  const twin = s.accounts.create({ service: "gmail", source: "composio", kind: "as_me", label: "Work Gmail", ownerAgent: null, externalRef: null, status: "connected" });
+  const tool = s.db.prepare("INSERT INTO connect_tool_contacts (caller, account, address, first_sent_at) VALUES (?, ?, ?, ?)");
+  // 6 seed rows + 193 fillers = 199 rows before the twins, so the twins straddle the 200-row page boundary
+  for (let i = 0; i < 193; i++) tool.run(B, s.ids[2], `f${String(i).padStart(4, "0")}@example.com`, 7_000 + i);
+  tool.run(A, s.ids[2], "same@example.com", 9_000);
+  tool.run(A, twin.id, "same@example.com", 9_000);
+  const first: Page = await s.run({});
+  assert.equal(first.contacts.length, CONTACTS_PAGE);
+  assert.ok(first.nextCursor);
+  const second: Page = await s.run({ cursor: first.nextCursor });
+  assert.equal(second.contacts.length, 1);
+  assert.equal(second.nextCursor, null);
+  const twins = [...first.contacts, ...second.contacts].filter((r) => r.handle === "same@example.com");
+  assert.equal(twins.length, 2, "both twin rows are returned");
+  assert.ok(twins.every((r) => !("src" in r)), "the source key is never sent");
+});
