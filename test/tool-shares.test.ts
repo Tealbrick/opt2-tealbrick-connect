@@ -64,6 +64,8 @@ test("tool shares: only the shared Evolving Workflows instance, only READ tools,
     const overview = (await op("accounts_overview", {})) as unknown as { accounts: { id: string; toolShares?: { product: string; instance: string; current: boolean }[] }[]; toolApps: { product: string; instances: unknown[] }[] };
     assert.deepEqual(overview.accounts.find((a) => a.id === account)?.toolShares?.map((t) => [t.product, t.instance, t.current]), [["evolution", EVO, true]]);
     assert.deepEqual(overview.toolApps.map((t) => [t.product, t.instances.length]), [["evolution", 1]]);
+    // the SDK scope row of the instance is not written by this op (the owner page writes it with tb.scopes_set): flagged
+    assert.equal((overview.accounts.find((a) => a.id === account)?.toolShares?.[0] as { scopeRow?: boolean } | undefined)?.scopeRow, false);
     // another evolution instance → scope_denied; another app → no_access; a write or outward tool → app_read_only
     await assert.rejects(read(testCtx({ db, app: EVO2, appProduct: "evolution", appListed: true })), code("scope_denied"));
     await assert.rejects(read(testCtx({ db, app: KNOW, appProduct: "knowledge", appListed: true })), code("no_access"));

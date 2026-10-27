@@ -1,6 +1,13 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.9 (catalog 0.3.1; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.10 (catalog 0.3.1; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.10 (2026-10-27; C373 Jarvis, found live on DEV)
+
+0.7.9's tool share alone was not enough on DEV: the SDK checks the calling app instance's OWN scope row (keyed by its instance id) before Connect's handler runs, so the engine still got `scope_denied`. Verified live: with the row (owner `tb.scopes_set`, agent = the Evolution instance id, type account, the shared account, access read) the Jarvis morning brief ran end to end.
+- **Accounts page:** "Share read tools with Evolving Workflows" writes both rows (Connect's share, then the instance's read scope row); "Stop sharing" removes Connect's share first (kill path), then the scope row. A share without the scope row shows "not complete" and "Share again".
+- `accounts_overview` `toolShares[].scopeRow` (read-only look at the SDK's `tb_scopes`; never written by Connect).
+- Follow-up for the SDK (packages lead): a person-op helper that writes an instance-keyed scope row (P1-DESIGN), so one op does both.
 
 ## 0.7.9 (2026-10-27; C373 Jarvis, Coordinator approval: workflow apps read shared accounts)
 
