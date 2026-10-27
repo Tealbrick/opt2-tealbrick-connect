@@ -28,6 +28,7 @@ import {
 } from "./channels/provider.ts";
 import { channelProviders } from "./channels/registry.ts";
 import { ACTIONS_EXPIRED_NOTE, type ActionOrigin, type ActionRelay, ChannelHub, INBOX_RETENTION_MS, isChannelService } from "./channels/service.ts";
+import { contactsListHandler } from "./contacts.ts";
 import { companionCallersFor, companionCallersKnown, companionListed, OWN_INFRA_PROVIDER, verifiedAppCaller } from "./data/caller.ts";
 import {
   DATABASE_KINDS,
@@ -2062,6 +2063,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     const out = await services(ctx).channels.webhook("teams", { headers: req.headers, body });
     return new Response(out.body, { status: out.status, headers: { "content-type": out.contentType ?? "text/plain", "cache-control": "no-store" } });
   };
+
+  // G-5 (C373): companion-only contacts list for Governance (src/contacts.ts)
+  handlers.contacts_list = contactsListHandler(fail);
 
   // C354a: without the operations in the manifest there is no route to the lease code
   if (!leasesEnabled) for (const id of LEASE_OP_IDS) delete handlers[id];

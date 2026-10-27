@@ -3088,6 +3088,89 @@
       "idempotency": "none",
       "receipt": false,
       "audience": "person"
+    },
+    {
+      "id": "contacts_list",
+      "title": "Agent contacts for Governance",
+      "description": "Who each agent has written to, and on which channel: one row per first contact Connect recorded (Buzz DMs, chat DMs per bot account, recipients of send tools). Handles only (\"<channel>:<value>\", canonical for buzz, slack and telegram; the raw address for tool contacts), never message content, conversation ids or secrets. Only the Governance app can call this; agents and other apps get no_access.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 600,
+            "description": "nextCursor of the previous page."
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional: only contacts first made at or after this time (epoch milliseconds)."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contacts",
+          "nextCursor"
+        ],
+        "properties": {
+          "contacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "agent",
+                "channel",
+                "handle",
+                "firstContactAt"
+              ],
+              "properties": {
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "agt_ id; null for the workspace sender, an app caller or a bot account bound to no agent."
+                },
+                "channel": {
+                  "type": "string",
+                  "description": "buzz, the chat service of the bot account (slack, telegram, teams, discord), or tool."
+                },
+                "handle": {
+                  "type": "string",
+                  "description": "\"<channel>:<value>\" (normalizeHandle) where it applies; else the raw id or address."
+                },
+                "account": {
+                  "type": "string",
+                  "description": "Label of the Connect account (chat and tool contacts)."
+                },
+                "firstContactAt": {
+                  "type": "integer",
+                  "description": "Epoch milliseconds."
+                }
+              }
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent",
+      "listing": "workflow"
     }
   ],
   "companions": [
