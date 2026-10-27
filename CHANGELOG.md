@@ -2,7 +2,7 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.4 (catalog 0.3.1; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
 
-## Unreleased (C373 second brain: dataset `documents`; version assigned at merge)
+## 0.7.5 (2026-10-27; C373 second brain)
 
 Other apps (Observer first) read company documents from MCP servers and databases through the existing apps-only data ops. Contract `documents/1` (DRAFT for spec 0.1.83, vendored byte copy, `test/contracts/PROVENANCE.md`; not in the manifest `contracts` field yet).
 - **Dataset `documents`** (`src/data/documents.ts`): `data_pull {account, dataset: "documents", collection?, cursor?, limit<=50, since?, until?}` answers documents/1 pages (at most 50 rows, paged by bytes to stay under 2 MiB; forward only, `direction: backward` answers `direction_unsupported`; `exhausted` with `nextCursor: null` ends a scan, a new scan sees changes). Every page and row is validated against the vendored schema (`data_contract_violation` 500; a bad row is skipped and counted in `quarantined`). Cursors (`d1:`) name the account and the collection filter and are refused (`cursor_invalid`) on another account or collection. `rev` is `v<n>-<sha256>`: every change of a document, also back to an older text, takes a new version (`connect_doc_versions`); `updatedAt` is the source's time, else when Connect first saw that version.
