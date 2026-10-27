@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "toolkit": "facebook",
+  "version": "2026-10-27",
+  "notes": "Facebook Pages (Graph API). Outward: anything people outside the workspace see or receive: posts, photo and video uploads (they publish to the Page), comments, likes, Messenger messages, and Page roles given to a person. Destructive: deletes and role removals. Reads: GET/LIST/SEARCH; the three post reads are listed by exact name because their slug holds POST.",
+  "destructive": [
+    "FACEBOOK_DELETE_*",
+    "FACEBOOK_REMOVE_*"
+  ],
+  "outward": [
+    "FACEBOOK_CREATE_*",
+    "FACEBOOK_*POST*",
+    "FACEBOOK_*COMMENT*",
+    "FACEBOOK_*MESSAGE*",
+    "FACEBOOK_UPLOAD_*",
+    "FACEBOOK_*LIKE*",
+    "FACEBOOK_ASSIGN_*",
+    "FACEBOOK_PUBLISH_*",
+    "FACEBOOK_RESCHEDULE_*",
+    "FACEBOOK_TOGGLE_TYPING_INDICATOR"
+  ],
+  "writes": [
+    "FACEBOOK_UPDATE_PAGE_SETTINGS",
+    "FACEBOOK_REFRESH_URL_SCRAPE",
+    "FACEBOOK_UPDATE_*"
+  ],
+  "reads": [
+    "FACEBOOK_GET_POST",
+    "FACEBOOK_GET_POST_INSIGHTS",
+    "FACEBOOK_GET_POST_REACTIONS",
+    "FACEBOOK_GET_*",
+    "FACEBOOK_LIST_*",
+    "FACEBOOK_SEARCH_*"
+  ]
+}

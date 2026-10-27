@@ -14,6 +14,8 @@ export interface ComposioPolicy {
   toolkit: string;
   version: string;
   notes?: string;
+  /** Optional (C373 Jarvis): tools that spend money although their name does not say so (ad campaigns, budgets, bids). */
+  money?: string[];
   destructive: string[];
   outward: string[];
   writes: string[];
@@ -49,6 +51,7 @@ export function parsePolicy(raw: unknown): ComposioPolicy {
     toolkit: p.toolkit,
     version: p.version,
     ...(typeof p.notes === "string" ? { notes: p.notes } : {}),
+    ...(p.money === undefined ? {} : { money: list(p.money, "money") }),
     destructive: list(p.destructive, "destructive"),
     outward: list(p.outward, "outward"),
     writes: list(p.writes, "writes"),
@@ -68,9 +71,9 @@ export function loadPolicies(dir = join(import.meta.dirname, "../../../policies/
 const READ = { write: false, outward: false, destructive: false } as const;
 
 /**
- * Order (F84): money → exact slugs of the policy (a pattern without `*`, any list) → a read-led name that holds no write, outward
+ * Order (F84): money name → exact slugs of the policy (money first) (a pattern without `*`, any list) → a read-led name that holds no write, outward
  * or destructive verb (so GMAIL_LIST_DRAFTS / GMAIL_LIST_LABELS / GOOGLECALENDAR_ACL_LIST stay reads although `*DRAFT*`, `*LABEL*`,
- * `ACL_*` patterns would catch them) → destructive → outward → writes → reads patterns → name inference.
+ * `ACL_*` patterns would catch them) → money → destructive → outward → writes → reads patterns → name inference.
  * A slug with a real mutating verb (GMAIL_GET_AND_SEND) is never read-led, so the policy patterns still decide it.
  */
 export function classifyComposioTool(slug: string, policy: ComposioPolicy | undefined): ToolClass {
@@ -83,11 +86,15 @@ function composioClass(slug: string, policy: ComposioPolicy | undefined): ToolCl
   if (namesMoney(slug)) return classify({ write: true, outward: true, destructive: false, money: true });
   if (!policy) return inferFromName(slug);
   const exact = (patterns: readonly string[]) => patterns.some((p) => !p.includes("*") && p.toLowerCase() === slug.toLowerCase());
+  const money = policy.money ?? [];
+  const MONEY = { write: true, outward: true, destructive: false, money: true } as const;
+  if (exact(money)) return classify(MONEY);
   if (exact(policy.destructive)) return classify({ write: true, outward: false, destructive: true });
   if (exact(policy.outward)) return classify({ write: true, outward: true, destructive: false });
   if (exact(policy.writes)) return classify({ write: true, outward: false, destructive: false });
   if (exact(policy.reads)) return classify(READ);
   if (inferFromName(slug).effect === "read") return classify(READ);
+  if (matches(money, slug)) return classify(MONEY);
   if (matches(policy.destructive, slug)) return classify({ write: true, outward: false, destructive: true });
   if (matches(policy.outward, slug)) return classify({ write: true, outward: true, destructive: false });
   if (matches(policy.writes, slug)) return classify({ write: true, outward: false, destructive: false });

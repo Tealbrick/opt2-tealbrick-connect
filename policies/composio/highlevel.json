@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "toolkit": "highlevel",
+  "version": "2026-10-27",
+  "notes": "GoHighLevel (LeadConnector API). Outward: messages, blog posts, appointments (GHL sends confirmations) and contact tags and contact creation (tags and new contacts start the account's own GHL workflows, which may send email or SMS). Destructive: deletes and removals. Writes: other CRM records, calendars, products, templates, files. Calendar schedules are configuration (writes). SEARCH_DUPLICATE_CONTACT is a read. LIST_PAYMENTS_COUPON stays money by name.",
+  "destructive": [
+    "HIGHLEVEL_DELETE_*",
+    "HIGHLEVEL_REMOVE_*",
+    "HIGHLEVEL_*DELETE_FILES*",
+    "HIGHLEVEL_ADD_REMOVE_*"
+  ],
+  "outward": [
+    "HIGHLEVEL_SEND_*",
+    "HIGHLEVEL_*BLOG_POST*",
+    "HIGHLEVEL_CREATE_APPOINTMENT",
+    "HIGHLEVEL_EDIT_APPOINTMENT",
+    "HIGHLEVEL_*CONTACT_TAGS*",
+    "HIGHLEVEL_CREATE_CONTACT",
+    "HIGHLEVEL_UPSERT_CONTACT",
+    "HIGHLEVEL_CANCEL_SCHEDULED_MESSAGE",
+    "HIGHLEVEL_*CAMPAIGN*",
+    "HIGHLEVEL_*WORKFLOW*"
+  ],
+  "writes": [
+    "HIGHLEVEL_ADD_AN_INBOUND_MESSAGE",
+    "HIGHLEVEL_CREATE_SCHEDULE",
+    "HIGHLEVEL_UPDATE_CALENDAR_SCHEDULE",
+    "HIGHLEVEL_DISABLE_GROUP",
+    "HIGHLEVEL_GENERATE_ESTIMATE_NUMBER",
+    "HIGHLEVEL_ADD_*",
+    "HIGHLEVEL_BULK_*",
+    "HIGHLEVEL_COMPLETE_*",
+    "HIGHLEVEL_CONTACTS_*",
+    "HIGHLEVEL_CREATE_*",
+    "HIGHLEVEL_EDIT_*",
+    "HIGHLEVEL_INITIATE_*",
+    "HIGHLEVEL_LOCATIONS_*",
+    "HIGHLEVEL_PUT_*",
+    "HIGHLEVEL_SET_*",
+    "HIGHLEVEL_UPDATE_*",
+    "HIGHLEVEL_UPLOAD_*",
+    "HIGHLEVEL_UPSERT_*"
+  ],
+  "reads": [
+    "HIGHLEVEL_SEARCH_DUPLICATE_CONTACT",
+    "HIGHLEVEL_GET_*",
+    "HIGHLEVEL_LIST_*",
+    "HIGHLEVEL_SEARCH_*"
+  ]
+}
