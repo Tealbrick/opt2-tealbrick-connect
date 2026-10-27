@@ -23,7 +23,7 @@ export function isJsonType(t: string): boolean {
 
 export const CALL_TIMEOUT_MS = 30_000;
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const FORBIDDEN_HEADERS = new Set([
+export const FORBIDDEN_HEADERS = new Set([
   "host",
   "authorization",
   "cookie",

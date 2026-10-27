@@ -95,6 +95,8 @@ test("own API: input checks answer one plain sentence each", () => {
   assert.match(err({ name: "!!!" }), /at least one letter or digit/u);
   assert.match(err({ auth: { type: "header", name: "Bad Header" } }), /header name/u);
   assert.match(err({ auth: { type: "oauth" } as never }), /Auth type must be/u);
+  for (const name of ["Host", "Cookie", "X-Forwarded-Host", "Content-Type"]) assert.match(err({ auth: { type: "header", name } }), /cannot go in the/u, name);
+  assert.equal(err({ auth: { type: "header", name: "X-Api-Key" } }), "");
   assert.match(err({ healthOperation: "createIssuedDocument" }), /must be a read \(GET\)/u);
   assert.match(err({ healthOperation: "nope" }), /is not in the description/u);
   assert.match(err({ labels: { outward: [""] } }), /outward: each pattern/u);

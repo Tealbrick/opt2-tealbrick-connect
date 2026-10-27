@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 
 import type { Db } from "@opt2-tealbrick/spec/sdk";
 
-import type { CatalogAuth } from "./http.ts";
+import { type CatalogAuth, FORBIDDEN_HEADERS } from "./http.ts";
 import { type CompiledOperation, compile, type EntryLabels } from "./openapi.ts";
 import { type CatalogApp, CatalogError } from "./source.ts";
 
@@ -81,6 +81,8 @@ function checkAuth(raw: unknown): CatalogAuth {
     const name = typeof a.name === "string" ? a.name.trim() : "";
     if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) bad(`The ${a.type} name must be 1 to 64 letters, digits, "-" or "_".`);
     if (a.type === "query") return { type: "query", name };
+    // the key header may be Authorization (the usual place), never a header Connect sets or that changes where the call goes
+    if (name.toLowerCase() !== "authorization" && FORBIDDEN_HEADERS.has(name.toLowerCase())) bad(`The key cannot go in the ${name} header.`);
     const prefix = typeof a.prefix === "string" ? a.prefix : undefined;
     if (prefix !== undefined && (prefix.length > 32 || !plain(prefix))) bad("The prefix must be at most 32 plain characters (for example \"Bearer \").");
     return { type: "header", name, ...(prefix ? { prefix } : {}) };
