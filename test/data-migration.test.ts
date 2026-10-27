@@ -50,7 +50,40 @@ test("migration 0013 (C240) adds the share instance; a share from before it keep
   assert.equal(shares.get("a1", "knowledge")?.instance, null);
   assert.equal(shares.forCaller("a1", "knowledge", "ins_01HZKNWDG00000000000000000"), null);
   assert.deepEqual(shares.accountsForCaller("knowledge", "ins_01HZKNWDG00000000000000000"), []);
+  // the later migrations (0020 adds the route; the store writes it) on top of the same rows
+  for (const f of files.filter((n) => n > "0013_share_instance.sql")) db.exec(sql(f));
   shares.set("a1", "knowledge", "shared", true, "ins_01HZKNWDG00000000000000000", 9);
-  assert.deepEqual(shares.forCaller("a1", "knowledge", "ins_01HZKNWDG00000000000000000"), { product: "knowledge", instance: "ins_01HZKNWDG00000000000000000", level: "shared", includeHistory: true, setAt: 9 });
+  assert.deepEqual(shares.forCaller("a1", "knowledge", "ins_01HZKNWDG00000000000000000"), { product: "knowledge", instance: "ins_01HZKNWDG00000000000000000", level: "shared", includeHistory: true, setAt: 9, route: "direct", lease: false });
   assert.throws(() => shares.set("a1", "observer", "shared", true, null), /needs the app instance/);
+});
+
+test("migration 0020 (C373): a share from before it reads route direct; the route column takes only direct or via_observer; doc versions table", () => {
+  const db = new DatabaseSync(":memory:");
+  const files = readdirSync(dir).filter((n) => n.endsWith(".sql")).sort();
+  assert.ok(files.includes("0020_documents.sql"));
+  for (const f of files.filter((n) => n < "0020")) db.exec(sql(f));
+  db.exec(`INSERT INTO connect_accounts (id, service, source, kind, label, owner_agent, status, detail, created_at, updated_at) VALUES ('a1','telegram','channel','as_itself','x','agt_1','connected','',1,1)`);
+  db.exec(`INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at, instance_id) VALUES ('a1', 'knowledge', 'shared', 1, 5, 'ins_x')`);
+  db.exec(sql("0020_documents.sql"));
+  assert.equal(db.prepare("SELECT route FROM connect_account_shares WHERE account_id = 'a1'").get()?.route, "direct");
+  assert.throws(() => db.exec("UPDATE connect_account_shares SET route = 'sideways'"), /CHECK/u);
+  db.exec("INSERT INTO connect_doc_versions (account_id, doc_id, content_key, version, seen_at) VALUES ('a1', 'd1', 'sha256:x', 1, 7)");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_doc_versions").get()?.n, 1);
+});
+
+test("migration 0021 (QA-CONNECT35-9/-11/-13): expand only; old doc records survive, a database share has no lease, the cursor store takes a token", () => {
+  const db = new DatabaseSync(":memory:");
+  const files = readdirSync(dir).filter((n) => n.endsWith(".sql")).sort();
+  assert.ok(files.includes("0021_documents_scan.sql"));
+  for (const f of files.filter((n) => n < "0021")) db.exec(sql(f));
+  db.exec("INSERT INTO connect_doc_versions (account_id, doc_id, content_key, version, seen_at) VALUES ('a1', 'd1', 'sha256:x', 3, 7)");
+  db.exec("INSERT INTO connect_db_accounts (id, kind, label, endpoint, status, detail, created_at, updated_at) VALUES ('cdb_1', 'postgres', 'x', 'h:1/d', 'connected', '', 1, 1)");
+  db.exec("INSERT INTO connect_db_shares (account_id, product, level, route, include_history, set_at, instance_id) VALUES ('cdb_1', 'observer', 'shared', 'direct', 0, 5, 'ins_x')");
+  db.exec(sql("0021_documents_scan.sql"));
+  assert.deepEqual({ ...db.prepare("SELECT version, seen_at, collection, updated_at, scan_at, deleted FROM connect_doc_versions").get() }, { version: 3, seen_at: 7, collection: null, updated_at: null, scan_at: null, deleted: 0 });
+  assert.equal(db.prepare("SELECT lease FROM connect_db_shares").get()?.lease, 0, "an existing share has no lease");
+  assert.throws(() => db.exec("UPDATE connect_db_shares SET lease = 2"), /CHECK/u);
+  assert.throws(() => db.exec("UPDATE connect_doc_versions SET deleted = 2"), /CHECK/u);
+  db.exec("INSERT INTO connect_doc_cursors (account_id, token, value, created_at) VALUES ('a1', 't1', '{}', 1)");
+  assert.throws(() => db.exec("INSERT INTO connect_doc_cursors (account_id, token, value, created_at) VALUES ('a1', 't1', '{}', 1)"), /UNIQUE|PRIMARY/u);
 });

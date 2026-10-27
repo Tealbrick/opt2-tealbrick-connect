@@ -2,6 +2,8 @@
  * C336 RQ-3: database accounts, sharing with a route, the metadata-only catalog and the data_lease op.
  * Real handlers, real SQLite. The database client is a FAKE (an injected driver): no test opens a network connection.
  * The password is a canary string; the tests look for it in every place it must not appear.
+ * C322(6) (C373): Knowledge reads a database only through Observer (route via_observer, the default for Knowledge), so the
+ * app that reads directly (catalog, documents, the kept lease code) is Observer in these tests.
  */
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -24,7 +26,7 @@ const leaseManifest: Manifest = { ...manifest, operations: [...manifest.operatio
 const AGENT = "agt_01DATAAGENT000000000000000";
 const KNOWLEDGE = "ins_01HZKNWDG00000000000000000";
 const OBSERVER = "ins_01HZ0BSRVR0000000000000000";
-const KNOWLEDGE_2 = "ins_01HZKNWDG20000000000000000";
+const OBSERVER_2 = "ins_01HZ0BSRVR2000000000000000";
 /** the database password of every test: looked for in every output, record and log line */
 const CANARY = "CANARY-pw-7f3a91c2e5d84b6a";
 const PUBLIC_IP = "93.184.216.34";
@@ -105,10 +107,17 @@ async function setup(options: { callers?: { product: string; ins: string; name: 
   const form = (extra: Record<string, unknown> = {}) => ({ label: "Shop DB", host: "db.example.com", port: 5432, database: "shop", user: "readonly", password: CANARY, sslmode: "verify-full", ...extra });
   const connect = async (extra: Record<string, unknown> = {}): Promise<string> => ((await op("database_account_connect", form(extra))) as unknown as { account: { id: string } }).account.id;
   const instanceOf: Record<string, string> = { knowledge: KNOWLEDGE, observer: OBSERVER };
-  const share = (account: string, product: string, level: string, extra: Record<string, unknown> = {}) =>
+  /** share WITHOUT a lease flag (what the owner page does today) */
+  const plainShare = (account: string, product: string, level: string, extra: Record<string, unknown> = {}) =>
     op("account_app_share", { account, product, level, ...(level === "none" ? {} : { instance: instanceOf[product] }), ...extra });
-  const lease = (account: string, datasets: string[], extra: Record<string, unknown> = {}, ctx = knowledge) => op("data_lease", { account, datasets, ...extra }, ctx);
-  return { db, app, fake, logs, op, form, connect, share, lease, ctx: { person, knowledge, observer, agent }, receipts: person.receipts };
+  /** QA-CONNECT35-11: a lease needs its own flag; tests of the lease code set it after sharing at `shared` */
+  const share = async (account: string, product: string, level: string, extra: Record<string, unknown> = {}) => {
+    const out = await plainShare(account, product, level, extra);
+    if (level === "shared") db.prepare("UPDATE connect_db_shares SET lease = 1 WHERE account_id = ? AND product = ? AND route = 'direct'").run(account, product);
+    return out;
+  };
+  const lease = (account: string, datasets: string[], extra: Record<string, unknown> = {}, ctx = observer) => op("data_lease", { account, datasets, ...extra }, ctx);
+  return { db, app, fake, logs, op, form, connect, share, plainShare, lease, ctx: { person, knowledge, observer, agent }, receipts: person.receipts };
 }
 
 async function refusal(p: Promise<unknown>): Promise<{ code: string; httpStatus: number; message: string }> {
@@ -160,25 +169,23 @@ test("the kept lease operations follow M-OP-12 (read, idempotency none, receipt 
   assert.equal(ops.find((o) => o.id === "database_account_connect")?.receipt, false, "the connect form carries a password: no receipt");
 });
 
-test("C354a: in the shipped app a database can be shared at available only; shared is refused and nothing is stored", async () => {
+test("C373: in the shipped app a database can be shared at shared (rows as documents); no lease operation exists", async () => {
   const fake = fakeDriver();
   const app = createConnectApp({ manifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: fake.driver }, databaseLookup: async () => [{ address: PUBLIC_IP, family: 4 }] });
   const db = testDb();
-  const person = testCtx({ db, person: true, companionCallers: [{ product: "knowledge", ins: KNOWLEDGE, name: "Knowledge", provider: "railway" }] });
+  const person = testCtx({ db, person: true, companionCallers: [{ product: "observer", ins: OBSERVER, name: "Observer", provider: "railway" }] });
   const added = (await handlerOf(app, "database_account_connect")({ label: "Shop DB", host: "db.example.com", database: "shop", user: "readonly", password: CANARY } as Json, person)) as unknown as { account: { id: string } };
   const id = added.account.id;
-  const share = (level: string) => handlerOf(app, "account_app_share")({ account: id, product: "knowledge", level, instance: KNOWLEDGE } as Json, person);
-  const r = await refusal(share("shared"));
-  assert.deepEqual([r.code, r.httpStatus], ["lease_unavailable", 409]);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_db_shares").get()?.n, 0);
-  await share("available");
-  assert.equal(db.prepare("SELECT level FROM connect_db_shares").get()?.level, "available");
+  const share = (level: string) => handlerOf(app, "account_app_share")({ account: id, product: "observer", level, instance: OBSERVER } as Json, person);
+  await share("shared");
+  assert.equal(db.prepare("SELECT level FROM connect_db_shares").get()?.level, "shared");
   const overview = (await handlerOf(app, "accounts_overview")({} as Json, person)) as unknown as { leasesEnabled: boolean };
   assert.equal(overview.leasesEnabled, false);
-  // the catalog works for the app at that level
-  const knowledge = testCtx({ db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", appListed: true });
-  const cat = (await handlerOf(app, "data_catalog")({ account: id } as Json, knowledge)) as unknown as { datasets: { dataset: string }[] };
-  assert.ok(cat.datasets.length > 0);
+  assert.equal(app.handlers.data_lease, undefined, "no lease handler in the shipped app");
+  // the catalog works for the app
+  const observer = testCtx({ db, app: OBSERVER, appName: "Observer", appProduct: "observer", appListed: true });
+  const cat = (await handlerOf(app, "data_catalog")({ account: id } as Json, observer)) as unknown as { datasets: { dataset: string }[] };
+  assert.equal(cat.datasets[0]?.dataset, "documents");
 });
 
 // ── adding a database ──
@@ -267,7 +274,7 @@ test("a build with no driver says so (database_driver_unavailable)", async () =>
 test("data ops refuse agents and the owner (no_access); data_lease needs an app with a verified product", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   for (const ctx of [t.ctx.agent, t.ctx.person]) {
     for (const [name, input] of [["data_lease", { account: id, datasets: DATASETS }], ["data_catalog", { account: id }], ["data_accounts_list", {}]] as const) {
       const r = await refusal(t.op(name, input, ctx));
@@ -286,75 +293,80 @@ test("a database that is not shared, or shared for the catalog only, cannot be l
   assert.deepEqual([none.code, none.httpStatus], ["not_found", 404]);
   // the unknown id and the real id that is not shared answer the same
   assert.deepEqual(await refusal(t.lease("cdb_01UNKNOWN", DATASETS)), none);
-  await t.share(id, "knowledge", "available");
+  await t.share(id, "observer", "available");
   const avail = await refusal(t.lease(id, DATASETS));
   assert.deepEqual([avail.code, avail.httpStatus], ["scope_denied", 403]);
   // the catalog works at this level
-  const cat = (await t.op("data_catalog", { account: id }, t.ctx.knowledge)) as unknown as { datasets: { dataset: string }[] };
+  const cat = (await t.op("data_catalog", { account: id }, t.ctx.observer)) as unknown as { datasets: { dataset: string }[] };
   assert.ok(cat.datasets.length > 0);
   assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0);
   // a share bound to another instance serves nobody
-  await t.share(id, "knowledge", "shared");
-  const other = testCtx({ db: t.db, app: KNOWLEDGE_2, appName: "Knowledge", appProduct: "knowledge", appListed: true });
+  await t.share(id, "observer", "shared");
+  const other = testCtx({ db: t.db, app: OBSERVER_2, appName: "Observer", appProduct: "observer", appListed: true });
   assert.equal((await refusal(t.lease(id, DATASETS, {}, other))).code, "not_found");
   // an instance that is no longer listed is refused
-  const gone = testCtx({ db: t.db, app: KNOWLEDGE, appName: "Knowledge", appProduct: "knowledge", appListed: false });
+  const gone = testCtx({ db: t.db, app: OBSERVER, appName: "Observer", appProduct: "observer", appListed: false });
   assert.equal((await refusal(t.lease(id, DATASETS, {}, gone))).code, "share_instance_gone");
 });
 
-test("route via_observer: Knowledge gets nothing (not listed, not found, no lease); Observer reads through its own direct share", async () => {
+test("route via_observer (C322(6): the default for Knowledge, direct is not offered): Knowledge gets nothing; Observer reads through its own direct share", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared", { route: "via_observer" });
+  const out = (await t.share(id, "knowledge", "shared")) as unknown as { route: string };
+  assert.equal(out.route, "via_observer", "Knowledge is shared through Observer by default");
   const list = (await t.op("data_accounts_list", {}, t.ctx.knowledge)) as unknown as { accounts: unknown[] };
   assert.deepEqual(list.accounts, []);
   assert.equal((await refusal(t.op("data_catalog", { account: id }, t.ctx.knowledge))).code, "not_found");
-  assert.equal((await refusal(t.lease(id, DATASETS))).code, "not_found");
+  assert.equal((await refusal(t.op("data_pull", { account: id, dataset: "documents" }, t.ctx.knowledge))).code, "not_found");
+  assert.equal((await refusal(t.lease(id, DATASETS, {}, t.ctx.knowledge))).code, "not_found");
   assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0);
+  // Knowledge cannot be shared directly
+  const direct = await refusal(t.share(id, "knowledge", "shared", { route: "direct" }));
+  assert.deepEqual([direct.code, direct.httpStatus], ["route_invalid", 400]);
+  assert.equal(t.db.prepare("SELECT route FROM connect_db_shares WHERE product = 'knowledge'").get()?.route, "via_observer", "the refused call changed nothing");
   // Observer, shared directly
   await t.share(id, "observer", "shared");
   const granted = (await t.lease(id, DATASETS, {}, t.ctx.observer)) as unknown as { leaseId: string };
   assert.match(granted.leaseId, /^lse_/u);
-  assert.equal(t.db.prepare("SELECT product FROM connect_data_leases WHERE id = ?").get(granted.leaseId)?.product, "observer");
-  // Knowledge is still refused; back to direct it is served
-  assert.equal((await refusal(t.lease(id, DATASETS))).code, "not_found");
-  await t.share(id, "knowledge", "shared", { route: "direct" });
-  assert.match(String(((await t.lease(id, DATASETS)) as unknown as { leaseId: string }).leaseId), /^lse_/u);
+  assert.equal(t.db.prepare("SELECT product FROM connect_db_shares WHERE route = 'direct'").get()?.product, "observer");
+  // Knowledge is still refused
+  assert.equal((await refusal(t.lease(id, DATASETS, {}, t.ctx.knowledge))).code, "not_found");
 });
 
 test("account_app_share on a database: levels, routes and refusals", async () => {
   const t = await setup();
   const id = await t.connect();
-  const out = (await t.share(id, "knowledge", "shared")) as unknown as { route: string; shares: { route: string; level: string; current: boolean }[] };
-  assert.equal(out.route, "direct", "direct is the default");
+  const out = (await t.share(id, "observer", "shared")) as unknown as { route: string; shares: { route: string; level: string; current: boolean }[] };
+  assert.equal(out.route, "direct", "direct is the default for Observer");
   assert.deepEqual(out.shares.map((s) => [s.route, s.level, s.current]), [["direct", "shared", true]]);
-  // via_observer is for Knowledge only
+  // via_observer is for Knowledge only; direct is not offered to Knowledge
   assert.equal((await refusal(t.share(id, "observer", "shared", { route: "via_observer" }))).code, "route_invalid");
   assert.equal((await refusal(t.share(id, "knowledge", "shared", { route: "sideways" }))).code, "route_invalid");
+  assert.equal((await refusal(t.share(id, "knowledge", "shared", { route: "direct" }))).code, "route_invalid");
   // a chat account has no route
   t.db.exec(`INSERT INTO connect_accounts (id, service, source, kind, label, owner_agent, status, detail, created_at, updated_at) VALUES ('cna_chat','telegram','channel','as_itself','bot','${AGENT}','connected','',1,1)`);
   assert.equal((await refusal(t.share("cna_chat", "knowledge", "shared", { route: "via_observer" }))).code, "route_invalid");
   // an unknown database id and an unlisted instance
-  assert.equal((await refusal(t.share("cdb_01NOPE", "knowledge", "shared"))).code, "account_not_found");
-  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "knowledge", level: "shared", instance: "ins_01HZNOTLISTED00000000000000" }))).code, "app_instance_unknown");
-  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "knowledge", level: "shared" }))).code, "instance_required");
+  assert.equal((await refusal(t.share("cdb_01NOPE", "observer", "shared"))).code, "account_not_found");
+  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "observer", level: "shared", instance: "ins_01HZNOTLISTED00000000000000" }))).code, "app_instance_unknown");
+  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "observer", level: "shared" }))).code, "instance_required");
   // agents and apps cannot share
-  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "knowledge", level: "shared", instance: KNOWLEDGE }, t.ctx.agent))).code, "no_access");
-  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "knowledge", level: "shared", instance: KNOWLEDGE }, t.ctx.knowledge))).code, "no_access");
+  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "observer", level: "shared", instance: OBSERVER }, t.ctx.agent))).code, "no_access");
+  assert.equal((await refusal(t.op("account_app_share", { account: id, product: "observer", level: "shared", instance: OBSERVER }, t.ctx.observer))).code, "no_access");
   // none removes the row
-  const gone = (await t.share(id, "knowledge", "none")) as unknown as { shares: unknown[] };
+  const gone = (await t.share(id, "observer", "none")) as unknown as { shares: unknown[] };
   assert.deepEqual(gone.shares, []);
   // the receipt names the sharing and carries no credential
   assert.ok(t.receipts.summary.every((s) => !s.includes(CANARY)));
   assert.match(t.receipts.summary[0] ?? "", /Shop DB/u);
 });
 
-test("data_pull on a database answers delivery_lease after the share check; a stranger learns nothing", async () => {
+test("data_pull on a database: a table dataset answers delivery_lease after the share check (dataset documents is pulled: table-documents.test.ts); a stranger learns nothing", async () => {
   const t = await setup();
   const id = await t.connect();
-  assert.equal((await refusal(t.op("data_pull", { account: id, dataset: "public.customers" }, t.ctx.knowledge))).code, "not_found");
-  await t.share(id, "knowledge", "shared");
-  const r = await refusal(t.op("data_pull", { account: id, dataset: "public.customers" }, t.ctx.knowledge));
+  assert.equal((await refusal(t.op("data_pull", { account: id, dataset: "public.customers" }, t.ctx.observer))).code, "not_found");
+  await t.share(id, "observer", "shared");
+  const r = await refusal(t.op("data_pull", { account: id, dataset: "public.customers" }, t.ctx.observer));
   assert.deepEqual([r.code, r.httpStatus], ["delivery_lease", 400]);
 });
 
@@ -363,15 +375,20 @@ test("data_pull on a database answers delivery_lease after the share check; a st
 test("data_catalog of a database: tables and views, columns, types, approximate rows; only metadata statements run", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "available");
+  await t.share(id, "observer", "available");
   t.fake.sent.length = 0;
-  const list = (await t.op("data_accounts_list", {}, t.ctx.knowledge)) as unknown as { accounts: { account: string; service: string; kinds: string[]; level: string; source: string }[] };
-  assert.deepEqual(list.accounts.map((a) => [a.account, a.service, a.kinds, a.level, a.source]), [[id, "postgres", ["table"], "available", "database"]]);
-  const cat = (await t.op("data_catalog", { account: id }, t.ctx.knowledge)) as unknown as {
+  const list = (await t.op("data_accounts_list", {}, t.ctx.observer)) as unknown as { accounts: { account: string; service: string; kinds: string[]; datasets: string[]; level: string; source: string }[] };
+  assert.deepEqual(list.accounts.map((a) => [a.account, a.service, a.kinds, a.datasets, a.level, a.source]), [[id, "postgres", ["table", "documents"], ["documents"], "available", "database"]]);
+  const answer = (await t.op("data_catalog", { account: id }, t.ctx.observer)) as unknown as {
     source: string; level: string; untrusted: boolean;
-    datasets: { dataset: string; kind: string; delivery: string; relation: string; approxRows?: number; columns: { name: string; type: string }[] }[];
+    datasets: { dataset: string; kind: string; delivery: string; relation: string; approxRows?: number; columns: { name: string; type: string }[]; collections?: { id: string; approxRows: number }[] }[];
   };
-  assert.deepEqual([cat.source, cat.level, cat.untrusted], ["database", "available", true]);
+  assert.deepEqual([answer.source, answer.level, answer.untrusted], ["database", "available", true]);
+  // C373: the pullable documents dataset comes first: one collection per table, counted in pages of 200 rows
+  const [documents, ...tables] = answer.datasets;
+  assert.deepEqual([documents?.dataset, documents?.kind, documents?.delivery, documents?.approxRows], ["documents", "documents", "pull", 6 + 270]);
+  assert.deepEqual(documents?.collections?.map((c) => [c.id, c.approxRows]), [["public.customers", 6], ["public.fresh", 0], ["public.orders", 270], ["sales.monthly", 0]]);
+  const cat = { ...answer, datasets: tables };
   assert.deepEqual(cat.datasets.map((d) => d.dataset), ["public.customers", "public.fresh", "public.orders", "sales.monthly"]);
   const customers = cat.datasets.find((d) => d.dataset === "public.customers");
   assert.deepEqual(customers, { dataset: "public.customers", title: "public.customers", kind: "table", delivery: "lease", relation: "table", approxRows: 1200, columns: [{ name: "id", type: "bigint" }, { name: "email", type: "text" }] });
@@ -390,7 +407,7 @@ test("data_catalog of a database: tables and views, columns, types, approximate 
 test("data_lease: the lease answer, the checked address, the record and the audit line", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   const before = Date.now();
   const out = (await t.lease(id, DATASETS, { ttlS: 600 })) as unknown as Record<string, unknown>;
   assert.deepEqual(Object.keys(out).sort(), ["checkedAddress", "database", "datasets", "expiresAt", "host", "kind", "leaseId", "password", "port", "sslmode", "user"]);
@@ -399,21 +416,21 @@ test("data_lease: the lease answer, the checked address, the record and the audi
   const end = Date.parse(String(out.expiresAt));
   assert.ok(end >= before + 600_000 && end <= Date.now() + 600_000, "expiresAt is now + ttl");
   const lease = t.db.prepare("SELECT * FROM connect_data_leases WHERE id = ?").get(String(out.leaseId));
-  assert.deepEqual([lease?.account_id, lease?.product, lease?.instance_id, lease?.datasets, Number(lease?.expires_at)], [id, "knowledge", KNOWLEDGE, JSON.stringify(DATASETS), end]);
+  assert.deepEqual([lease?.account_id, lease?.product, lease?.instance_id, lease?.datasets, Number(lease?.expires_at)], [id, "observer", OBSERVER, JSON.stringify(DATASETS), end]);
   assert.equal(lease?.revoked_at, null);
   // the audit line names the lease, account, datasets, expiry and caller
   const line = t.db.prepare("SELECT * FROM connect_data_audit WHERE op = 'data_lease' ORDER BY id DESC LIMIT 1").get();
-  assert.deepEqual([line?.outcome, line?.caller_type, line?.caller_id, line?.product, line?.account_id, line?.dataset, line?.lease_id, Number(line?.lease_expires_at)], ["ok", "app", KNOWLEDGE, "knowledge", id, DATASETS.join(","), out.leaseId, end]);
+  assert.deepEqual([line?.outcome, line?.caller_type, line?.caller_id, line?.product, line?.account_id, line?.dataset, line?.lease_id, Number(line?.lease_expires_at)], ["ok", "app", OBSERVER, "observer", id, DATASETS.join(","), out.leaseId, end]);
   // the owner's access log shows it
   const log = (await t.op("data_access_log", {})) as unknown as { entries: { op: string; leaseId?: string; leaseExpiresAt?: string; datasets?: string[]; app: string; account: string }[] };
   const entry = log.entries.find((e) => e.op === "data_lease");
-  assert.deepEqual([entry?.leaseId, entry?.leaseExpiresAt, entry?.datasets, entry?.app, entry?.account], [out.leaseId, out.expiresAt, DATASETS, "Knowledge", "Shop DB"]);
+  assert.deepEqual([entry?.leaseId, entry?.leaseExpiresAt, entry?.datasets, entry?.app, entry?.account], [out.leaseId, out.expiresAt, DATASETS, "Observer", "Shop DB"]);
 });
 
 test("data_lease: ttl above 900 or not a whole number is refused, the default is 300; datasets are checked (1..50, schema.table, in the catalog)", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   assert.equal((await refusal(t.lease(id, DATASETS, { ttlS: 901 }))).code, "ttl_too_long");
   for (const ttlS of [0, -5, 1.5, "60", 100000]) assert.match((await refusal(t.lease(id, DATASETS, { ttlS }))).code, /^ttl_/u, String(ttlS));
   const ok900 = (await t.lease(id, DATASETS, { ttlS: 900 })) as unknown as { expiresAt: string };
@@ -423,7 +440,7 @@ test("data_lease: ttl above 900 or not a whole number is refused, the default is
   assert.ok(left > 290_000 && left <= 300_000, `default ttl ${left}`);
   // datasets
   assert.equal((await refusal(t.lease(id, []))).code, "datasets_required");
-  assert.equal((await refusal(t.op("data_lease", { account: id }, t.ctx.knowledge))).code, "datasets_required");
+  assert.equal((await refusal(t.op("data_lease", { account: id }, t.ctx.observer))).code, "datasets_required");
   assert.equal((await refusal(t.lease(id, Array.from({ length: 51 }, (_, n) => `public.t${n}`)))).code, "too_many_datasets");
   for (const bad of ["customers", "public.customers.x", 'public."orders"', "public.", "pub lic.orders", 7]) assert.equal((await refusal(t.lease(id, [bad as string]))).code, "dataset_invalid", String(bad));
   // outside the catalog (also when mixed with a real one) and a name the catalog left out
@@ -440,10 +457,10 @@ test("data_lease: ttl above 900 or not a whole number is refused, the default is
 test("data_lease: the address is checked again at the lease (DNS that turned private is refused)", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   // same account, the name now answers a private address: rebuild the app with that DNS over the same database
   const flip = createConnectApp({ manifest: leaseManifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: t.fake.driver }, databaseLookup: async () => [{ address: "10.0.0.9", family: 4 }] });
-  const r = await refusal(handlerOf(flip, "data_lease")({ account: id, datasets: DATASETS } as Json, t.ctx.knowledge));
+  const r = await refusal(handlerOf(flip, "data_lease")({ account: id, datasets: DATASETS } as Json, t.ctx.observer));
   assert.equal(r.code, "endpoint_not_allowed");
   assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0);
 });
@@ -453,7 +470,7 @@ test("data_lease: the address is checked again at the lease (DNS that turned pri
 test("the password appears nowhere but the data_lease answer: records, audit, owner outputs, receipts, log lines, errors", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   const granted = (await t.lease(id, DATASETS)) as unknown as { leaseId: string; password: string };
   assert.equal(granted.password, CANARY, "the one place it is allowed");
   const errors: string[] = [];
@@ -465,7 +482,7 @@ test("the password appears nowhere but the data_lease answer: records, audit, ow
   await catching(t.lease(id, DATASETS, {}, t.ctx.agent));
   t.fake.state.failWith = Object.assign(new Error(`could not connect with password ${CANARY}`), { code: "ECONNREFUSED" });
   await catching(t.lease(id, DATASETS));
-  await catching(t.op("data_catalog", { account: id }, t.ctx.knowledge));
+  await catching(t.op("data_catalog", { account: id }, t.ctx.observer));
   await catching(t.op("database_account_connect", t.form({ label: "again" })));
   t.fake.state.failWith = null;
   // the owner's outputs and the sharing / revoking receipts
@@ -473,10 +490,10 @@ test("the password appears nowhere but the data_lease answer: records, audit, ow
     JSON.stringify(await t.op("data_leases_list", {})),
     JSON.stringify(await t.op("data_access_log", {})),
     JSON.stringify(await t.op("accounts_overview", {})),
-    JSON.stringify(await t.share(id, "knowledge", "shared", { route: "direct" })),
+    JSON.stringify(await t.share(id, "observer", "shared")),
     JSON.stringify(await t.op("data_lease_revoke", { lease: granted.leaseId })),
-    JSON.stringify(await t.op("data_catalog", { account: id }, t.ctx.knowledge)),
-    JSON.stringify(await t.op("data_accounts_list", {}, t.ctx.knowledge)),
+    JSON.stringify(await t.op("data_catalog", { account: id }, t.ctx.observer)),
+    JSON.stringify(await t.op("data_accounts_list", {}, t.ctx.observer)),
   ];
   for (const o of outputs) assert.ok(!o.includes(CANARY), "owner output");
   assert.ok(errors.length >= 6, `errors collected: ${errors.length}`);
@@ -485,9 +502,9 @@ test("the password appears nowhere but the data_lease answer: records, audit, ow
   for (const r of [...t.receipts.summary, ...t.receipts.meta.map((m) => JSON.stringify(m))]) assert.ok(!r.includes(CANARY), "receipt");
   assert.ok(t.receipts.summary.length >= 2);
   // M-OP-12: data_lease has a receipt (summary + meta set by the handler; the SDK adds the input digest). No credential, host or user in it.
-  const lease = t.ctx.knowledge.receipts;
+  const lease = t.ctx.observer.receipts;
   assert.ok(lease.summary.length >= 1, "every issued lease writes a receipt summary");
-  assert.match(lease.summary[0] ?? "", /^Database lease for Knowledge: 2 tables of “Shop DB” until \d{4}-/u);
+  assert.match(lease.summary[0] ?? "", /^Database lease for Observer: 2 tables of “Shop DB” until \d{4}-/u);
   assert.deepEqual(Object.keys((lease.meta[0] ?? {}) as object).sort(), ["account", "datasets", "expiresAt", "lease"]);
   for (const r of [...lease.summary, ...lease.meta.map((m) => JSON.stringify(m))]) for (const secret of [CANARY, "db.example.com", "readonly", PUBLIC_IP]) assert.ok(!r.includes(secret), `lease receipt has no ${secret}`);
   for (const l of t.logs) assert.ok(!JSON.stringify(l).includes(CANARY), `log line: ${l.msg}`);
@@ -512,7 +529,7 @@ test("every error on the lease path has a code and a fixed message: no DSN, host
   };
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   // the driver throws a message full of the DSN: no code, then a hostile code, then a real one
   t.fake.state.failWith = new Error(`FATAL: password authentication failed for user "readonly" at ${HOST}:5432 db shop password=${CANARY} ${PUBLIC_IP}`);
   const bare = await fail(t.lease(id, DATASETS));
@@ -528,7 +545,7 @@ test("every error on the lease path has a code and a fixed message: no DSN, host
   assert.deepEqual([missing.code, missing.message], ["dataset_not_found", "A requested dataset is not in the catalog of this database. Read data_catalog and ask again."]);
   // the sealed DSN is damaged: a JSON error would quote it; the answer is fixed
   await secretsFor(t.db).put(`db:${id}`, `{"host":"${HOST}","port":5432,"database":"shop","user":"readonly","password":"${CANARY}`);
-  for (const run of [() => t.lease(id, DATASETS), () => t.op("data_catalog", { account: id }, t.ctx.knowledge)]) {
+  for (const run of [() => t.lease(id, DATASETS), () => t.op("data_catalog", { account: id }, t.ctx.observer)]) {
     const r = await fail(run());
     assert.deepEqual([r.code, r.httpStatus, r.message], ["database_credentials_invalid", 409, "The stored database credentials cannot be read; connect it again."]);
   }
@@ -537,7 +554,7 @@ test("every error on the lease path has a code and a fixed message: no DSN, host
   // the host now fails DNS, or answers a private address: the policy text names a reason, never the host
   const dns = createConnectApp({ manifest: leaseManifest, migrationsDir: join(root, "migrations"), databaseDrivers: { postgres: t.fake.driver }, databaseLookup: async () => { throw new Error(`getaddrinfo ENOTFOUND ${HOST}`); } });
   await secretsFor(t.db).put(`db:${id}`, JSON.stringify({ host: HOST, port: 5432, database: "shop", user: "readonly", password: CANARY, sslmode: "verify-full" }));
-  const lookup = await (async () => { try { await handlerOf(dns, "data_lease")({ account: id, datasets: DATASETS } as Json, t.ctx.knowledge); } catch (e) { clean(e as Error); return e as { code: string; message: string }; } throw new Error("expected a refusal"); })();
+  const lookup = await (async () => { try { await handlerOf(dns, "data_lease")({ account: id, datasets: DATASETS } as Json, t.ctx.observer); } catch (e) { clean(e as Error); return e as { code: string; message: string }; } throw new Error("expected a refusal"); })();
   assert.deepEqual([lookup.code, lookup.message], ["endpoint_not_allowed", "Endpoint is not allowed (dns_lookup_failed)."]);
   // an unexpected failure inside Connect (the lease record cannot be written) is a fixed lease_failed
   t.db.exec("ALTER TABLE connect_data_leases RENAME TO connect_data_leases_gone");
@@ -548,7 +565,7 @@ test("every error on the lease path has a code and a fixed message: no DSN, host
 test("a lease whose audit line cannot be written is withheld and ended (nothing leaves unrecorded)", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   t.db.exec("ALTER TABLE connect_data_audit RENAME TO connect_data_audit_gone");
   const r = await refusal(t.lease(id, DATASETS));
   assert.deepEqual([r.code, r.httpStatus], ["audit_unavailable", 503]);
@@ -563,43 +580,38 @@ test("a lease whose audit line cannot be written is withheld and ended (nothing 
 test("data_leases_list and data_lease_revoke: states, and a changed or removed share, or a disconnect, ends open leases", async () => {
   const t = await setup();
   const id = await t.connect();
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   const a = (await t.lease(id, ["public.customers"])) as unknown as { leaseId: string };
   const b = (await t.lease(id, ["public.orders"], { ttlS: 60 })) as unknown as { leaseId: string };
   type Row = { id: string; state: string; datasets: string[]; app: string; accountLabel: string; revokedAt: string | null };
   const list = async () => ((await t.op("data_leases_list", {})) as unknown as { leases: Row[] }).leases;
   assert.deepEqual((await list()).map((l) => [l.id, l.state]).sort(), [[a.leaseId, "active"], [b.leaseId, "active"]].sort());
   const first = (await list()).find((l) => l.id === a.leaseId);
-  assert.deepEqual([first?.datasets, first?.app, first?.accountLabel], [["public.customers"], "Knowledge", "Shop DB"]);
+  assert.deepEqual([first?.datasets, first?.app, first?.accountLabel], [["public.customers"], "Observer", "Shop DB"]);
   // the owner ends one
   const ended = (await t.op("data_lease_revoke", { lease: a.leaseId })) as unknown as { state: string };
   assert.equal(ended.state, "revoked");
   assert.equal((await refusal(t.op("data_lease_revoke", { lease: "lse_01NOPE" }))).code, "lease_not_found");
   assert.equal((await refusal(t.op("data_lease_revoke", { lease: b.leaseId }, t.ctx.agent))).code, "no_access");
-  assert.equal((await refusal(t.op("data_leases_list", {}, t.ctx.knowledge))).code, "no_access");
+  assert.equal((await refusal(t.op("data_leases_list", {}, t.ctx.observer))).code, "no_access");
   assert.match(t.receipts.summary.at(-1) ?? "", /Ended the database lease/u);
   // the same share again changes nothing
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   assert.equal((await list()).find((l) => l.id === b.leaseId)?.state, "active");
   // a changed level ends the open lease
-  await t.share(id, "knowledge", "available");
+  await t.share(id, "observer", "available");
   assert.equal((await list()).find((l) => l.id === b.leaseId)?.state, "revoked");
   // an expired lease shows as expired
-  await t.share(id, "knowledge", "shared");
+  await t.share(id, "observer", "shared");
   const c = (await t.lease(id, ["public.customers"])) as unknown as { leaseId: string };
   t.db.prepare("UPDATE connect_data_leases SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, c.leaseId);
   assert.equal((await list()).find((l) => l.id === c.leaseId)?.state, "expired");
   // a removed share ends the open ones
   const d = (await t.lease(id, ["public.customers"])) as unknown as { leaseId: string };
-  await t.share(id, "knowledge", "none");
+  await t.share(id, "observer", "none");
   assert.equal((await list()).find((l) => l.id === d.leaseId)?.state, "revoked");
-  // a share through Observer ends them as well
-  await t.share(id, "knowledge", "shared");
-  const e = (await t.lease(id, ["public.customers"])) as unknown as { leaseId: string };
-  await t.share(id, "knowledge", "shared", { route: "via_observer" });
-  assert.equal((await list()).find((l) => l.id === e.leaseId)?.state, "revoked");
   // disconnecting removes the seal and the shares, and ends the leases
-  await t.share(id, "knowledge", "shared", { route: "direct" });
+  await t.share(id, "observer", "shared");
   const f = (await t.lease(id, ["public.customers"])) as unknown as { leaseId: string };
   await t.op("account_disconnect", { id });
   assert.deepEqual(secretsFor(t.db).names(), []);
@@ -659,4 +671,23 @@ test("migration 0018 is expand only: numbering has no gap, old rows survive unto
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0, "leases follow their database");
   // the chat accounts were never touched by a database being removed
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_account_shares").get()?.n, 1);
+});
+
+test("QA-CONNECT35-11: a share at `shared` (rows as documents) never grants a lease; the lease needs its own flag, and any change of the share resets it", async () => {
+  const t = await setup();
+  const id = await t.connect();
+  await t.plainShare(id, "observer", "shared");
+  assert.equal(t.db.prepare("SELECT lease FROM connect_db_shares WHERE product = 'observer'").get()?.lease, 0, "the default is no lease");
+  const refused = await refusal(t.lease(id, DATASETS, {}, t.ctx.observer));
+  assert.deepEqual([refused.code, refused.httpStatus], ["lease_unavailable", 403]);
+  assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0, "no lease row, no credential");
+  assert.ok(!JSON.stringify(refused).includes(CANARY));
+  // the explicit flag grants it
+  t.db.prepare("UPDATE connect_db_shares SET lease = 1 WHERE product = 'observer'").run();
+  assert.match(((await t.lease(id, DATASETS, {}, t.ctx.observer)) as unknown as { leaseId: string }).leaseId, /^lse_/u);
+  // a changed share (level, then back) starts without a lease again
+  await t.plainShare(id, "observer", "available");
+  await t.plainShare(id, "observer", "shared");
+  assert.equal(t.db.prepare("SELECT lease FROM connect_db_shares WHERE product = 'observer'").get()?.lease, 0);
+  assert.equal((await refusal(t.lease(id, DATASETS, {}, t.ctx.observer))).code, "lease_unavailable");
 });

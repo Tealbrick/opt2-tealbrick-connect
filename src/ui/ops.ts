@@ -37,6 +37,8 @@ export interface Account {
   shares?: AppShare[];
   /** Database accounts only: `host:port/database`. Never a user or a password. */
   endpoint?: string;
+  /** database accounts: the TLS mode (C373) */
+  sslmode?: SslMode;
 }
 
 export interface AppShare {

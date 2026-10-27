@@ -29,14 +29,14 @@ export const DATA_APPS: Readonly<Record<string, string>> = {
 export const isDataApp = (product: string): boolean => Object.hasOwn(DATA_APPS, product);
 
 /**
- * C336 RQ-3: the route of a database share. `direct` = the share's product may lease the credential (data_lease).
- * `via_observer` = only Observer reads this database; the product of the row gets nothing for it (not listed, not found).
- * Chat shares have no route (always `direct`).
+ * C336 RQ-3: the route of a database share. `direct` = the share's product may read it (catalog, documents; a lease once
+ * leases ship). `via_observer` = only Observer reads this database; the product of the row gets nothing for it (not listed,
+ * not found). C373 (migration 0020): an MCP account share has a route too. Chat shares have none (always `direct`).
  */
 export const SHARE_ROUTES = ["direct", "via_observer"] as const;
 export type ShareRoute = (typeof SHARE_ROUTES)[number];
 
-/** The two share tables: chat accounts (0010, 0013) and database accounts (0018, with the route column). */
+/** The two share tables: chat and MCP accounts (0010, 0013, route since 0020) and database accounts (0018, with the route). */
 export type ShareTable = "connect_account_shares" | "connect_db_shares";
 
 export interface ShareRow {
@@ -47,17 +47,24 @@ export interface ShareRow {
   includeHistory: boolean;
   /** epoch ms */
   setAt: number;
-  /** database shares only (table connect_db_shares); absent on a chat share */
-  route?: ShareRoute;
+  /** `direct` unless the owner chose `via_observer` (database and MCP shares only) */
+  route: ShareRoute;
+  /**
+   * Database shares only (migration 0021, QA-CONNECT35-11): the owner enabled a LEASE (the sealed database credential) for this
+   * share. `shared` means "rows as documents" and never implies it. Nothing sets it today (leases are not shipped); a change of
+   * the share resets it.
+   */
+  lease: boolean;
 }
 
-const rowOf = (r: Record<string, unknown>, routes: boolean): ShareRow => ({
+const rowOf = (r: Record<string, unknown>): ShareRow => ({
   product: String(r.product),
   instance: typeof r.instance_id === "string" && r.instance_id !== "" ? r.instance_id : null,
   level: String(r.level) as StoredLevel,
   includeHistory: Number(r.include_history) === 1,
   setAt: Number(r.set_at),
-  ...(routes ? { route: r.route === "via_observer" ? ("via_observer" as const) : ("direct" as const) } : {}),
+  route: r.route === "via_observer" ? "via_observer" : "direct",
+  lease: Number(r.lease ?? 0) === 1,
 });
 
 export class ShareStore {
@@ -69,11 +76,7 @@ export class ShareStore {
     this.#table = table;
   }
 
-  get #routes(): boolean {
-    return this.#table === "connect_db_shares";
-  }
-
-  #row = (r: Record<string, unknown>): ShareRow => rowOf(r, this.#routes);
+  #row = (r: Record<string, unknown>): ShareRow => rowOf(r);
 
   get(account: string, product: string): ShareRow | null {
     const row = this.#db.prepare(`SELECT * FROM ${this.#table} WHERE account_id = ? AND product = ?`).get(account, product);
@@ -100,24 +103,23 @@ export class ShareStore {
       return;
     }
     if (!instance) throw new Error("a share needs the app instance (C240)");
-    if (route !== "direct" && !this.#routes) throw new Error("a chat share has no route");
     const current = this.get(account, product);
-    if (current && current.level === level && current.includeHistory === includeHistory && current.instance === instance && (current.route ?? "direct") === route) return;
-    if (this.#routes) {
-      this.#db
-        .prepare(
-          `INSERT INTO connect_db_shares (account_id, product, level, route, include_history, set_at, instance_id) VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (account_id, product) DO UPDATE SET level = excluded.level, route = excluded.route, include_history = excluded.include_history, set_at = excluded.set_at, instance_id = excluded.instance_id`,
-        )
-        .run(account, product, level, route, includeHistory ? 1 : 0, now, instance);
-      return;
-    }
+    if (current && current.level === level && current.includeHistory === includeHistory && current.instance === instance && current.route === route) return;
+    // the table name is one of the two constants of ShareTable, never input
     this.#db
       .prepare(
-        `INSERT INTO connect_account_shares (account_id, product, level, include_history, set_at, instance_id) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (account_id, product) DO UPDATE SET level = excluded.level, include_history = excluded.include_history, set_at = excluded.set_at, instance_id = excluded.instance_id`,
+        `INSERT INTO ${this.#table} (account_id, product, level, route, include_history, set_at, instance_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (account_id, product) DO UPDATE SET level = excluded.level, route = excluded.route, include_history = excluded.include_history, set_at = excluded.set_at, instance_id = excluded.instance_id`,
       )
-      .run(account, product, level, includeHistory ? 1 : 0, now, instance);
+      .run(account, product, level, route, includeHistory ? 1 : 0, now, instance);
+    // a changed share starts without a lease (database shares only; the other table has no such column)
+    if (this.#table === "connect_db_shares") this.#db.prepare("UPDATE connect_db_shares SET lease = 0 WHERE account_id = ? AND product = ?").run(account, product);
+  }
+
+  /** Database shares only: the explicit lease flag. There is no owner operation for it yet (leases are not shipped). */
+  setLease(account: string, product: string, enabled: boolean): void {
+    if (this.#table !== "connect_db_shares") throw new Error("only a database share has a lease flag");
+    this.#db.prepare("UPDATE connect_db_shares SET lease = ? WHERE account_id = ? AND product = ? AND level = 'shared'").run(enabled ? 1 : 0, account, product);
   }
 
   forAccount(account: string): ShareRow[] {

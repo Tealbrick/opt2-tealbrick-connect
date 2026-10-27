@@ -228,7 +228,7 @@ test("sharing levels: none sees nothing; available sees the catalog (no text) an
 
   // available
   await s.share(acct, "knowledge", "available");
-  assert.deepEqual(await s.op("data_accounts_list", {}, s.ctx.knowledge), { accounts: [{ account: acct, service: "telegram", label: "Support bot", kinds: ["messages"], level: "available" }] });
+  assert.deepEqual(await s.op("data_accounts_list", {}, s.ctx.knowledge), { accounts: [{ account: acct, service: "telegram", label: "Support bot", kinds: ["messages"], datasets: ["messages"], level: "available" }] });
   const catalog = (await s.op("data_catalog", { account: acct }, s.ctx.knowledge)) as unknown as { level: string; untrusted: boolean; datasets: { dataset: string; kind: string; delivery: string; approxRows: number; history: boolean; conversations: { id: string; name: string; approxRows: number }[] }[] };
   assert.equal(catalog.level, "available");
   assert.equal(catalog.untrusted, true);

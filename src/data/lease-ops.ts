@@ -9,7 +9,13 @@
  * The code stays (handlers in `src/app.ts`, `DatabaseService.lease`, the lease record), reachable only when the manifest handed
  * to `createConnectApp` declares these operations: tests do that with `LEASE_OPS`. To ship leases: add `secretOutput: true` to
  * `data_lease` and the bridge-capability requirement, move these definitions into the manifest, and take the refusal code
- * `secret_output_app_only` from the spec. Until then database accounts ship with the catalog only (share level `available`).
+ * `secret_output_app_only` from the spec. Until then database accounts ship with the catalog (share level `available`) and rows
+ * as documents (level `shared`, data_pull).
+ *
+ * QA-CONNECT35-11 (C373): a share at `shared` means "rows as documents" and NEVER "the database credential". When leases ship,
+ * the owner must enable a lease with its own explicit flag on the share (`connect_db_shares.lease`, migration 0021, default 0,
+ * reset by any change of the share). The `data_lease` handler refuses with `lease_unavailable` unless that flag is set, so
+ * `shared` alone cannot grant one. The owner operation and the page control that set the flag come with the lease release.
  */
 import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 
