@@ -134,6 +134,19 @@ test("Postiz: the create-post tool and its __draft form name no recipients (it p
   assert.equal("recipients" in (draft ?? {}), false);
 });
 
+test("catalog sends: the entry's firstContact labels (sendRecipients, dotted) stay Connect's first-contact gate and are not places", () => {
+  const tools = new ToolRegistry(testDb());
+  // as the frappe-crm entry labels them (catalog 0.3.1): no kind, record names next to addresses, a stored customer behind body.to
+  const reply = { ...row("hd_reply_to_ticket", ["body"]), name: "frappe_crm_hd_reply_to_ticket", sendRecipients: ["body.to", "body.cc", "body.bcc"] };
+  const create = { ...row("hd_ticket_create", ["body"]), name: "frappe_crm_hd_ticket_create", sendRecipients: ["body.raised_by", "body.contact", "body.customer"] };
+  tools.replaceService("catalog", "frappe-crm", [reply, create]);
+  for (const name of ["frappe_crm_hd_reply_to_ticket", "frappe_crm_hd_ticket_create"]) {
+    assert.equal(tools.resolve(name)?.effect, "outward", name);
+    assert.equal("recipients" in (tools.resolve(name) ?? {}), false, name);
+    assert.equal("recipients" in (tools.resolve(`${name}${FIRST_CONTACT_SUFFIX}`) ?? {}), false, name);
+  }
+});
+
 test("guards: only outward Composio tools of the table, and only while the current schema matches the table", () => {
   const one = (source: ToolSource, r: Omit<ToolRow, "source" | "service">) => dynamicRecipients({ ...r, source });
   const send = row("GMAIL_SEND_EMAIL", ["recipient_email", "cc", "bcc", "subject"]);
@@ -156,7 +169,7 @@ test("guards: only outward Composio tools of the table, and only while the curre
   assert.equal(one("composio", row("constructor", ["to"])), null);
 });
 
-test("every table entry is a valid M-OP-13 list: 1..8 unique RFC 6901 places of a known kind", () => {
+test("every table entry is a valid M-OP-14 list: 1..8 unique RFC 6901 places of a known kind", () => {
   const lists = [...Object.values(COMPOSIO_SENDS).map((e) => e.specs), ...Object.values(STATIC_OP_RECIPIENTS)];
   for (const specs of lists) {
     assert.ok(specs.length >= 1 && specs.length <= RECIPIENT_SPECS_MAX);
@@ -167,7 +180,7 @@ test("every table entry is a valid M-OP-13 list: 1..8 unique RFC 6901 places of 
     }
   }
   // the spec 0.1.81 kind list (manifest normalizeHandle channels)
-  assert.deepEqual([...RECIPIENT_KINDS].sort(), ["buzz", "email", "slack", "telegram"]);
+  assert.deepEqual(RECIPIENT_KINDS, ["buzz", "slack", "telegram", "email"]);
 });
 
 test("static ops: buzz_dm and buzz_dm_first name /to as buzz; prepared, NOT in the manifest until the spec 0.1.81 pin bump", () => {

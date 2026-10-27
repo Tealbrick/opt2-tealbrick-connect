@@ -16,18 +16,19 @@
  */
 import type { DynamicResolution, Effect, JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
 
-// TODO(C373 re-pin, spec 0.1.81): `RecipientSpec`, its kinds and `DynamicResolution.recipients` come from
-// `@opt2-tealbrick/spec/manifest` (labelled 0.1.81, not released yet). Import them from there and delete these local mirrors when
-// the spec, manifest (M-OP-13) and miniapp-sdk pins move. Until the miniapp-sdk pin moves, the SDK resolve route drops
+// TODO(C373 re-pin, spec 0.1.81): `RecipientSpec`, `RecipientKind`, `RECIPIENT_KINDS`, `RECIPIENT_SPECS_MAX` and
+// `DynamicResolution.recipients` come from `@opt2-tealbrick/spec/manifest` (specs#64, labelled 0.1.81, not released yet; the
+// manifest rule is M-OP-14, sdk#61). Import them from there and delete these local mirrors when the spec, manifest and
+// miniapp-sdk pins move. Until the miniapp-sdk pin moves, the SDK resolve route drops
 // `recipients` (it copies only tool, crud, effect, holdFamily), so the bridge does not see them yet.
-export const RECIPIENT_KINDS = ["email", "buzz", "slack", "telegram"] as const;
+export const RECIPIENT_KINDS = ["buzz", "slack", "telegram", "email"] as const;
 export type RecipientKind = (typeof RECIPIENT_KINDS)[number];
 export interface RecipientSpec {
   /** RFC 6901 pointer into the op input (static op) or the inner tool arguments (dynamic tool) */
   pointer: string;
   kind: RecipientKind;
 }
-/** M-OP-13: 1..8 places per op or resolution */
+/** M-OP-14: 1..8 places per op or resolution */
 export const RECIPIENT_SPECS_MAX = 8;
 /** `DynamicResolution` with the spec 0.1.81 field (structural until the spec pin types it). */
 export type ResolutionWithRecipients = DynamicResolution & { recipients?: RecipientSpec[] };
@@ -59,8 +60,15 @@ export const STATIC_OP_RECIPIENTS: Readonly<Record<string, readonly RecipientSpe
  * - GMAIL_SEND_DRAFT, OUTLOOK_SEND_DRAFT: the recipients are in the stored draft, not in the arguments.
  * - OUTLOOK_REPLY_EMAIL, OUTLOOK_REPLY_ALL and reply drafts: the reply goes to the original sender, who is not an argument.
  * - GMAIL_CREATE_EMAIL_DRAFT and other drafts: a draft reaches nobody.
- * - MCP and catalog tools (Postiz included: it posts to the owner's own channels, not to a person), Discord and Teams tools
- *   (no handle kind), Buzz/Nostr (no Composio toolkit; Connect's own `buzz_dm` op is static).
+ * - MCP tools, Discord and Teams tools (no handle kind), Buzz/Nostr (no Composio toolkit; Connect's own `buzz_dm` op is static).
+ * - Catalog tools, Postiz included (it posts to the owner's own channels, not to a person). The catalog's own recipient
+ *   labels (`firstContact[].recipients` → `ToolRow.sendRecipients`, dotted `body.to`) are NOT converted to places, and that is
+ *   the only other source: it covers catalog ops, this table covers Composio slugs, so no tool has two. They are not converted
+ *   because they mean something else: (1) no kind (frappe-crm `hd_ticket_create` names `body.contact` and `body.customer`,
+ *   which are record names, not addresses); (2) Connect's first-contact gate treats an EMPTY first place as "recipients
+ *   unknown" (`recipientsAt`, review #19 S3-1: `hd_reply_to_ticket` without `body.to` still mails the stored ticket customer),
+ *   while the bridge reads an empty place as "no recipients", which would tell Rules a mail to the customer has none.
+ *   Follow-up (catalog format): a `kind` per label and a rule for stored recipients, then one converter here.
  */
 export const COMPOSIO_SENDS: Readonly<Record<string, { specs: readonly RecipientSpec[]; notRecipients?: readonly string[] }>> = {
   GMAIL_SEND_EMAIL: { specs: places("email", "recipient_email", "to", "extra_recipients", "cc", "bcc") },
