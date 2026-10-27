@@ -14,7 +14,7 @@ import { after, before, test } from "node:test";
 
 import { digest, type Ed25519KeyPair, generateKeyPair, signCallProof, signGrant, signKeySetStatement, signSlice, ulid } from "@opt2-tealbrick/manifest";
 import { decideHold, defineApp, HOLD_VIEW_UNREADABLE, startApp, TbError } from "@opt2-tealbrick/miniapp-sdk";
-import type { Manifest } from "@opt2-tealbrick/spec/manifest";
+import type { HoldFamily, Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json, PersonPrincipal, RunningApp } from "@opt2-tealbrick/spec/sdk";
 
 import { AccountStore } from "../src/accounts.ts";
@@ -136,10 +136,17 @@ before(async () => {
       new ToolRegistry(ctx.db).replaceService(
         "composio",
         "gmail",
-        ["GMAIL_SEND_DRAFT", "GMAIL_GET_DRAFT"].map((slug) => ({ name: toolName(slug), upstream: slug, title: slug === "GMAIL_SEND_DRAFT" ? "Send draft" : "Get draft", description: slug, inputSchema: entrySchema({}), ...classifyComposioTool(slug, gmail) })),
+        ["GMAIL_SEND_DRAFT", "GMAIL_GET_DRAFT", "GMAIL_DELETE_MESSAGE"].map((slug) => ({ name: toolName(slug), upstream: slug, title: slug === "GMAIL_SEND_DRAFT" ? "Send draft" : slug === "GMAIL_DELETE_MESSAGE" ? "Delete message" : "Get draft", description: slug, inputSchema: entrySchema({}), ...classifyComposioTool(slug, gmail) })),
       );
       await ctx.scopes.instances.create(PRODUCT_SCOPE, account.id, account.label);
-      await ctx.scopes.set(owner, w.agent, PRODUCT_SCOPE, account.id, "read_update");
+      await ctx.scopes.set(owner, w.agent, PRODUCT_SCOPE, account.id, "read_update_delete");
+      // C368: a Postiz account and its create-post tool (the row as the catalog sync writes it), for the draft variant
+      const postiz = new AccountStore(ctx.db).create({ service: "postiz", source: "catalog", kind: "as_me", label: "Postiz", externalRef: "https://postiz.example.com", status: "connected" });
+      new ToolRegistry(ctx.db).replaceService("catalog", "postiz", [
+        { name: "cb_postiz_create", upstream: "PublicIntegrationsController_createPost", title: "POST /public/v1/posts", description: "", inputSchema: entrySchema({}), crud: ["create"], effect: "outward", holdFamily: "outward", httpMethod: "post", httpPath: "/public/v1/posts" },
+      ]);
+      await ctx.scopes.instances.create(PRODUCT_SCOPE, postiz.id, postiz.label);
+      await ctx.scopes.set(owner, w.agent, PRODUCT_SCOPE, postiz.id, "read_update_delete");
       await definition.onStart?.(ctx);
     },
   });
@@ -159,10 +166,12 @@ after(async () => {
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
 });
 
-async function sendDraft(): Promise<{ status: number; body: Record<string, any> }> {
-  const input: Json = { tool: "gmail_send_draft__first_contact", arguments: { draft_id: "r-1" } };
+const sendDraft = () => callTool("gmail_send_draft__first_contact", { draft_id: "r-1" }, ["first_contact"]);
+
+async function callTool(tool: string, args: Json, held: HoldFamily[]): Promise<{ status: number; body: Record<string, any> }> {
+  const input: Json = { tool, arguments: args };
   const grant = await signGrant(
-    { iss: "tb:portal", sub: `tb:agt:${w.agent}`, aud: `tb:ins:${w.ins}`, iat: nowS(), ws: w.ws, cnf: { brg: w.brg }, crud: ["create", "read", "update", "delete"], mode: "free", held: ["first_contact"], caps: {}, wf: [], polrev: 1 },
+    { iss: "tb:portal", sub: `tb:agt:${w.agent}`, aud: `tb:ins:${w.ins}`, iat: nowS(), ws: w.ws, cnf: { brg: w.brg }, crud: ["create", "read", "update", "delete"], mode: "free", held, caps: {}, wf: [], polrev: 1 },
     w.portal,
   );
   const jti = (JSON.parse(Buffer.from(grant.split(".")[1] as string, "base64url").toString("utf8")) as { jti: string }).jti;
@@ -175,10 +184,10 @@ async function sendDraft(): Promise<{ status: number; body: Record<string, any> 
   return { status: res.status, body: (await res.json()) as Record<string, any> };
 }
 
-function hold(id: string): { status: string; view: string | null; summary: string } {
+function hold(id: string): { status: string; view: string | null; summary: string; meta: string } {
   const db = new DatabaseSync(join(dataDir, "app.db"), { readOnly: true });
   try {
-    return db.prepare("SELECT status, view, summary FROM tb_receipts WHERE id = ?").get(id) as { status: string; view: string | null; summary: string };
+    return db.prepare("SELECT status, view, summary, meta FROM tb_receipts WHERE id = ?").get(id) as { status: string; view: string | null; summary: string; meta: string };
   } finally {
     db.close();
   }
@@ -220,4 +229,40 @@ test("the draft cannot be read → the hold is still created with the 'could not
   assert.equal(h.status, "held");
   assert.ok(h.view?.startsWith(`${HOLD_VIEW_UNREADABLE}\n\n`), h.view ?? "");
   assert.match(h.view ?? "", /"draft_id": "r-1"/u);
+});
+
+test("C368/C369: a held non-send tool shows a readable card (no JSON) and Connect keeps its details under the receipt's meta.viewSha256", async () => {
+  const r = await callTool("gmail_delete_message", { message_id: "m-77", note: "<p>old</p>" }, ["destructive"]);
+  assert.equal(r.status, 202, JSON.stringify(r.body));
+  const h = hold(String(r.body.holdId));
+  assert.equal(h.status, "held");
+  assert.equal(h.view, "Delete message (gmail)\nAccount: Work inbox\n\nMessage id: m-77\nNote: old");
+  assert.ok(!(h.view ?? "").startsWith(HOLD_VIEW_UNREADABLE));
+  const meta = JSON.parse(h.meta) as { tool: string; viewSha256: string };
+  assert.equal(meta.tool, "gmail_delete_message");
+  const db = new DatabaseSync(join(dataDir, "app.db"), { readOnly: true });
+  try {
+    const row = db.prepare("SELECT tool, details FROM connect_hold_details WHERE view_sha256 = ?").get(meta.viewSha256) as { tool: string; details: string } | undefined;
+    assert.ok(row, "details are stored under the hash the SDK binds the approval to");
+    const d = JSON.parse(row.details) as { upstream: string; account: { label: string }; arguments: string };
+    assert.deepEqual([row.tool, d.upstream, d.account.label], ["gmail_delete_message", "GMAIL_DELETE_MESSAGE", "Work inbox"]);
+    assert.deepEqual(JSON.parse(d.arguments), { message_id: "m-77", note: "<p>old</p>" });
+  } finally {
+    db.close();
+  }
+});
+
+test("C368 on the real SDK: the base create-post is held (outward); the __draft form is a plain write the SDK does not hold, and a non-draft input on it is refused before anything is sent", async () => {
+  const post = { integration: { id: "ch1" }, value: [{ content: "<p>Hello</p>" }], settings: { __type: "linkedin" } };
+  const sched = await callTool("cb_postiz_create", { body: { type: "schedule", date: "2026-11-03T13:30:00Z", posts: [post] } }, ["outward"]);
+  assert.equal(sched.status, 202, JSON.stringify(sched.body));
+  assert.match(hold(String(sched.body.holdId)).view ?? "", /^Create a Postiz post\nAccount: Postiz\nType: SCHEDULED[\s\S]*Channel: LinkedIn · channel id ch1[\s\S]*Hello$/u);
+  // the same schedule on the draft name: not held by the SDK, refused by Connect
+  const sneaky = await callTool("cb_postiz_create__draft", { body: { type: "schedule", date: "2026-11-03T13:30:00Z", posts: [post] } }, ["outward"]);
+  assert.equal(sneaky.status, 409, JSON.stringify(sneaky.body));
+  assert.equal(sneaky.body.error?.code, "draft_not_plain");
+  // a real draft: not held (the upstream call then fails here because the test has no Postiz, which is not a hold)
+  const draft = await callTool("cb_postiz_create__draft", { body: { type: "draft", posts: [post] } }, ["outward"]);
+  assert.notEqual(draft.status, 202, "a draft is not held");
+  assert.notEqual(draft.body.error?.code, "draft_not_plain");
 });

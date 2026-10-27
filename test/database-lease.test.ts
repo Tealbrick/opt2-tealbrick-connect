@@ -626,10 +626,10 @@ test("migration 0018 is expand only: numbering has no gap, old rows survive unto
   // The Coordinator's order: Inbox #23 = 0016, another PR = 0017, this PR = 0018. Until those two are on main the folder has
   // a gap at 0016 and 0017 (the SDK's gap-free check fails locally for the real-SDK tests and conformance, by design); every
   // number below this migration is gap-free from 0001 and this one is the last.
+  // C368: later migrations (0019 and up) are allowed; the numbering is gap-free and 0018 stays where it was.
   const numbers = files.map((f) => Number(f.slice(0, 4)));
-  assert.deepEqual(numbers.slice(0, -1), numbers.slice(0, -1).map((_, n) => n + 1), "gap-free from 0001 below this migration");
-  assert.equal(numbers.at(-1), 18);
-  assert.equal(files.at(-1), "0018_database_accounts.sql");
+  assert.deepEqual(numbers, numbers.map((_, n) => n + 1), "gap-free from 0001");
+  assert.equal(files[17], "0018_database_accounts.sql");
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   for (const f of files.filter((n) => n < "0018")) db.exec(readFileSync(join(dir, f), "utf8"));

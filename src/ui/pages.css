@@ -48,3 +48,11 @@
   .item { grid-template-columns: auto minmax(0, 1fr); }
   .item > .side { grid-column: 2; grid-row: auto; justify-content: flex-start; }
 }
+
+/* C369: "More details" modal of a hold card (src/ui/hold-details.tsx) */
+.hold-details .hold-facts { display: grid; gap: 6px; margin: 0 0 var(--tb-s4); }
+.hold-details .hold-facts div { display: grid; grid-template-columns: minmax(110px, 160px) 1fr; gap: 12px; }
+.hold-details .hold-facts dt { color: var(--tb-muted); }
+.hold-details .hold-facts dd { margin: 0; overflow-wrap: anywhere; }
+.hold-details pre.view { margin: 4px 0 0; padding: 10px 12px; max-height: 360px; overflow: auto; border-radius: var(--tb-radius-brick); background: var(--tb-plate); color: var(--tb-ink); font-family: var(--tb-font-mono); font-size: var(--tb-text-tag); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .hold-details .hold-facts div { grid-template-columns: 1fr; gap: 0; } }

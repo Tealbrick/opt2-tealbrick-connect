@@ -284,3 +284,122 @@ export function gmailContentRead(upstream: string, args: Record<string, unknown>
   if (upstream === "GMAIL_FORWARD_MESSAGE" && typeof args.message_id === "string" && args.message_id) return { slug: "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID", args: { user_id: user, message_id: args.message_id, format: "full" }, kind: "forward" };
   return null;
 }
+
+// ── C368/C369: the readable fallback for every other dynamic tool ──
+
+const FIELDS_SHOWN = 60;
+const SCALAR_MAX = 300;
+const TEXT_BLOCK_MAX = 1500;
+const GENERIC_MAX = 15_000;
+const DEPTH_MAX = 6;
+
+/** `recipient_email` / `recipientEmail` → "Recipient email". */
+const humanize = (key: string): string => {
+  const words = key.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").replace(/[_\-.]+/gu, " ").trim().toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "(unnamed)";
+};
+
+interface Field {
+  label: string;
+  /** a short value goes on the label's line; a long or multi-line text goes under it */
+  value: string;
+  block: boolean;
+}
+
+function collectFields(value: unknown, path: string[], out: Field[], state: { more: number }, depth: number): void {
+  // QA-CONNECT33-2: a key is agent text; one() removes newlines, control and bidi characters so it cannot forge a card line
+  const label = one(path.map((p) => (/^#\d+$/u.test(p) ? p : humanize(p))).join(" › "), 160);
+  const push = (field: Field) => {
+    if (out.length >= FIELDS_SHOWN) state.more += 1;
+    else out.push(field);
+  };
+  if (value === null || value === undefined) {
+    push({ label, value: "(empty)", block: false });
+    return;
+  }
+  if (typeof value === "boolean") {
+    push({ label, value: value ? "yes" : "no", block: false });
+    return;
+  }
+  if (typeof value === "number") {
+    push({ label, value: String(value), block: false });
+    return;
+  }
+  if (typeof value === "string") {
+    const text = plainText(value);
+    if (text.length > 100 || text.includes("\n")) {
+      const chars = [...text];
+      const rest = chars.length - TEXT_BLOCK_MAX;
+      push({ label: rest > 0 ? `${label} (plain text, first ${TEXT_BLOCK_MAX} characters; ${rest} more not shown)` : `${label} (plain text)`, value: chars.slice(0, TEXT_BLOCK_MAX).join(""), block: true });
+      return;
+    }
+    push({ label, value: one(text, SCALAR_MAX) || "(empty)", block: false });
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+    push({ label, value: "(none)", block: false });
+    return;
+  }
+    if (value.every((v) => v === null || ["string", "number", "boolean"].includes(typeof v)) && value.length <= 20) {
+      const joined = value.map((v) => (typeof v === "string" ? one(v, 120) : String(v))).join(", ");
+      push({ label, value: one(joined, SCALAR_MAX), block: false });
+      return;
+    }
+    value.forEach((item, i) => {
+      if (i < 20 && depth < DEPTH_MAX) collectFields(item, [...path, `#${i + 1}`], out, state, depth + 1);
+      else state.more += 1;
+    });
+    return;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    if (entries.length === 0) {
+    push({ label, value: "(none)", block: false });
+    return;
+  }
+    if (depth >= DEPTH_MAX) {
+    push({ label, value: `(${entries.length} more fields)`, block: false });
+    return;
+  }
+    for (const [k, v] of entries) collectFields(v, [...path, k], out, state, depth + 1);
+  }
+}
+
+/**
+ * C368/C369: the owner's card for a held call of a dynamic tool without a special view: what the tool is, which account, and the
+ * arguments as labelled lines (never a JSON blob). Long text is shown as text with HTML stripped. Keys are sorted so the same
+ * input always gives the same text (the approval is bound to it). The raw arguments are in "More details" for the owner.
+ */
+export function renderGenericHold(input: { heading: string; account: string; args: Record<string, unknown> }): { summary: string; view: string } {
+  const fields: Field[] = [];
+  const state = { more: 0 };
+  const entries = Object.entries(input.args).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [k, v] of entries) collectFields(v, [k], fields, state, 0);
+  const lines: string[] = [one(input.heading, 200), `Account: ${one(input.account, 200)}`, ""];
+  if (fields.length === 0) lines.push("No arguments.");
+  for (const f of fields) {
+    if (f.block) lines.push(`${f.label}:`, ...f.value.split("\n").map((l) => `  ${l}`));
+    else lines.push(`${f.label}: ${f.value}`);
+  }
+  if (state.more > 0) lines.push(`(and ${state.more} more fields not shown; see More details)`);
+  let view = lines.join("\n");
+  if (view.length > GENERIC_MAX) view = `${view.slice(0, GENERIC_MAX - 40)}\n(the rest is not shown)`;
+  const first = fields.find((f) => !f.block);
+  const summary = [one(input.heading, 160), first ? `${first.label}: ${one(first.value, 80)}` : null].filter(Boolean).join(" · ");
+  return { summary: summary.length <= SUMMARY_MAX ? summary : `${summary.slice(0, SUMMARY_MAX - 1)}…`, view };
+}
+
+/**
+ * The words an owner reads for a tool. A catalog operation without a summary has the title "PUT /public/v1/posts/{id}/status";
+ * its operation id ("PublicIntegrationsController_changePostStatus") gives "Change post status". Other titles: the first sentence.
+ */
+export function readableTitle(title: string, upstream: string): string {
+  if (/^[A-Z]+ \//u.test(title.trim())) {
+    const last = upstream.split("_").filter(Boolean).at(-1) ?? upstream;
+    const words = humanize(last);
+    if (words !== "(unnamed)") return words;
+  }
+  const first = title.trim().split(/(?<=[.!?])\s/u)[0] ?? title;
+  return first.length <= 160 ? first : `${first.slice(0, 159)}…`;
+}

@@ -7,6 +7,7 @@ import type { CrudAction, DynamicCatalogEntry, DynamicResolution, Effect, HoldFa
 import type { Db } from "@opt2-tealbrick/spec/sdk";
 
 import { isSendTool, type ToolClass } from "./effect.ts";
+import { isPostizCreatePost } from "./postiz.ts";
 import { sha256Hex } from "./util/ids.ts";
 
 export const TOOL_SOURCES = ["composio", "catalog", "mcp"] as const;
@@ -19,6 +20,21 @@ export type ToolSource = (typeof TOOL_SOURCES)[number];
  * Plain tool names never contain `__` (toolName collapses separators), so the suffix cannot clash with a real tool.
  */
 export const FIRST_CONTACT_SUFFIX = "__first_contact";
+
+/**
+ * C368: `<tool>__draft` is the Postiz create-post tool resolved as a PLAIN WRITE (no hold family). It is offered only for that one
+ * upstream operation (POST /public/v1/posts), and `tools.call` runs it only when the exact input is a draft that cannot touch an
+ * existing post (src/postiz.ts `draftCheck`). Everything else (type schedule / now, a missing or odd type, an id or group in the
+ * body, PUT /posts/{id}/status) stays on the base tool, which is outward and held.
+ */
+export const DRAFT_SUFFIX = "__draft";
+
+/** The base tool name of a resolved variant name, and which variant it is (null = a plain tool name). */
+export function splitVariant(name: string): { base: string; variant: "first_contact" | "draft" | null } {
+  if (name.endsWith(FIRST_CONTACT_SUFFIX)) return { base: name.slice(0, -FIRST_CONTACT_SUFFIX.length), variant: "first_contact" };
+  if (name.endsWith(DRAFT_SUFFIX)) return { base: name.slice(0, -DRAFT_SUFFIX.length), variant: "draft" };
+  return { base: name, variant: null };
+}
 
 /** Argument every catalog entry carries so the agent can pick one of several accounts of the same service. */
 export const ACCOUNT_ARGUMENT = "connect_account";
@@ -37,6 +53,9 @@ export interface ToolRow extends ToolClass {
   readClaim?: boolean;
   /** C276c: catalog send tool — where its recipients are in the input ([] = not determinable: every call is a first contact) */
   sendRecipients?: string[];
+  /** C368: catalog only — the upstream operation (lower-case HTTP method and path template, without the base path) */
+  httpMethod?: string;
+  httpPath?: string;
 }
 
 /** DynamicCatalogEntry.name from an upstream slug: lower snake case, ≤ 48 chars (hash suffix when shortened). */
@@ -90,6 +109,7 @@ function fromRow(row: Record<string, unknown>): ToolRow {
     ...(row.hold_family ? { holdFamily: String(row.hold_family) as HoldFamily } : {}),
     ...(Number(row.read_claim ?? 0) === 1 ? { readClaim: true } : {}),
     ...(typeof row.send_recipients === "string" ? { sendRecipients: JSON.parse(row.send_recipients) as string[] } : {}),
+    ...(typeof row.http_method === "string" && typeof row.http_path === "string" ? { httpMethod: row.http_method, httpPath: row.http_path } : {}),
   };
 }
 
@@ -117,18 +137,18 @@ export class ToolRegistry {
     return this.#db.transaction(() => {
       this.#db.prepare("DELETE FROM connect_tools WHERE source = ? AND service = ?").run(source, service);
       const insert = this.#db.prepare(
-        `INSERT INTO connect_tools (name, source, service, upstream, title, description, input_schema, crud, effect, hold_family, read_claim, send_recipients, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO connect_tools (name, source, service, upstream, title, description, input_schema, crud, effect, hold_family, read_claim, send_recipients, http_method, http_path, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (name) DO UPDATE SET source = excluded.source, service = excluded.service, upstream = excluded.upstream,
            title = excluded.title, description = excluded.description, input_schema = excluded.input_schema, crud = excluded.crud,
            effect = excluded.effect, hold_family = excluded.hold_family, read_claim = excluded.read_claim, send_recipients = excluded.send_recipients,
-           updated_at = excluded.updated_at`,
+           http_method = excluded.http_method, http_path = excluded.http_path, updated_at = excluded.updated_at`,
       );
       for (const tool of tools) {
         insert.run(
           tool.name, source, service, tool.upstream, tool.title, tool.description, JSON.stringify(tool.inputSchema),
           JSON.stringify(tool.crud), tool.effect, tool.holdFamily ?? null, tool.readClaim ? 1 : 0,
-          tool.sendRecipients ? JSON.stringify(tool.sendRecipients) : null, now,
+          tool.sendRecipients ? JSON.stringify(tool.sendRecipients) : null, tool.httpMethod ?? null, tool.httpPath ?? null, now,
         );
       }
       return tools.length;
@@ -171,6 +191,13 @@ export class ToolRegistry {
       const base = this.get(name.slice(0, -FIRST_CONTACT_SUFFIX.length));
       if (!base || !isSendTool(base)) return null;
       return { tool: name, crud: base.crud, effect: base.effect, holdFamily: "first_contact" };
+    }
+    if (name.endsWith(DRAFT_SUFFIX)) {
+      const base = this.get(name.slice(0, -DRAFT_SUFFIX.length));
+      // C368: a LOWER class than the base, for this one upstream operation only (decision C368 amends C354a "same or stricter").
+      // The class is by name, so the real gate is `tools.call` (draftCheck on the exact input): it refuses anything but a draft.
+      if (!base || !isPostizCreatePost(base)) return null;
+      return { tool: name, crud: base.crud, effect: "write" };
     }
     const row = this.get(name);
     if (!row) return null;

@@ -32,7 +32,21 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ── stub server (the standard ops under /a/kanban/tb/v1/) ───────────────────
 const ULID = "01HZX3K8Q2V4N6P8R0S2T4V6W8";
-type StubHold = { id: string; caller: { type: "agent"; id: string; name: string }; op: string; holdFamily: string | null; heldBy: string | null; summary: string; view?: string; status: "held" };
+type StubHold = {
+  id: string;
+  caller: { type: "agent"; id: string; name: string };
+  op: string;
+  holdFamily: string | null;
+  heldBy: string | null;
+  summary: string;
+  view?: string;
+  status: "held";
+  callId?: string;
+  inputDigest?: string;
+  meta?: unknown;
+  createdAt?: number;
+  expiresAt?: number;
+};
 const hold = (n: number, caller: string, op: string, summary: string, extra: Partial<StubHold> = {}): StubHold => ({
   id: `hld_${ULID.slice(0, 25)}${n}`,
   caller: { type: "agent", id: `agt_${n}`, name: caller },
@@ -45,6 +59,28 @@ const hold = (n: number, caller: string, op: string, summary: string, extra: Par
 });
 const A = hold(1, "Research partner", "issue_delete", "Delete issue “Old price list”", { holdFamily: "delete", view: "issue: Old price list\nproject: Launch" });
 const B = hold(2, "Front desk", "issue_move", "Move “Draft letters” to Done");
+// C369: a held dynamic tool call (Connect): the card is plain text, the technical data is in "More details"
+const SHA = `sha256:${"ab".repeat(32)}`;
+const C = hold(3, "Social agent", "tools", "Postiz post, SCHEDULED, to LinkedIn, 2026-11-03 13:30 UTC", {
+  holdFamily: "outward",
+  view: "Create a Postiz post\nAccount: Postiz\nType: SCHEDULED\n\nText (plain text):\n  Hello world",
+  callId: "call_01TEST",
+  inputDigest: `sha256:${"cd".repeat(32)}`,
+  meta: { tool: "cb_postiz_publicintegrationscontroller_ed872d66", viewSha256: SHA },
+  createdAt: Date.UTC(2026, 10, 3, 9, 15),
+  expiresAt: Date.UTC(2026, 10, 3, 9, 30),
+});
+const DETAILS = {
+  tool: "cb_postiz_publicintegrationscontroller_ed872d66",
+  title: "Create, schedule or publish posts.",
+  service: "postiz",
+  source: "catalog",
+  upstream: "PublicIntegrationsController_createPost",
+  method: "POST",
+  path: "/public/v1/posts",
+  account: { id: "cna_01ACCOUNT", label: "Postiz" },
+  arguments: '{\n  "body": {\n    "type": "schedule"\n  }\n}',
+};
 
 interface Stub {
   holds: StubHold[];
@@ -70,6 +106,10 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const failure = stub.fail[op];
   if (failure) return json(failure.status, { error: { code: failure.code, message: `raw upstream text for ${failure.code}`, requestId: "req_1" } });
   if (op === "tb.holds_list") return json(200, { status: "ok", output: { items: stub.holds, nextCursor: null } });
+  if (op === "hold_details") {
+    const sha = (body.input as { viewSha256?: string }).viewSha256;
+    return json(200, { status: "ok", output: sha === SHA ? { found: true, details: DETAILS } : { found: false } });
+  }
   if (op === "tb.holds_decide") {
     const id = (body.input as { holdId: string }).holdId;
     stub.holds = stub.holds.filter((h) => h.id !== id);
@@ -272,5 +312,95 @@ describe("helpers", () => {
     assert.equal(std.pageOf(routes, base, `/a/kanban/holds/hld_${ULID}`, "board"), "holds");
     assert.equal(std.holdOf(`/a/kanban/holds/hld_${ULID}/`), `hld_${ULID}`);
     assert.equal(std.holdOf("/a/kanban/holds/hld_short"), null);
+  });
+});
+
+describe("C369: card and More details", () => {
+  const dialogs = () => [...document.querySelectorAll("dialog")] as HTMLDialogElement[];
+
+  it("the card is plain text with the agent, the summary and the time; no JSON; a More details button per card", async () => {
+    reset([C, B]);
+    const m = await mount(h(std.HoldsPage, { empty: "Nothing waits." }));
+    const card = rows(m.host)[0] as Element;
+    assert.equal(card.querySelector("h3")?.textContent, "Social agent");
+    assert.match(card.textContent ?? "", /Postiz post, SCHEDULED, to LinkedIn/);
+    const view = card.querySelector("pre.view")?.textContent ?? "";
+    assert.match(view, /^Create a Postiz post\nAccount: Postiz\nType: SCHEDULED/);
+    assert.doesNotMatch(view, /[{}"]/, "no JSON on the card");
+    assert.match(card.textContent ?? "", /\d{1,2}[:.]\d{2}/, "the time the agent asked");
+    assert.equal([...m.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "More details").length, 2);
+    assert.equal(dialogs().filter((d) => d.open).length, 0, "closed until asked");
+    assert.equal(stub.calls.filter((c) => c.op === "hold_details").length, 0, "nothing is read until the owner asks");
+    await m.unmount();
+  });
+
+  it("More details opens a modal with the tool, upstream operation, account, family, agent, ids, times and the input as formatted JSON", async () => {
+    reset([C]);
+    const m = await mount(h(std.HoldsPage, { empty: "Nothing waits." }));
+    await click(button(rows(m.host)[0] as Element, "More details"));
+    await flush();
+    const [d] = dialogs();
+    assert.ok(d?.open, "the dialog is open");
+    assert.ok(d.getAttribute("aria-labelledby"), "named for assistive technology");
+    assert.equal(d.querySelector("h2")?.textContent, "Social agent");
+    const text = d.textContent ?? "";
+    for (const part of [
+      "cb_postiz_publicintegrationscontroller_ed872d66",
+      "POST /public/v1/posts (PublicIntegrationsController_createPost)",
+      "Postiz (cna_01ACCOUNT)",
+      "outward",
+      "Social agent (agt_3)",
+      C.id,
+      "call_01TEST",
+      `sha256:${"cd".repeat(32)}`,
+      "2026-11-03T09:15:00.000Z",
+      "2026-11-03T09:30:00.000Z",
+    ])
+      assert.ok(text.includes(part), `modal shows ${part}`);
+    assert.equal(d.querySelector("pre.view")?.textContent, DETAILS.arguments, "the input as formatted JSON, in the modal only");
+    assert.deepEqual(stub.calls.filter((c) => c.op === "hold_details").map((c) => c.input), [{ viewSha256: SHA }]);
+    await m.unmount();
+  });
+
+  it("Esc (the dialog's cancel event) and the Close button close it; the card stays", async () => {
+    reset([C]);
+    const m = await mount(h(std.HoldsPage, { empty: "Nothing waits." }));
+    await click(button(rows(m.host)[0] as Element, "More details"));
+    await flush();
+    assert.ok(dialogs()[0]?.open);
+    await act(async () => {
+      dialogs()[0]?.dispatchEvent(new win.Event("cancel", { cancelable: true }) as unknown as Event);
+    });
+    assert.equal(dialogs().filter((d) => d.open).length, 0, "Esc closes");
+    await click(button(rows(m.host)[0] as Element, "More details"));
+    await flush();
+    assert.ok(dialogs()[0]?.open, "reopens");
+    await click(button(dialogs()[0] as unknown as Element, "Close"));
+    assert.equal(dialogs().filter((d) => d.open).length, 0, "Close closes");
+    assert.equal(rows(m.host).length, 1);
+    await m.unmount();
+  });
+
+  it("a hold without kept details (or an older hold) says so plainly; a failed read is an alert, not a blank", async () => {
+    reset([{ ...C, meta: { tool: "x", viewSha256: `sha256:${"00".repeat(32)}` } }]);
+    let m = await mount(h(std.HoldsPage, { empty: "Nothing waits." }));
+    await click(button(rows(m.host)[0] as Element, "More details"));
+    await flush();
+    assert.match(dialogs()[0]?.textContent ?? "", /Connect has no input for this call/);
+    await m.unmount();
+    reset([B]);
+    m = await mount(h(std.HoldsPage, { empty: "Nothing waits." }));
+    await click(button(rows(m.host)[0] as Element, "More details"));
+    await flush();
+    assert.match(dialogs()[0]?.textContent ?? "", /Connect has no input for this call/);
+    assert.equal(stub.calls.filter((c) => c.op === "hold_details").length, 0, "no hash, no request");
+    await m.unmount();
+    reset([C]);
+    stub.fail.hold_details = { status: 500, code: "internal_error" };
+    m = await mount(h(std.HoldsPage, { empty: "Nothing waits." }));
+    await click(button(rows(m.host)[0] as Element, "More details"));
+    await flush();
+    assert.match(dialogs()[0]?.querySelector('[role="alert"]')?.textContent ?? "", /Could not load the input/);
+    await m.unmount();
   });
 });
