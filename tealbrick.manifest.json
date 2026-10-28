@@ -5,7 +5,7 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "sdkMajor": 1,
   "publisher": {
     "name": "Tealbrick",
@@ -3532,6 +3532,89 @@
       "idempotency": "none",
       "receipt": false,
       "audience": "person"
+    },
+    {
+      "id": "contacts_list",
+      "title": "Agent contacts for Governance",
+      "description": "Who each agent has written to, and on which channel: one row per first contact Connect recorded (Buzz DMs, chat DMs per bot account, recipients of send tools). Handles only (\"<channel>:<value>\", canonical for buzz, slack and telegram; the raw address for tool contacts), never message content, conversation ids or secrets. Only the Governance app can call this; agents and other apps get no_access.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 600,
+            "description": "nextCursor of the previous page."
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional: only contacts first made at or after this time (epoch milliseconds)."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contacts",
+          "nextCursor"
+        ],
+        "properties": {
+          "contacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "agent",
+                "channel",
+                "handle",
+                "firstContactAt"
+              ],
+              "properties": {
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "agt_ id; null for the workspace sender, an app caller or a bot account bound to no agent."
+                },
+                "channel": {
+                  "type": "string",
+                  "description": "buzz, the chat service of the bot account (slack, telegram, teams, discord), or tool."
+                },
+                "handle": {
+                  "type": "string",
+                  "description": "\"<channel>:<value>\" (normalizeHandle) where it applies; else the raw id or address."
+                },
+                "account": {
+                  "type": "string",
+                  "description": "Label of the Connect account (chat and tool contacts)."
+                },
+                "firstContactAt": {
+                  "type": "integer",
+                  "description": "Epoch milliseconds."
+                }
+              }
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent",
+      "listing": "workflow"
     }
   ],
   "companions": [
