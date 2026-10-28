@@ -22,6 +22,8 @@ export interface ServiceHit {
   baseUrlExample?: string;
   /** Catalog entries only: what credential the owner should use (e.g. "a dedicated View-only user"). */
   credentialHint?: string;
+  /** C373 T2: a service the owner added from their own OpenAPI description */
+  own?: boolean;
 }
 
 export interface Account {
@@ -35,8 +37,12 @@ export interface Account {
   detail: string;
   /** Chat and database accounts (C230 R3, C336): the apps the owner shared this account with. */
   shares?: AppShare[];
+  /** Tool accounts (C373 Jarvis): the workflow app instances that may call this account's READ tools. */
+  toolShares?: ToolShareView[];
   /** Database accounts only: `host:port/database`. Never a user or a password. */
   endpoint?: string;
+  /** database accounts: the TLS mode (C373) */
+  sslmode?: SslMode;
 }
 
 export interface AppShare {
@@ -113,8 +119,24 @@ export type RelayOutcome = { relay: string; ok: true } | { relay: string; ok: fa
 export const servicesSearch = (query: string) => callOp<{ composioKey: boolean; catalogAvailable?: boolean; services: ServiceHit[] }>("services_search", { query });
 /** `callersKnown` false = this Connect build cannot list the installed apps yet (miniapp-sdk < 0.1.32): no share can be made. */
 /** `ownerRowsEffective` false/absent = the workspace bridge does not admit owner rows above the Portal grant yet (QA-CON060-1). */
+/** C373 Jarvis: a workflow app (Evolving Workflows) the owner can share an account with for READ tools, and its instances. */
+export interface ToolApp {
+  product: string;
+  name: string;
+  instances: { instance: string; name: string }[];
+}
+export interface ToolShareView {
+  product: string;
+  instance: string;
+  current: boolean;
+  setAt: string;
+  /** false = the SDK scope row of the instance is missing, so the SDK refuses the calls (press Share again) */
+  scopeRow?: boolean;
+}
+export const accountToolsShare = (account: string, product: string, share: boolean, instance?: string) =>
+  callOp<{ account: string; product: string; shared: boolean }>("account_tools_share", { account, product, share, ...(share && instance ? { instance } : {}) });
 export const accountsOverview = () =>
-  callOp<{ accounts: Account[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean; databaseRecommendation?: string; leasesEnabled?: boolean }>("accounts_overview", {});
+  callOp<{ accounts: Account[]; toolApps?: ToolApp[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean; databaseRecommendation?: string; leasesEnabled?: boolean }>("accounts_overview", {});
 export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null, route?: ShareRoute) =>
   callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", {
     account,
@@ -154,6 +176,27 @@ export const catalogAccountConnect = (input: {
   kind: AccountKind;
   agent?: string;
 }) => callOp<{ account: Account }>("catalog_account_connect", input);
+/** C373 T2 "bring your own API": the input of api_preview / api_add and what they answer. */
+export interface OwnApiInput {
+  name: string;
+  description?: string;
+  spec: string;
+  auth: { type: "header" | "query" | "basic" | "none"; name?: string; prefix?: string };
+  labels?: { outward?: string[]; destructive?: string[]; money?: string[]; reads?: string[]; excluded?: string[] };
+  basePath?: string;
+  healthOperation?: string;
+}
+export interface OwnApiPreview {
+  service: string;
+  name: string;
+  operations: number;
+  counts: Record<string, number>;
+  tools: { operationId: string; method: string; path: string; effect: string; holdFamily?: string }[];
+  warnings: string[];
+}
+export const apiPreview = (input: OwnApiInput) => callOp<{ preview: OwnApiPreview }>("api_preview", input as unknown as Json);
+export const apiAdd = (input: OwnApiInput) => callOp<{ preview: OwnApiPreview }>("api_add", input as unknown as Json);
+export const apiRemove = (service: string) => callOp<{ removed: string }>("api_remove", { service });
 export const accountUpdate = (id: string, label: string) => callOp<{ account: Account }>("account_update", { id, label });
 export const accountDisconnect = (id: string) => callOp<{ account: Account }>("account_disconnect", { id });
 export const toolsRefresh = (service: string) => callOp<{ service: string; tools: Json }>("tools_refresh", { service });
@@ -168,6 +211,11 @@ export interface McpToolRow {
   ownerConfirmedRead: boolean;
 }
 export const mcpToolsList = (service: string) => callOp<{ service: string; tools: McpToolRow[] }>("mcp_tools_list", { service });
+/** C373 T3: the hold policy of one MCP server; it only raises classes. */
+export type McpPolicy = { money?: string[]; destructive?: string[]; outward?: string[]; writes?: string[] };
+export const mcpPolicyGet = (service: string) => callOp<{ service: string; policy: McpPolicy }>("mcp_policy_get", { service });
+export const mcpPolicySet = (service: string, policy: McpPolicy) =>
+  callOp<{ service: string; tools: number; classes: { name: string; effect: string; holdFamily: string | null }[] }>("mcp_policy_set", { service, policy });
 export const mcpToolReadSet = (name: string, read: boolean) => callOp<{ name: string; effect: string; ownerConfirmedRead: boolean }>("mcp_tool_read_set", { name, read });
 
 export const buzzIdentitiesList = () => callOp<{ relay: string | null; relays: string[]; relayProblems: string[]; agents: BuzzAgentRow[] }>("buzz_identities_list", {});

@@ -1,4 +1,4 @@
-import { Button, Card, EmptyState, Field, Select, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { Button, Card, EmptyState, Field, Select, Table, Tag, Textarea, TextInput } from "@opt2-tealbrick/ui";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog, KindBadge, LoadError, Notice, PageHead, ServiceTile, StatusLabel } from "../components.tsx";
@@ -11,6 +11,7 @@ import {
   accountAppShare,
   accountDisconnect,
   accountsOverview,
+  accountToolsShare,
   accountUpdate,
   agentsList,
   catalogAccountTest,
@@ -20,7 +21,10 @@ import {
   databaseAccountConnect,
   dataLeaseRevoke,
   dataLeasesList,
+  type McpPolicy,
   type McpToolRow,
+  mcpPolicyGet,
+  mcpPolicySet,
   mcpToolReadSet,
   mcpToolsList,
   type ShareLevel,
@@ -28,6 +32,7 @@ import {
   type SslMode,
   scopesAcceptOffer,
   scopesSet,
+  type ToolApp,
   toolsRefresh,
 } from "../ops.ts";
 
@@ -39,15 +44,17 @@ const SHARE_OPTIONS: { value: ShareLevel; label: string }[] = [
   { value: "shared", label: "Share messages (read only)" },
 ];
 
-// C336 RQ-3: a database is shared as a list of tables (available) or as a short lease on the read-only credential (shared).
+// C336 RQ-3 / C373: a database is shared as a list of tables (available) or as its rows, read as documents (shared).
 const DB_SHARE_OPTIONS: { value: ShareLevel; label: string }[] = [
   { value: "none", label: "Not shared" },
   { value: "available", label: "Table names only" },
-  { value: "shared", label: "Allow read-only access" },
+  { value: "shared", label: "Share rows as documents (read only)" },
 ];
-const ROUTE_OPTIONS: { value: ShareRoute; label: string }[] = [
-  { value: "direct", label: "Directly" },
-  { value: "via_observer", label: "Only through Observer" },
+// C373: an MCP server is shared as collection names and counts (available) or as its documents (shared).
+const MCP_SHARE_OPTIONS: { value: ShareLevel; label: string }[] = [
+  { value: "none", label: "Not shared" },
+  { value: "available", label: "Collection names and counts only" },
+  { value: "shared", label: "Share documents (read only)" },
 ];
 const SSL_OPTIONS: { value: SslMode; label: string }[] = [
   { value: "verify-full", label: "Encrypted, certificate checked" },
@@ -154,6 +161,7 @@ export function Accounts() {
             {list.some((a) => a.status === "connected" && a.source !== "database") ? <RefreshTools service={service} /> : null}
           </div>
           {list.some((a) => a.source === "mcp" && a.status === "connected") ? <McpTools service={service} /> : null}
+          {list.some((a) => a.source === "mcp" && a.status === "connected") ? <McpPolicyCard service={service} /> : null}
           <ul className="cards cards-wide">
             {list.map((account) => (
               <li key={account.id}>
@@ -164,6 +172,7 @@ export function Accounts() {
                   onAgentsChanged={agents.reload}
                   ownerRowsEffective={accounts.data?.ownerRowsEffective === true}
                   dataApps={accounts.data?.dataApps ?? []}
+                  toolApps={accounts.data?.toolApps ?? []}
                   callersKnown={callersKnown}
                   leasesEnabled={leasesEnabled}
                   onShared={async () => {
@@ -276,6 +285,55 @@ function McpTools({ service }: { service: string }) {
   );
 }
 
+const POLICY_LISTS: { key: keyof McpPolicy; title: string; hint: string }[] = [
+  { key: "money", title: "Spends money (always held)", hint: "For example *budget* or *_payment" },
+  { key: "destructive", title: "Removes data (held)", hint: "For example archive_*" },
+  { key: "outward", title: "Reaches people or the public (held)", hint: "For example *comment*" },
+  { key: "writes", title: "Changes data", hint: "" },
+];
+const policyLines = (v: string) =>
+  v
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+/** C373 T3: name tools of this MCP server that Connect must hold more strictly. A policy only raises a class. */
+function McpPolicyCard({ service }: { service: string }) {
+  const current = useLoad(() => mcpPolicyGet(service), service);
+  const [text, setText] = useState<Record<string, string> | null>(null);
+  const [state, setState] = useState<{ busy: boolean; note: string | null; error: boolean }>({ busy: false, note: null, error: false });
+  const shown = text ?? Object.fromEntries(POLICY_LISTS.map((l) => [l.key, (current.data?.policy[l.key] ?? []).join("\n")]));
+  const save = async () => {
+    setState({ busy: true, note: null, error: false });
+    try {
+      const out = await mcpPolicySet(service, Object.fromEntries(POLICY_LISTS.map((l) => [l.key, policyLines(shown[l.key] ?? "")])) as McpPolicy);
+      setText(null);
+      await current.reload();
+      setState({ busy: false, note: `Saved. ${out.tools} tools re-classed.`, error: false });
+    } catch (e) {
+      setState({ busy: false, note: errorText(e), error: true });
+    }
+  };
+  if (current.error) return <LoadError message={`The hold policy couldn’t be loaded: ${current.error}`} busy={current.loading} onRetry={() => void current.reload()} />;
+  return (
+    <Card as="section" className="tool-claims" aria-label="Hold policy of this server">
+      <p>
+        <strong>Hold policy.</strong> Name tools that Connect must treat more strictly than their names say, one tool name or * pattern per line. A policy only makes a tool
+        stricter; to trust a read-only claim use the button above.
+      </p>
+      {POLICY_LISTS.map((l) => (
+        <Field key={l.key} label={l.title} hint={l.hint}>
+          <Textarea value={shown[l.key] ?? ""} onChange={(e) => setText({ ...shown, [l.key]: e.target.value })} rows={2} spellCheck={false} />
+        </Field>
+      ))}
+      {state.note ? <Notice tone={state.error ? "error" : "ok"}>{state.note}</Notice> : null}
+      <Button size="sm" onClick={() => void save()} disabled={state.busy || current.loading}>
+        Save hold policy
+      </Button>
+    </Card>
+  );
+}
+
 function RefreshTools({ service }: { service: string }) {
   const [state, setState] = useState<{ busy: boolean; text: string | null; error: boolean }>({ busy: false, text: null, error: false });
   const run = async () => {
@@ -302,6 +360,7 @@ function RefreshTools({ service }: { service: string }) {
 }
 
 function AccountRow(props: {
+  toolApps: ToolApp[];
   account: Account;
   ownerName: string;
   agents: AgentInfo[];
@@ -368,8 +427,13 @@ function AccountRow(props: {
       {error ? <Notice tone="error">{error}</Notice> : null}
       {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
       {account.source === "database" && account.endpoint ? <p className="tb-soft">{account.endpoint} (Postgres). Agents never see this account; only the apps you share it with.</p> : null}
+      {account.source === "database" && account.sslmode ? <p className="tb-soft">{`Connection: ${SSL_OPTIONS.find((o) => o.value === account.sslmode)?.label ?? account.sslmode}.`}</p> : null}
+      {account.source === "database" && account.sslmode === "disable" ? <Notice tone="error">The connection to this database is not encrypted. The password and the rows that you share travel in clear text. Switch it to an encrypted connection when your database allows it.</Notice> : null}
       {account.status === "connected" && account.source !== "database" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} ownerRowsEffective={props.ownerRowsEffective} /> : null}
-      {account.status === "connected" && (account.source === "channel" || account.source === "database") && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} leasesEnabled={props.leasesEnabled} onChanged={props.onShared} /> : null}
+      {account.status === "connected" && account.kind === "as_me" && (account.source === "composio" || account.source === "catalog" || account.source === "mcp") && props.toolApps.some((t) => t.instances.length > 0) ? (
+        <ToolSharing account={account} apps={props.toolApps} onChanged={props.onShared} />
+      ) : null}
+      {account.status === "connected" && (account.source === "channel" || account.source === "database" || account.source === "mcp") && props.dataApps.length > 0 ? <AppSharing account={account} apps={props.dataApps} callersKnown={props.callersKnown} onChanged={props.onShared} /> : null}
       {!editing ? (
         <div className="tb-ctas">
           <Button size="sm" onClick={() => setEditing(true)} aria-label={`Rename ${account.label}`}>
@@ -523,7 +587,69 @@ function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }:
  *   - moving a share to another instance is a new share: "Include the last 30 days" starts unticked again.
  * An instance on the owner's own server is named as such.
  */
-function AppSharing({ account, apps, callersKnown, leasesEnabled, onChanged }: { account: Account; apps: DataApp[]; callersKnown: boolean; leasesEnabled: boolean; onChanged(): Promise<void> }) {
+/** C373 Jarvis: share this account with one Evolving Workflows instance for READ tools only (off by default; Stop = at once). */
+function ToolSharing({ account, apps, onChanged }: { account: Account; apps: ToolApp[]; onChanged(): Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (product: string, share: boolean, instance?: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      // Two rows make a share (C373 Jarvis): Connect's share (product + exact instance) and the SDK scope row of that instance
+      // (read on this account), because the SDK checks the caller's scope before Connect runs. Stop removes Connect's row
+      // first (the kill path), then the scope row.
+      const current = (account.toolShares ?? []).find((t) => t.product === product)?.instance;
+      await accountToolsShare(account.id, product, share, instance);
+      const who = share ? instance : current;
+      if (who) await scopesSet(who, account.id, share ? "read" : null);
+      await onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="app-sharing" aria-label={`Workflow access to ${account.label}`}>
+      {apps
+        .filter((a) => a.instances.length > 0)
+        .map((app) => {
+          const share = (account.toolShares ?? []).find((t) => t.product === app.product);
+          return (
+            <p key={app.product} className="tb-row">
+              <span>
+                {share ? (
+                  <>
+                    <strong>{app.name}</strong> can call the <strong>read</strong> tools of this account{share.current ? "" : " (that app instance was removed; it can no longer read)"}
+                    {share.scopeRow === false ? " — not complete: press Share again" : ""}. Sends, changes, deletions and payments never go to apps.
+                  </>
+                ) : (
+                  <>Let {app.name} read this account in your workflows (read tools only; sends, changes, deletions and payments stay with agents and your approval).</>
+                )}
+              </span>
+              {share?.scopeRow === false ? (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, share.instance)} aria-label={`Complete the share of ${account.label} with ${app.name}`}>
+                  Share again
+                </Button>
+              ) : null}
+              {share ? (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, false)} aria-label={`Stop sharing ${account.label} with ${app.name}`}>
+                  Stop sharing
+                </Button>
+              ) : (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, app.instances[0]?.instance)} aria-label={`Share read tools of ${account.label} with ${app.name}`}>
+                  Share read tools with {app.name}
+                </Button>
+              )}
+            </p>
+          );
+        })}
+      {error ? <Notice tone="error">{error}</Notice> : null}
+    </section>
+  );
+}
+
+function AppSharing({ account, apps, callersKnown, onChanged }: { account: Account; apps: DataApp[]; callersKnown: boolean; onChanged(): Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // with several installed instances and no live share, the owner picks which one the next share goes to (product -> id)
@@ -531,11 +657,15 @@ function AppSharing({ account, apps, callersKnown, leasesEnabled, onChanged }: {
   const share = (app: DataApp) => account.shares?.find((x) => x.product === app.product);
 
   const isDb = account.source === "database";
-  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null, route?: ShareRoute) => {
+  // C373: databases and MCP servers give the dataset `documents` and are shared with a route
+  const routed = isDb || account.source === "mcp";
+  // C322(6): Knowledge reads a database or an MCP server only through Observer; the direct route is not offered to it
+  const routeFor = (app: DataApp): ShareRoute | undefined => (routed ? (app.product === "knowledge" ? "via_observer" : "direct") : undefined);
+  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null) => {
     setBusy(app.product);
     setError(null);
     try {
-      await accountAppShare(account.id, app.product, level, includeHistory, instance, isDb ? (route ?? "direct") : undefined);
+      await accountAppShare(account.id, app.product, level, includeHistory, instance, level === "none" ? undefined : routeFor(app));
       await onChanged();
     } catch (e) {
       setError(`${app.name}: ${errorText(e)}`);
@@ -547,6 +677,7 @@ function AppSharing({ account, apps, callersKnown, leasesEnabled, onChanged }: {
   return (
     <fieldset className="tb-stack access">
       <legend className="tb-label access-legend">Apps (read only)</legend>
+      {routed ? <p className="tb-soft acc-dataset">{`Dataset: documents. ${isDb ? "Each table is a collection; every 200 rows are one document." : "Each text file the server lists is one document."}`}</p> : null}
       {error ? <Notice tone="error">{error}</Notice> : null}
       {apps.map((app) => {
         const instances = app.instances ?? [];
@@ -563,15 +694,15 @@ function AppSharing({ account, apps, callersKnown, leasesEnabled, onChanged }: {
         const target = listed ? instances.find((i) => i.instance === bound?.instance) : (instances.find((i) => i.instance === pick) ?? instances[0]);
         const includeHistory = listed ? (bound?.includeHistory ?? false) : false;
         const isBusy = busy === app.product;
-        const route: ShareRoute = bound?.route ?? "direct";
-        const options = (isDb ? DB_SHARE_OPTIONS.filter((o) => leasesEnabled || o.value !== "shared") : SHARE_OPTIONS).map((o) => (o.value !== "none" && !target ? { ...o, disabled: true } : o));
+        const route: ShareRoute = bound?.route ?? routeFor(app) ?? "direct";
+        const options = (isDb ? DB_SHARE_OPTIONS : routed ? MCP_SHARE_OPTIONS : SHARE_OPTIONS).map((o) => (o.value !== "none" && !target ? { ...o, disabled: true } : o));
         const where = target?.ownInfra ? " (your own server)" : "";
         const setLevel = (v: ShareLevel) => {
           if (v === level) return;
           if (v === "none") return void change(app, "none", false, null);
           if (!target) return;
           // the same instance keeps its history choice; another instance is a new share (history unticked)
-          void change(app, v, target.instance === bound?.instance ? includeHistory : false, target.instance, target.instance === bound?.instance ? route : "direct");
+          void change(app, v, target.instance === bound?.instance ? includeHistory : false, target.instance);
         };
         return (
           <div key={app.product} className="acc-row">
@@ -588,25 +719,13 @@ function AppSharing({ account, apps, callersKnown, leasesEnabled, onChanged }: {
                   onValueChange={(v) => {
                     if (listed && level !== "none") {
                       // moving a live share to another instance is a new share: history starts unticked
-                      if (v !== bound?.instance) void change(app, level, false, v, "direct");
+                      if (v !== bound?.instance) void change(app, level, false, v);
                     } else setPicked((p) => ({ ...p, [app.product]: v }));
                   }}
                 />
               </>
             ) : null}
-            {isDb && app.product === "knowledge" && level !== "none" && listed ? (
-              <>
-                <span className="tb-soft">How {app.name} reaches it</span>
-                <Select
-                  aria-label={`How ${app.name} reaches ${account.label}`}
-                  options={ROUTE_OPTIONS}
-                  value={route}
-                  disabled={isBusy}
-                  onValueChange={(v) => v !== route && void change(app, level, false, bound?.instance ?? null, v as ShareRoute)}
-                />
-              </>
-            ) : null}
-            {!isDb && level === "shared" && listed ? (
+            {!routed && level === "shared" && listed ? (
               <label className="tb-row">
                 <input
                   type="checkbox"
@@ -618,11 +737,11 @@ function AppSharing({ account, apps, callersKnown, leasesEnabled, onChanged }: {
                 <span className="tb-soft">Include the last 30 days</span>
               </label>
             ) : null}
-            {unlisted || unknown ? null : <p className="tb-soft acc-note">{isDb ? dbShareSentence(level, route, app.name, leasesEnabled) : shareSentence(level, includeHistory, bound?.setAt)}</p>}
+            {unlisted || unknown ? null : <p className="tb-soft acc-note">{routed ? documentsShareSentence(level, route, app.name, isDb) : shareSentence(level, includeHistory, bound?.setAt)}</p>}
             {legacy && callersKnown ? <p className="tb-soft acc-note">Share again — this app must be chosen again after the update.</p> : null}
             {unlisted ? <p className="tb-soft acc-note">This app instance was removed; it can no longer read.</p> : null}
             {!callersKnown ? <p className="tb-soft acc-note">Sharing with apps needs the next Connect update.</p> : null}
-            {callersKnown && instances.length === 0 && !unlisted ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share ${isDb ? "this database" : "this account"} with it.`}</p> : null}
+            {callersKnown && instances.length === 0 && !unlisted ? <p className="tb-soft acc-note">{`Install ${app.name} in your workspace to share ${isDb ? "this database" : routed ? "this server" : "this account"} with it.`}</p> : null}
             {target?.ownInfra ? (
               <p className="tb-soft acc-note">{`This ${app.name} runs on your own server. Connect cannot check the code that runs there. Share only if you trust that server.`}</p>
             ) : null}
@@ -651,12 +770,18 @@ function instanceLabel(i: { instance: string; name: string; provider: string | n
   return `${i.name} · ${where} · …${i.instance.slice(-6)}`;
 }
 
-/** One plain sentence per level and route for a database: what the app really gets (C336). */
-function dbShareSentence(level: ShareLevel, route: ShareRoute, app: string, leasesEnabled: boolean): string {
-  if (level === "none") return "This app sees nothing of this database. Pick a level to share; you can revoke it at any time.";
-  if (route === "via_observer") return `${app} gets nothing from this database. Only Observer reads it, and only if you share it with Observer directly. You can change this at any time.`;
-  if (level === "available" || !leasesEnabled) return "This app sees the names of the tables and views, their columns and types, and about how many rows each holds. It sees no values. Access to the rows is not offered yet. You can stop sharing at any time.";
-  return `This app may ask Connect for a short lease (up to 15 minutes) on the read-only user you stored. It then connects to your database itself and can read the tables it names. Connect lists every lease below. Stopping the share or changing it ends the open leases in Connect; the password stays valid in your database until you change it there.`;
+/** One plain sentence per level and route for a database or an MCP server: what the app really gets (C336, C373). */
+function documentsShareSentence(level: ShareLevel, route: ShareRoute, app: string, database: boolean): string {
+  const what = database ? "this database" : "this server";
+  if (level === "none") return `This app sees nothing of ${what}. Pick a level to share; you can revoke it at any time.`;
+  if (route === "via_observer") return `${app} reads ${what} only through Observer. Share it with Observer too; ${app} gets nothing from Connect directly.`;
+  if (level === "available")
+    return database
+      ? "This app sees the names of the tables and views, their columns and types, and about how many rows each holds. It sees no values. You can stop sharing at any time."
+      : "This app sees the names of the collections on this server and how many documents each holds. It reads no document. You can stop sharing at any time.";
+  return database
+    ? "This app reads the rows of every table and view, 200 rows per document, in a read-only transaction. It cannot change anything. Columns whose name looks like a secret (password, token, key) are left out; this is a guess by name, so check your tables. You can stop sharing at any time."
+    : "This app reads the text files this server lists, as documents. Connect never runs a tool of the server for it. You can stop sharing at any time.";
 }
 
 /** One plain sentence per sharing level: what the app really gets (S3-3). */
@@ -673,7 +798,7 @@ function shareSentence(level: ShareLevel, includeHistory: boolean, setAt: string
 const ACCESS_OPS: Record<string, string> = {
   data_accounts_list: "Listed the shared accounts",
   data_catalog: "Read names and counts",
-  data_pull: "Read messages",
+  data_pull: "Read messages or documents",
   data_lease: "Leased database access",
 };
 const REFUSED_TEXT: Record<string, string> = {
@@ -705,7 +830,7 @@ function RecentAccess({ entries, error, busy, databases = false, onReload }: { e
       </div>
       <p className="tb-soft">
         {databases
-          ? "The last 100 times an app asked Connect for the messages of your chat accounts or for the table list of your databases. Connect keeps this record for 90 days."
+          ? "The last 100 times an app asked Connect for the messages of your chat accounts or for the tables and rows of your databases. Connect keeps this record for 90 days."
           : "The last 100 times an app asked Connect for the messages of your chat accounts. Connect keeps this record for 90 days."}
       </p>
       {error ? <LoadError message={error} busy={busy} onRetry={onReload} /> : null}
@@ -811,7 +936,7 @@ function AddDatabase({ recommendation, onAdded }: { recommendation: string; onAd
           </Button>
         )}
       </div>
-      <p className="tb-soft">Let an app such as Knowledge see the tables and columns of your Postgres database, without any value. Access to the rows is not offered yet. Agents never see a database. You choose which app gets the list.</p>
+      <p className="tb-soft">Let Observer read the tables of your Postgres database: the table names only, or the rows as documents, read only. Agents never see a database. You choose which app gets it.</p>
       {open ? (
         <Card as="div" className="acct">
          <form className="tb-stack" aria-label="Add a database" onSubmit={submit}>

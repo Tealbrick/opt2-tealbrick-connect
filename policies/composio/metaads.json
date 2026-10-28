@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "toolkit": "metaads",
+  "version": "2026-10-27",
+  "notes": "Meta Marketing API. Money: anything that can start or change ad spend: campaigns, ad sets, ads, copies, budgets, bids. Outward: data sent to Meta about people (custom audiences, conversion events) and public lead forms. Writes: creatives, images, videos, studies, custom conversions, renames. Destructive: deletes. GENERATE_AD_PREVIEWS is a read.",
+  "money": [
+    "METAADS_CREATE_CAMPAIGN*",
+    "METAADS_UPDATE_CAMPAIGN*",
+    "METAADS_CREATE_AD_SET*",
+    "METAADS_UPDATE_AD_SET*",
+    "METAADS_CREATE_AD",
+    "METAADS_UPDATE_AD",
+    "METAADS_COPY_*",
+    "METAADS_*BUDGET*",
+    "METAADS_*BID*"
+  ],
+  "destructive": [
+    "METAADS_DELETE_*"
+  ],
+  "outward": [
+    "METAADS_SEND_*",
+    "METAADS_*CUSTOM_AUDIENCE*",
+    "METAADS_*CONVERSION_EVENT*",
+    "METAADS_CREATE_LEAD_FORM"
+  ],
+  "writes": [
+    "METAADS_CREATE_*",
+    "METAADS_UPDATE_*",
+    "METAADS_UPLOAD_*",
+    "METAADS_RENAME_*"
+  ],
+  "reads": [
+    "METAADS_GENERATE_AD_PREVIEWS",
+    "METAADS_PREVIEW_*",
+    "METAADS_READ_*",
+    "METAADS_GET_*",
+    "METAADS_LIST_*"
+  ]
+}

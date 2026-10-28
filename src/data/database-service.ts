@@ -25,7 +25,9 @@ import {
   readCatalog,
   withSession,
 } from "./database.ts";
+import type { DocumentsPage, DocumentsPullInput } from "./documents.ts";
 import { DataError } from "./messages.ts";
+import { pullTableDocuments, type TableDocumentsDeps, tableCursorState } from "./table-documents.ts";
 
 export interface DatabaseServiceDeps {
   accounts: DatabaseAccountStore;
@@ -114,6 +116,23 @@ export class DatabaseService {
   async #catalog(account: DbAccount): Promise<DbTable[]> {
     const { target } = await this.#target(account);
     return withSession(this.#driver(account.kind), target, (session) => readCatalog(account.kind, session));
+  }
+
+  /**
+   * C373: one page of the `documents` dataset (table rows as CSV, `table-documents.ts`). The cursor is checked before any
+   * database contact; then the address policy, the role check (a superuser or replication role is refused, as at connect),
+   * the current catalog and one READ ONLY transaction.
+   */
+  pullDocuments(account: DbAccount, input: DocumentsPullInput, deps: TableDocumentsDeps): Promise<DocumentsPage> {
+    tableCursorState(deps.db, account.id, input);
+    return sealed({ code: "pull_failed", message: "The rows could not be read.", status: 500 }, async () => {
+      const { target } = await this.#target(account);
+      return withSession(this.#driver(account.kind), target, async (session) => {
+        await checkRole(session);
+        const tables = await readCatalog(account.kind, session);
+        return pullTableDocuments(deps, session, account.id, tables, input);
+      });
+    });
   }
 
   /** Datasets of a lease request: 1..50 distinct `schema.table` strings. */

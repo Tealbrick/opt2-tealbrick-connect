@@ -1,7 +1,9 @@
 /**
  * The production Postgres client for database accounts (C336 RQ-3): a thin adapter over `pg` behind the `DatabaseDriver`
- * interface. Connect sends only the catalog statements of `database.ts` through it (no table data). Tests never load this
- * file: they pass a fake driver.
+ * interface. Connect sends the catalog statements of `database.ts` and the read-only pull of `table-documents.ts` through
+ * it. Tests never load this file: they pass a fake driver.
+ * - TLS keeps the libpq meaning of sslmode: `require` encrypts without checking the certificate (a Railway-hosted database
+ *   with a self-signed certificate works), `verify-full` checks the certificate and the host name, `disable` is plain.
  *
  * - Connects to the ADDRESS the net policy checked (`target.address`), not to the host name, so DNS cannot answer twice.
  *   TLS keeps checking the certificate against the host name (`servername`) in mode verify-full.

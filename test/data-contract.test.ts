@@ -64,3 +64,15 @@ test("a page over 2 MiB, or over 200 rows, is refused by the producer gate", () 
   assert.throws(() => assertConforms(many), { code: "data_contract_violation" });
   assert.doesNotThrow(() => assertConforms({ rows: Array.from({ length: 200 }, (_, n) => ({ ...row(n), text: "x" })), nextCursor: null, exhausted: true }));
 });
+
+test("documents/1 (C373): the vendored schema files are the byte copies named in PROVENANCE.md; runtime and test copy are the same bytes", () => {
+  const prov = file("./contracts/PROVENANCE.md").toString();
+  for (const f of ["./contracts/documents.1.schema.json", "../src/contracts/documents.1.schema.json"]) {
+    const bytes = file(f);
+    assert.ok(prov.includes(sha256(bytes)), `${f} does not match the sha256 in PROVENANCE.md`);
+    assert.ok(!prov.includes(sha256(Buffer.concat([bytes, Buffer.from(" ")]))), "a changed file would not match");
+  }
+  assert.ok(file("./contracts/documents.1.schema.json").equals(file("../src/contracts/documents.1.schema.json")));
+  const documents = JSON.parse(file("../src/contracts/documents.1.schema.json").toString()) as { $defs: { row: { properties: { mime: { enum: string[] } } } } };
+  assert.deepEqual(documents.$defs.row.properties.mime.enum, ["text/plain", "text/markdown", "text/csv"], "no text/html: the producer converts HTML");
+});

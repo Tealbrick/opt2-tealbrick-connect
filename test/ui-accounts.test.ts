@@ -28,7 +28,7 @@ for (const k of ["window", "document", "navigator", "location", "history", "sess
 }
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
-type Share = { product: string; instance: string | null; current: boolean; level: "available" | "shared"; includeHistory: boolean; setAt: string };
+type Share = { product: string; instance: string | null; current: boolean; level: "available" | "shared"; includeHistory: boolean; setAt: string; route?: "direct" | "via_observer" };
 type Inst = { instance: string; name: string; provider: string | null; ownInfra: boolean };
 const K1 = "ins_01HZKNWDG00000000000000000";
 const O1 = "ins_01HZ0BSRVR0000000000000000";
@@ -336,10 +336,10 @@ describe("Accounts page: Recent access", () => {
     const rows = rowsOf(page.host).map((r) => [...r.querySelectorAll("td")].map((c) => (c.textContent ?? "").replace(/\s+/gu, " ").trim()));
     assert.equal(rows.length, 4);
     // columns: when, app, request, account, messages, result
-    assert.deepEqual(rows[0]?.slice(1), ["Observer", "Read messages", "Support bot", "", "Refused: Not shared with this app and 4 more in the same minute"]);
+    assert.deepEqual(rows[0]?.slice(1), ["Observer", "Read messages or documents", "Support bot", "", "Refused: Not shared with this app and 4 more in the same minute"]);
     assert.deepEqual(rows[1]?.slice(1), ["Knowledge", "Read names and counts", "Support bot", "", "Served"]);
-    assert.deepEqual(rows[2]?.slice(1), ["Knowledge", "Read messages", "Support bot", "7", "Served"]);
-    assert.deepEqual(rows[3]?.slice(1), ["Unverified app", "Read messages", "", "", "Refused: Unverified app"]);
+    assert.deepEqual(rows[2]?.slice(1), ["Knowledge", "Read messages or documents", "Support bot", "7", "Served"]);
+    assert.deepEqual(rows[3]?.slice(1), ["Unverified app", "Read messages or documents", "", "", "Refused: Unverified app"]);
     assert.ok(rows.every((r) => (r[0] ?? "") !== ""), "every line has a time");
     await page.unmount();
   });
@@ -465,5 +465,53 @@ describe("Accounts page: group headings (C331 demo gap 6)", () => {
     assert.ok(headings(p.host).some((x) => x.endsWith("Acme data (+1 more)")), headings(p.host).join(" | "));
     await p.unmount();
     assert.equal(mod.serviceTitle("telegram", [{ id: "cna_1", service: "telegram", source: "channel", kind: "as_itself", label: "Support bot", ownerAgent: null, status: "connected", detail: "" }]), "telegram");
+  });
+});
+
+describe("Accounts page: an MCP server is shared with Observer as documents (C373)", () => {
+  const mcpAccount = () => ({ id: "cna_m1", service: "mcp_acme_data_sources__282ebac3", source: "mcp", kind: "as_itself", label: "Acme data", ownerAgent: null, status: "connected", detail: "", shares: stub.shares });
+  after(() => {
+    delete stub.accounts;
+  });
+  const click = async (el: Element | null | undefined) => {
+    assert.ok(el, "element to click");
+    await act(async () => (el as HTMLElement).click());
+    await flush();
+  };
+  const choose = async (host: Element, aria: string, label: string) => {
+    await click(host.querySelector(`[aria-label="${aria}"]`));
+    const listbox = host.querySelector(`[aria-label="${aria}"]`)?.parentElement?.querySelector('[role="listbox"]');
+    await click([...(listbox?.querySelectorAll('[role="option"]') ?? [])].find((o) => (o.textContent ?? "").startsWith(label)));
+  };
+
+  it("names the dataset, offers documents levels, sends direct for Observer and via_observer for Knowledge, with no route select", async () => {
+    stub.entries = [];
+    stub.shares = [];
+    stub.sent = [];
+    stub.dataApps = DEFAULT_APPS();
+    stub.callersKnown = true;
+    stub.agentRows = [];
+    stub.accounts = [mcpAccount()];
+    const page = await mount(h(mod.Accounts));
+    assert.match(text(page.host), /Dataset: documents\. Each text file the server lists is one document\./u);
+    assert.deepEqual(notes(page.host), ["This app sees nothing of this server. Pick a level to share; you can revoke it at any time.", "This app sees nothing of this server. Pick a level to share; you can revoke it at any time."]);
+    assert.equal(page.host.querySelector('[aria-label="How Knowledge reaches Acme data"]'), null);
+    await choose(page.host, "Share Acme data with Observer", "Share documents (read only)");
+    assert.deepEqual(stub.sent.at(-1), { account: "cna_m1", product: "observer", level: "shared", includeHistory: false, instance: O1, route: "direct" });
+    await choose(page.host, "Share Acme data with Knowledge", "Collection names and counts only");
+    assert.deepEqual(stub.sent.at(-1), { account: "cna_m1", product: "knowledge", level: "available", includeHistory: false, instance: K1, route: "via_observer" });
+    assert.equal(page.host.querySelector('input[type="checkbox"]'), null, "no 30-day history for documents");
+    await page.unmount();
+
+    stub.shares = [
+      { product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "via_observer" },
+      { product: "observer", instance: O1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" },
+    ];
+    stub.accounts = [mcpAccount()];
+    const shared = await mount(h(mod.Accounts));
+    const [k, o] = notes(shared.host);
+    assert.match(k ?? "", /Knowledge reads this server only through Observer\./u);
+    assert.match(o ?? "", /reads the text files this server lists, as documents\. Connect never runs a tool of the server for it\./u);
+    await shared.unmount();
   });
 });
