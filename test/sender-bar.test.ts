@@ -355,7 +355,8 @@ test("a post scheduled before the bar is cancelled when due, with no relay post"
   b.st.events = b.group(ROOM, [self, b.fired], [["hidden"]]);
   const relay = { query: async () => ({ events: b.st.events, relays: [] }), post: async () => { throw new Error("must not post"); } } as unknown as BuzzRelay;
   const log = { debug() {}, info() {}, warn() {}, error() {} };
-  assert.equal(await runDueBuzzPosts(b.db, relay, log, Date.now() + 2 * 3_600_000), 0);
+  const check = async () => assert.fail("a barred recipient needs no bridge call");
+  assert.equal(await runDueBuzzPosts(b.db, relay, log, check, Date.now() + 2 * 3_600_000), 0);
   const row = b.db.prepare("SELECT status, detail FROM connect_buzz_scheduled WHERE id = ?").get(id);
   assert.deepEqual({ ...row }, { status: "cancelled", detail: "Not sent: refused by company policy." });
 });

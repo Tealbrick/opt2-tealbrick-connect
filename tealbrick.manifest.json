@@ -8,7 +8,7 @@
   "version": "0.7.13",
   "sdkMajor": 1,
   "requires": {
-    "bridge": "0.2.11"
+    "bridge": "0.2.13"
   },
   "publisher": {
     "name": "Tealbrick",
