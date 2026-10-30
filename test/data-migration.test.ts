@@ -87,3 +87,15 @@ test("migration 0021 (QA-CONNECT35-9/-11/-13): expand only; old doc records surv
   db.exec("INSERT INTO connect_doc_cursors (account_id, token, value, created_at) VALUES ('a1', 't1', '{}', 1)");
   assert.throws(() => db.exec("INSERT INTO connect_doc_cursors (account_id, token, value, created_at) VALUES ('a1', 't1', '{}', 1)"), /UNIQUE|PRIMARY/u);
 });
+
+test("migration 0026 (C380) adds the sender bars table; the inbound log of the previous release stays", () => {
+  const db = new DatabaseSync(":memory:");
+  const files = readdirSync(dir).filter((n) => n.endsWith(".sql")).sort();
+  assert.ok(files.includes("0026_sender_bars.sql"));
+  for (const f of files.filter((n) => n < "0026")) db.exec(sql(f));
+  db.exec(`INSERT INTO connect_accounts (id, service, source, kind, label, owner_agent, status, detail, created_at, updated_at) VALUES ('a1','telegram','channel','as_itself','x','agt_1','connected','',1,1)`);
+  db.exec(`INSERT INTO connect_channel_inbox (account_id, conversation, conversation_type, message_id, sender_id, sender_name, text, sent_at, received_at) VALUES ('a1', 'c', 'direct', 'm1', '111', 'Bob', 't', 1, 1)`);
+  db.exec(sql("0026_sender_bars.sql"));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_channel_inbox").get()?.n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_sender_bars").get()?.n, 0);
+});
