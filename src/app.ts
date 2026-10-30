@@ -2394,7 +2394,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
       const marker = toolClassMarker(env.manifest.artifacts?.find((a) => a.id === "catalog")?.version, policyDigest);
       void resyncToolClasses(ctx.db, s, marker, ctx.log).catch((e: unknown) => ctx.log.warn("tool re-sync failed", { code: (e as { code?: string }).code ?? "error" }));
-      const sendCheck = buzzSendCheck(ctx as unknown as Parameters<typeof buzzSendCheck>[0]);
+      const sendCheck = buzzSendCheck(ctx);
       const tick = async () => {
         s.channels.purge();
         ctx.db.prepare("DELETE FROM connect_data_audit WHERE at < ?").run(Date.now() - 90 * 24 * 60 * 60 * 1000);
