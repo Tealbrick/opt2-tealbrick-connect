@@ -6,8 +6,8 @@
  *     (`companionCallersFor`); a reinstalled app has a new instance id and gets nothing;
  *   - the calling instance must still be listed in the current slice (`companionListed`), checked per call;
  *   - a share serves READ tools (crud read only, effect read). With `writes` (a separate owner choice, off by default, migration
- *     0025) it also serves WRITE tools (a draft, a label, a new record) and OUTWARD tools, the latter only when the caller's grant holds
- *     the tool's family, so the SDK runs it only on an owner approval (src/app.ts `outwardHeldByGrant`). DESTRUCTIVE and MONEY tools stay agent-only, whatever the share says;
+ *     0025) it also serves WRITE tools (a draft, a label, a new record) and OUTWARD tools, the latter only on an owner approval of that
+ *     exact call (`ctx.approvedHold`, set by the SDK), whatever held it: a Rules hold or a family of the grant. DESTRUCTIVE and MONEY tools stay agent-only, whatever the share says;
  *   - owner-only person op, off by default, shown on the Accounts page; deleting the row is the kill path (the next call fails).
  * Table `connect_tool_shares` (migrations 0024, 0025).
  */

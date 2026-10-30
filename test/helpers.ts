@@ -160,9 +160,15 @@ export function testCtx(input: {
     },
     callId: null,
     idempotencyKey: input.idempotencyKey ?? null,
+    approvedHold: null,
     context: input.context ?? {},
     receipt: { summary: (t) => receipts.summary.push(t), meta: (m) => receipts.meta.push(m) },
     getKey: async (name) => input.keys?.[name] ?? null,
+    modelRole: async () => {
+      throw new Error("not used");
+    },
+    bridgeCaps: () => [],
+    topology: () => null,
     callApp: async () => {
       throw new Error("not used");
     },
@@ -208,6 +214,8 @@ export function eventCtx(db: Db): SdkEventContext {
     statusChanged() {},
     ownerLink: () => null,
     companionTargets: () => [],
+    bridgeCaps: () => [],
+    topology: () => null,
     appsPolicy: () => null,
     agentScopeRequest: () => null,
     ownerLinkFor: () => null,

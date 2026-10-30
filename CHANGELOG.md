@@ -1,6 +1,14 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.12 (catalog 0.3.1; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.13 (catalog 0.3.1; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.13 (2026-10-30; C378, on top of 0.7.12)
+
+Martin C378: Rules and Governance apply on app-to-app calls. A Rules hold on an outward tool now takes effect: the owner approves and the call runs.
+- **Outward tool of an app caller:** runs only on `ctx.approvedHold` (miniapp-sdk 0.1.44), the owner approval of this exact call, whatever held it: a Rules hold or a family of the grant. With none: 409 `app_outward_needs_approval`, whose text names the Rules hold. This fixes the known defect of 0.7.12, where a Rules hold alone ended in a refusal after the approval. The hold card no longer warns of that.
+- **Approval reuse:** the SDK binds an app caller's approval to the call's idempotency key. Two identical runs that are both approved each use their own approval, so the `held_again` limit of 0.7.12 is gone.
+- **SDK jump:** miniapp-sdk 0.1.36 to 0.1.44, manifest 0.1.28 to 0.1.35, spec 0.1.52 to 0.1.78, conformance 0.1.30, CI template ci-v9.23. App callers now get `tb.hold_status` on Connect's holds and `callerContext` on its receipts.
+- **Requires:** `requires.bridge` 0.2.11, the first bridge with app hold status and call context. An older bridge gets a clear refusal when Connect is updated, not a rollback.
 
 ## 0.7.12 (2026-10-30; Connect-writes, C366b)
 

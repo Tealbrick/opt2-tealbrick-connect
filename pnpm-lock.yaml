@@ -15,14 +15,14 @@ importers:
         specifier: 2.4.0
         version: 2.4.0
       '@opt2-tealbrick/manifest':
-        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.28/opt2-tealbrick-manifest-0.1.28.tgz
-        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.28/opt2-tealbrick-manifest-0.1.28.tgz
+        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.35/opt2-tealbrick-manifest-0.1.35.tgz
+        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.35/opt2-tealbrick-manifest-0.1.35.tgz
       '@opt2-tealbrick/miniapp-sdk':
-        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.36/opt2-tealbrick-miniapp-sdk-0.1.36.tgz
-        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.36/opt2-tealbrick-miniapp-sdk-0.1.36.tgz(react@19.3.0)
+        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.44/opt2-tealbrick-miniapp-sdk-0.1.44.tgz
+        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.44/opt2-tealbrick-miniapp-sdk-0.1.44.tgz(react@19.3.0)
       '@opt2-tealbrick/spec':
-        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.52/opt2-tealbrick-spec-0.1.52.tgz
-        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.52/opt2-tealbrick-spec-0.1.52.tgz
+        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz
+        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz
       pg:
         specifier: 8.23.1
         version: 8.23.1
@@ -34,8 +34,8 @@ importers:
         specifier: 2.5.15
         version: 2.5.15
       '@opt2-tealbrick/conformance':
-        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.29/opt2-tealbrick-conformance-0.1.29.tgz
-        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.29/opt2-tealbrick-conformance-0.1.29.tgz(react@19.3.0)
+        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.30/opt2-tealbrick-conformance-0.1.30.tgz
+        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.30/opt2-tealbrick-conformance-0.1.30.tgz(react@19.3.0)
       '@opt2-tealbrick/ui':
         specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz
         version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz(react@19.3.0)
@@ -130,22 +130,22 @@ packages:
     resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
     engines: {node: '>= 20.19.0'}
 
-  '@opt2-tealbrick/conformance@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.29/opt2-tealbrick-conformance-0.1.29.tgz':
-    resolution: {integrity: sha512-EWcFs0c0rXoFkT8OnMa6Chl9wD8OYy/u6mWEaF88qRha4eBPGetDPN2gyjmNzx210XPQs+xh1LVgmSxnhtYd3Q==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.29/opt2-tealbrick-conformance-0.1.29.tgz}
-    version: 0.1.29
-    hasBin: true
-
-  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.28/opt2-tealbrick-manifest-0.1.28.tgz':
-    resolution: {integrity: sha512-mZu5XRcZgIyEeVgV9HJNKeXhXU5lMAlLgjdEl8s8wZj13HCdmzXfqVqvq03FQugmy/zNhaHWKfXqskxhGBVu+A==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.28/opt2-tealbrick-manifest-0.1.28.tgz}
-    version: 0.1.28
-
-  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.30/opt2-tealbrick-manifest-0.1.30.tgz':
-    resolution: {integrity: sha512-Jym8WSYaJ3IFJAnBc7bflJULt5g1ZXbtJaB1kLMmlqzL5oKLv/kgBrN4gTpJQ26aBYRco7uZ5+qbbRQDCI6X3g==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.30/opt2-tealbrick-manifest-0.1.30.tgz}
+  '@opt2-tealbrick/conformance@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.30/opt2-tealbrick-conformance-0.1.30.tgz':
+    resolution: {integrity: sha512-dgNJpon5oqYAjCHaWjcVIklGj54TzHw/Y9BZO3FVBXbpDWBDhNqIL8FeKVxoVkM7QXcdFn/SeEYuTNCfeklbxA==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.30/opt2-tealbrick-conformance-0.1.30.tgz}
     version: 0.1.30
+    hasBin: true
 
-  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.36/opt2-tealbrick-miniapp-sdk-0.1.36.tgz':
-    resolution: {integrity: sha512-/rFsosf6CaOBLdr5EgqopD5sRMmln20V4E1na9RWFn77Ak0RrKzMcwRexgjFt9ARBGT1tiAdfNZEPy0hld4WJw==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.36/opt2-tealbrick-miniapp-sdk-0.1.36.tgz}
-    version: 0.1.36
+  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.31/opt2-tealbrick-manifest-0.1.31.tgz':
+    resolution: {integrity: sha512-e45l66dSs1kILX/emn9rLY1ZI29YnqFpHryQBbPjSj0R+300NCgmDr2Vkc4wF52GCt3T2uoO97WIze5p5/xk6w==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.31/opt2-tealbrick-manifest-0.1.31.tgz}
+    version: 0.1.31
+
+  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.35/opt2-tealbrick-manifest-0.1.35.tgz':
+    resolution: {integrity: sha512-CRETqk76oP5o82leStgh0X/kLyaJ0vACoCNMMH4TA9hL7qKNWYqXUDAqFGl+93IbCIEZucn09TNo+MdGVppo+Q==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.35/opt2-tealbrick-manifest-0.1.35.tgz}
+    version: 0.1.35
+
+  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.40/opt2-tealbrick-miniapp-sdk-0.1.40.tgz':
+    resolution: {integrity: sha512-EHOXrioUxk6ZeD9YTklzWdwHYRB7GKd2KG0bQR1xcRMzhfFTGI1adEDQXKgWK2jdUq+MsV53F8a0Dl+CXt7yxg==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.40/opt2-tealbrick-miniapp-sdk-0.1.40.tgz}
+    version: 0.1.40
     hasBin: true
     peerDependencies:
       react: '>=19'
@@ -153,9 +153,9 @@ packages:
       react:
         optional: true
 
-  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.38/opt2-tealbrick-miniapp-sdk-0.1.38.tgz':
-    resolution: {integrity: sha512-IIIdIJSYviwy3VzYEssimAh1nl8Uo7rEJwrYLFt2NW/CxumjoEYbPRiVgc92NdPFWFaGMZapy5NSvgXA5n9p4w==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.38/opt2-tealbrick-miniapp-sdk-0.1.38.tgz}
-    version: 0.1.38
+  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.44/opt2-tealbrick-miniapp-sdk-0.1.44.tgz':
+    resolution: {integrity: sha512-rIrNk2ActUN7cKddcwzPlvxwcFchYbapFI7srNMEMix2/qGSUgs2r0xKLCywCvMj6aW79o3bIM8UL78/r50ZTA==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.44/opt2-tealbrick-miniapp-sdk-0.1.44.tgz}
+    version: 0.1.44
     hasBin: true
     peerDependencies:
       react: '>=19'
@@ -163,13 +163,13 @@ packages:
       react:
         optional: true
 
-  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.52/opt2-tealbrick-spec-0.1.52.tgz':
-    resolution: {integrity: sha512-jecW/y1llHQi6+cDuNkacDmAGW91K4fZYRlWjxJ8kQiIK/xsErOcdhxQgvcRG0eWbBv68rMyQlMAEgsj8RIn1A==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.52/opt2-tealbrick-spec-0.1.52.tgz}
-    version: 0.1.52
+  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.64/opt2-tealbrick-spec-0.1.64.tgz':
+    resolution: {integrity: sha512-yuHuNo/SDvr13cf17KtZFqASTqQ8BN4ufHXpVW1/8H7Ze23cVitzwjsLgZF5Tf3bJj7KSreiOofdKSRSIsh4zA==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.64/opt2-tealbrick-spec-0.1.64.tgz}
+    version: 0.1.64
 
-  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.57/opt2-tealbrick-spec-0.1.57.tgz':
-    resolution: {integrity: sha512-K7H049Ln2GSD4pk3jI429Xvfpa4djhFTrWbmumoftqqojR7xYxwCAwz7gCB5TWZE93/xIRzhQuB4fn1nayyGPA==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.57/opt2-tealbrick-spec-0.1.57.tgz}
-    version: 0.1.57
+  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz':
+    resolution: {integrity: sha512-kDi3rZtU627gj6j3Hns3fSvE+xeCKirkdOhmGog4K5pU4BQkk5dyIvsPp2bBa07R8cjZghbRjDElkXAfDH1pqg==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz}
+    version: 0.1.78
 
   '@opt2-tealbrick/ui@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz':
     resolution: {integrity: sha512-pTGZQQumNimfNwF77jR4wlnswGO+5aR+kvFpBr7YmdjmCsUeTd0KtpHpLzOYnXsmVXNKXKpSN0jtQuooBsBRvw==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz}
@@ -500,43 +500,43 @@ snapshots:
 
   '@noble/hashes@2.4.0': {}
 
-  '@opt2-tealbrick/conformance@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.29/opt2-tealbrick-conformance-0.1.29.tgz(react@19.3.0)':
+  '@opt2-tealbrick/conformance@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.30/opt2-tealbrick-conformance-0.1.30.tgz(react@19.3.0)':
     dependencies:
-      '@opt2-tealbrick/manifest': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.30/opt2-tealbrick-manifest-0.1.30.tgz
-      '@opt2-tealbrick/miniapp-sdk': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.38/opt2-tealbrick-miniapp-sdk-0.1.38.tgz(react@19.3.0)
-      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.57/opt2-tealbrick-spec-0.1.57.tgz
+      '@opt2-tealbrick/manifest': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.31/opt2-tealbrick-manifest-0.1.31.tgz
+      '@opt2-tealbrick/miniapp-sdk': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.40/opt2-tealbrick-miniapp-sdk-0.1.40.tgz(react@19.3.0)
+      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.64/opt2-tealbrick-spec-0.1.64.tgz
     transitivePeerDependencies:
       - react
 
-  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.28/opt2-tealbrick-manifest-0.1.28.tgz':
+  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.31/opt2-tealbrick-manifest-0.1.31.tgz':
     dependencies:
-      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.52/opt2-tealbrick-spec-0.1.52.tgz
+      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.64/opt2-tealbrick-spec-0.1.64.tgz
       ajv: 8.18.0
 
-  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.30/opt2-tealbrick-manifest-0.1.30.tgz':
+  '@opt2-tealbrick/manifest@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.35/opt2-tealbrick-manifest-0.1.35.tgz':
     dependencies:
-      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.57/opt2-tealbrick-spec-0.1.57.tgz
+      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz
       ajv: 8.18.0
 
-  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.36/opt2-tealbrick-miniapp-sdk-0.1.36.tgz(react@19.3.0)':
+  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.40/opt2-tealbrick-miniapp-sdk-0.1.40.tgz(react@19.3.0)':
     dependencies:
-      '@opt2-tealbrick/manifest': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.28/opt2-tealbrick-manifest-0.1.28.tgz
-      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.52/opt2-tealbrick-spec-0.1.52.tgz
+      '@opt2-tealbrick/manifest': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.31/opt2-tealbrick-manifest-0.1.31.tgz
+      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.64/opt2-tealbrick-spec-0.1.64.tgz
       parse5: 8.0.1
     optionalDependencies:
       react: 19.3.0
 
-  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.38/opt2-tealbrick-miniapp-sdk-0.1.38.tgz(react@19.3.0)':
+  '@opt2-tealbrick/miniapp-sdk@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.44/opt2-tealbrick-miniapp-sdk-0.1.44.tgz(react@19.3.0)':
     dependencies:
-      '@opt2-tealbrick/manifest': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.30/opt2-tealbrick-manifest-0.1.30.tgz
-      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.57/opt2-tealbrick-spec-0.1.57.tgz
+      '@opt2-tealbrick/manifest': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.35/opt2-tealbrick-manifest-0.1.35.tgz
+      '@opt2-tealbrick/spec': https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz
       parse5: 8.0.1
     optionalDependencies:
       react: 19.3.0
 
-  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.52/opt2-tealbrick-spec-0.1.52.tgz': {}
+  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.64/opt2-tealbrick-spec-0.1.64.tgz': {}
 
-  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.57/opt2-tealbrick-spec-0.1.57.tgz': {}
+  '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz': {}
 
   '@opt2-tealbrick/ui@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz(react@19.3.0)':
     dependencies:
