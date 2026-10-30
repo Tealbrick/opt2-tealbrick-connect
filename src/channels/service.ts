@@ -222,6 +222,7 @@ export class ChannelHub {
     const barred = m.change?.kind === "delete" ? null : this.#barredInbound(account, m);
     if (barred) {
       this.#bars.countDrop(barred);
+      if (m.conversationType === "direct" && !m.change) this.#bars.noteConversation(barred, account.id, m.conversation);
       this.#d.log?.info("channel: inbound message from a barred sender dropped", { service: account.service, account: account.id });
       return false;
     }
@@ -281,11 +282,8 @@ export class ChannelHub {
     const db = this.#d.db;
     const barred =
       this.#bars.sender(service, conversation) !== null ||
+      this.#bars.conversation(account.id, conversation) ||
       db.prepare("SELECT person_id FROM connect_channel_contacts WHERE account_id = ? AND conversation = ?").all(account.id, conversation).some((r) => this.#bars.sender(service, String(r.person_id)) !== null) ||
-      db
-        .prepare("SELECT DISTINCT sender_id FROM connect_channel_inbox WHERE account_id = ? AND conversation = ? AND conversation_type = 'direct' AND sender_is_bot = 0")
-        .all(account.id, conversation)
-        .some((r) => this.#bars.sender(service, String(r.sender_id)) !== null) ||
       (!!messageId && db.prepare("SELECT sender_id FROM connect_channel_inbox WHERE account_id = ? AND conversation = ? AND message_id = ?").all(account.id, conversation, messageId).some((r) => this.#bars.sender(service, String(r.sender_id)) !== null));
     if (barred) throw new ChannelError(BAR_REFUSED_CODE, BAR_REFUSED_TEXT, 403);
   }
@@ -349,12 +347,22 @@ export class ChannelHub {
     // C380: what a barred person sent before the bar is hidden from agents. Hidden rows must not shorten the window: the rule
     // below reads a short window as "nothing is left", so the next page is read until the window is full or the log ends.
     const bars = this.#bars.any();
+    const hidden = new Map<string, boolean>();
+    const isHidden = (r: Record<string, unknown>): boolean => {
+      const key = `${String(r.service)}:${String(r.sender_id)}`;
+      let value = hidden.get(key);
+      if (value === undefined) {
+        value = this.#bars.sender(String(r.service), String(r.sender_id)) !== null;
+        hidden.set(key, value);
+      }
+      return value;
+    };
     const rows: Record<string, unknown>[] = [];
     for (let after = sinceSeq; ; ) {
       const read = page.all(...accountIds, after, want);
       for (const r of read) {
         after = Number(r.seq);
-        if (rows.length < want && !(bars && this.#bars.sender(String(r.service), String(r.sender_id)))) rows.push(r);
+        if (rows.length < want && !(bars && isHidden(r))) rows.push(r);
       }
       if (!bars || read.length < want || rows.length >= want) break;
     }

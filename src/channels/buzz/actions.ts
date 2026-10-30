@@ -153,15 +153,15 @@ async function pollOne(d: BuzzActionsDeps, r: Record<string, unknown>): Promise<
     await d.secrets.delete(secretName(id));
     if (done === 1) await reply(result);
   };
-  if (Number(r.expires_at) <= d.now()) return close(REPLY_EXPIRED);
-  // the key became an agent's or the sender's after the send: never decide with it
-  if (heldKey(d.db, String(r.owner_pubkey))) return close(REPLY_HELD_KEY);
   // C380: the recipient is under a sender bar: their reaction decides nothing, and nothing is written to them.
   if (new SenderBars(d.db).buzzKey(String(r.owner_pubkey))) {
     d.db.prepare("UPDATE connect_buzz_actions SET state = 'done', result = ?, updated_at = ? WHERE id = ? AND state IN ('open', 'busy')").run(RESULT_BARRED, d.now(), id);
     await d.secrets.delete(secretName(id));
     return;
   }
+  if (Number(r.expires_at) <= d.now()) return close(REPLY_EXPIRED);
+  // the key became an agent's or the sender's after the send: never decide with it
+  if (heldKey(d.db, String(r.owner_pubkey))) return close(REPLY_HELD_KEY);
   const eventIds = new Set(sent.map((s) => s.id));
   const events: NostrEvent[] = [];
   for (const channel of new Set(sent.map((s) => s.channel))) {

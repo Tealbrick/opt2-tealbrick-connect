@@ -45,7 +45,7 @@ function chatWorld() {
     edit: async (_c, _n, input) => void edits.push(input.messageId),
     delete: async () => undefined,
     react: async (_c, _n, input) => void reactions.push(input.messageId),
-    openDirect: async (_c, _n, input) => ({ conversation: input.personId }),
+    openDirect: async (_c, _n, input) => ({ conversation: `dm-${input.personId}` }),
     inbound: {
       kind: "poll",
       run: async (_c, _n, _b, s, signal) => {
@@ -171,9 +171,38 @@ test("outbound: every chat path to a barred person is refused and nothing reache
   assert.equal(s.w.sent.length, before + 4);
   // a contact book row alone also bars the conversation
   await s.bar("telegram:333");
-  await assert.rejects(s.call("channel_send", { conversation: "333", text: "x" }), REFUSED);
+  await assert.rejects(s.call("channel_send", { conversation: "dm-333", text: "x" }), REFUSED);
   await s.unbar(FIRED);
   await s.call("channel_send", { conversation: "111", text: "after unbar" });
+});
+
+test("a conversation id that is not the user id stays barred after the log purge, and when the first DM comes after the bar", async () => {
+  const s = await chat();
+  // the person wrote first (no contact row), in a conversation with its own id, as on Slack, Discord and Teams
+  s.w.deliver(msg({ conversation: "D900" }));
+  const { messageId } = (await s.call("channel_send", { conversation: "D900", text: "hello" })) as { messageId: string };
+  await s.bar(FIRED);
+  await assert.rejects(s.call("channel_send", { conversation: "D900", text: "the list" }), REFUSED);
+  s.db.prepare("DELETE FROM connect_channel_inbox").run();
+  await assert.rejects(s.call("channel_edit", { conversation: "D900", messageId, text: "the list" }), REFUSED, "an old message of ours, edited after the purge");
+  await assert.rejects(s.call("channel_send", { conversation: "D900", text: "the list" }), REFUSED);
+  // a DM opened after the bar: dropped, but its id is kept
+  s.w.deliver(msg({ conversation: "D901", messageId: "7" }));
+  s.db.prepare("INSERT INTO connect_channel_conversations (account_id, conversation, name, type, last_seen_at) VALUES (?, 'D901', 'x', 'direct', 0)").run(s.account.id);
+  await assert.rejects(s.call("channel_send", { conversation: "D901", text: "the list" }), REFUSED);
+  // the link goes with the bar; the old first-contact rule answers again
+  await s.unbar(FIRED);
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM connect_sender_bar_conversations").get()?.n, 0);
+  await assert.rejects(s.call("channel_send", { conversation: "D901", text: "x" }), (e: ConnectError) => e.code === "channel_first_contact_required");
+});
+
+test("spelling: a leading zero or a space does not get past the bar", async () => {
+  const s = await chat();
+  await s.bar(FIRED);
+  for (const person of ["0111", "00111", " 111"]) await assert.rejects(s.call("channel_dm_first", { person, text: "the list" }), REFUSED, JSON.stringify(person));
+  assert.equal(barHandle("discord:00123"), "discord:123");
+  assert.equal(barHandle("telegram:-0100"), "telegram:-100");
+  assert.equal(s.w.sent.length, 0);
 });
 
 test("the workspace sender (an app) is refused the same way", async () => {
@@ -223,6 +252,10 @@ test("tool sends: a send tool naming a barred address is refused in both forms; 
     await assert.rejects(tools.call("gmail_send_email__first_contact", { recipient_email: recipient, body: "the list" }, ctx), REFUSED, `${recipient} first contact`);
   }
   await assert.rejects(tools.call("gmail_send_email", { recipient_email: "ann@example.com" }, ctx), (e: ConnectError) => e.code === "first_contact_required", "the old path");
+  await assert.rejects(tools.call("gmail_send_email", { recipient_email: "mailto:bob@example.com" }, ctx), REFUSED);
+  // padding past the list cap cannot hide the address
+  const padded = Array.from({ length: 150 }, (_, i) => `a${i}@example.com`).concat("bob@example.com");
+  await assert.rejects(tools.call("gmail_send_email__first_contact", { recipient_email: padded.join(",") }, ctx), REFUSED);
   assert.equal(upstream.calls.length, 0);
 });
 
@@ -284,6 +317,7 @@ test("buzz outbound: a DM, a post into their direct channel (known or found on t
   await assert.rejects(handlerOf(b.app, "buzz_dm")({ to: b.fired, content: "the list" }, b.ctx), REFUSED);
   // the contact book knows this channel
   await assert.rejects(handlerOf(b.app, "buzz_post")({ channel: CHANNEL, content: "the list" }, b.ctx), REFUSED);
+  await assert.rejects(handlerOf(b.app, "buzz_post")({ channel: CHANNEL.toUpperCase(), content: "the list" }, b.ctx), REFUSED, "the UUID in upper case");
   // the person opened this one: only the relay's member list shows it
   b.st.events = b.group(ROOM, [self, b.fired], [["hidden"]]);
   const send = {
@@ -339,11 +373,17 @@ test("buzz reactions: a barred recipient's signed reaction decides nothing and g
   const replies: string[] = [];
   const relayed: unknown[] = [];
   const reader: BuzzReader = { query: async () => ({ events: [reaction] }), post: async (_a, i) => void replies.push(i.content) };
-  const deps = { db, secrets, reader, relay: async (_p: string, input: unknown) => { relayed.push(input); return { final: true, notice: "Approved." }; }, now: () => NOW };
+  const at = { now: NOW };
+  const deps = { db, secrets, reader, relay: async (_p: string, input: unknown) => { relayed.push(input); return { final: true, notice: "Approved." }; }, now: () => at.now };
   new SenderBars(db).add(`buzz:${npubEncode(pubkey)}`, null);
   await pollBuzzActions(deps);
   assert.deepEqual(relayed, []);
   assert.deepEqual(replies, []);
   assert.equal(db.prepare("SELECT state FROM connect_buzz_actions").get()?.state, "done");
   assert.equal(await secrets.get(`buzz-actions:${alert}`), null, "the sealed values are gone");
+  // expired before the first poll: closed with no reply either (the expiry branch writes into the conversation for anyone else)
+  await recordBuzzActions({ db, secrets, now: () => NOW }, { sender: "workspace", owner: pubkey, sent: [{ id: "b".repeat(64), channel: CHANNEL }], origin: { product: "inbox", instance: "ins_01", requestedAccount: "npub1x", actions: buttons, expiresAt: NOW + 1000 } });
+  at.now = NOW + 5000;
+  await pollBuzzActions(deps);
+  assert.deepEqual(replies, []);
 });

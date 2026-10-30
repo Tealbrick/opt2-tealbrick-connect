@@ -758,7 +758,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const recipients = !send ? [] : row.sendRecipients !== undefined ? recipientsAt(upstreamArgs, row.sendRecipients) : recipientsOf(upstreamArgs);
         // C380: a send tool that names a barred person is refused in both forms. A first-contact approval does not lift the bar.
         const bars = new SenderBars(ctx.db);
-        if (recipients.some((r) => bars.recipient(row.service, r))) refuseBarred();
+        // The list is cut after 100: with a bar in the workspace, a longer list cannot be checked, so it does not run.
+        if (bars.any() && (recipients.length > 100 || recipients.some((r) => bars.recipient(row.service, r)))) refuseBarred();
         if (send && !firstContact) {
           const caller = ctx.caller.id;
           const accountId = account.id;
