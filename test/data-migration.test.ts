@@ -99,3 +99,14 @@ test("migration 0026 (C380) adds the sender bars table; the inbound log of the p
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_channel_inbox").get()?.n, 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM connect_sender_bars").get()?.n, 0);
 });
+
+test("migration 0027 (C380) adds hold_id to scheduled posts; a waiting post of the previous release stays due with no hold", () => {
+  const db = new DatabaseSync(":memory:");
+  const files = readdirSync(dir).filter((n) => n.endsWith(".sql")).sort();
+  assert.ok(files.includes("0027_scheduled_hold.sql"));
+  for (const f of files.filter((n) => n < "0027")) db.exec(sql(f));
+  db.exec(`INSERT INTO connect_buzz_scheduled (id, agent, channel, content, send_at, status, created_at) VALUES ('bsp_1', 'agt_1', 'c', 'later', 5, 'scheduled', 1)`);
+  db.exec(sql("0027_scheduled_hold.sql"));
+  const row = db.prepare("SELECT status, content, hold_id FROM connect_buzz_scheduled WHERE id = 'bsp_1'").get();
+  assert.deepEqual({ ...row }, { status: "scheduled", content: "later", hold_id: null });
+});
