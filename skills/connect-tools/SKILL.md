@@ -23,6 +23,8 @@ If a send tool (mail, message, invite, share) answers `first_contact_required`, 
 
 If a first-contact send answers `first_contact_approval_off`, the owner holds every message but not first messages to new people, so Connect does not send it. Tell the owner the setting the answer names; do not retry until it is on. `channel_send` to a conversation Connect has never seen answers `channel_first_contact_required`: list conversations with `channel_conversations`, or write to a person with `channel_dm_first`.
 
+If a send answers `refused_by_policy`, company policy stops this message. Do not retry and do not try another tool or channel. Tell the owner what you tried to send.
+
 Postiz: to save a post as a draft (not published), call the create-post tool with the name ending `__draft` and a body with `type` "draft" and new posts only (no `group`, no post `id`). It runs without approval. A draft with a `group` or an `id`, or any other `type` ("schedule", "now"), is refused on the `__draft` name (`draft_not_plain`); call the plain tool and the owner approves it.
 
 If a call is held for approval, tell the owner, poll `connect__tb_hold_status` with the hold id, and after approval repeat the same call with the same arguments.

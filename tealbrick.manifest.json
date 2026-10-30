@@ -5,7 +5,7 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.7.13",
+  "version": "0.7.14-dev.1",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.2.11"
