@@ -8,6 +8,7 @@ Sprint C380: a person who left the company cannot reach agents through Connect o
 - **Sender bar:** migration 0026. A barred handle: inbound chat dropped at ingest with a count; earlier messages hidden from agents; Buzz authors hidden at read; button clicks and Buzz reactions ignored; every outbound path refused with 403 `refused_by_policy` (DMs, replies, posts in their direct conversation, edits, scheduled posts when due, send tools that name them). An approved first contact does not lift the bar. No message is deleted.
 - **Owner:** ops `sender_bar_add`, `sender_bar_remove`; "Blocked senders" on the Accounts page.
 - **Governance:** ops `access_list`, `access_revoke` (`tb.access/1`, spec 0.1.89), Governance only. Disconnecting an account or cancelling a scheduled post needs the agent paused or absent in the signed slice.
+- **Send-time check (audit hole 4):** a scheduled Buzz post is checked again when it is due, through `ctx.sendTimeCheck` (miniapp-sdk 0.1.45). A refusal cancels it, a hold waits for the owner, no answer means no post (tried again, cancelled one day past due). Migration 0027. `requires.bridge` 0.2.13.
 - **Not covered:** a channel or group the person is still a member of; mail or messages an agent reads through a tool account; rows from before the bar that a data app reads; a new handle of the same person. Governance can name Buzz, Slack and Telegram handles only; for email, Teams and Discord the owner uses the Accounts page.
 
 ## 0.7.13 (2026-10-30; C378, on top of 0.7.12)
