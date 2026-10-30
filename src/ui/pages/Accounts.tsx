@@ -627,7 +627,7 @@ function ToolSharing({ account, apps, onChanged }: { account: Account; apps: Too
                     <strong>{app.name}</strong> can call the <strong>{writes ? "read and write" : "read"}</strong> tools of this account{share.current ? "" : " (that app instance was removed; it can no longer use it)"}
 .{" "}
                     {writes
-                      ? "A workflow can create drafts and change records here without asking you, unless a Rules hold asks you. Sends and posts run only when the call waits for your approval. Deletions and payments never go to apps."
+                      ? "A workflow can create drafts and change records here without asking you, unless a Rules hold asks you. Sends and posts run only after you approve that call: add a Rules hold for them. Deletions and payments never go to apps."
                       : "Writes, sends, deletions and payments are not shared."}
                   </>
                 ) : (

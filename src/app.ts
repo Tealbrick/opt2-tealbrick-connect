@@ -169,16 +169,6 @@ export interface ConnectEnv {
 
 /** The SDK passes `SdkOpContext` (publicUrl, workspace, scopes, secrets: C31) where the frozen types say OpContext. */
 const extras = (ctx: OpContext): SdkOpContext => ctx as SdkOpContext;
-/**
- * Connect-writes: the family that holds this outward call, and whether the caller's grant holds it. When it does, the SDK reaches the
- * handler only after an owner approval (authorize: family in grant.held → hold, an approved hold for this exact call → run). This is
- * the only proof a handler has: the SDK gives no approval signal and its authorizer denies app code the `tb_*` tables.
- */
-const outwardHeldByGrant = (ctx: OpContext, row: { holdFamily?: string }, firstContact: boolean): boolean => {
-  const family = firstContact ? "first_contact" : (row.holdFamily ?? "outward");
-  const held: readonly string[] = ctx.grant?.claims.held ?? [];
-  return held.includes(family);
-};
 /** One context value as plain text for a hold card: no control or format characters, cut short. */
 const contextText = (value: Json | undefined): string | null => {
   if (typeof value !== "string" && typeof value !== "number") return null;
@@ -773,15 +763,14 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
             });
           }
         }
-        // Coordinator decision 2026-10-30: an app's outward tool runs only on an owner approval. The workspace apps policy does not hold
-        // `outward` by default (C107), so without this check a workflow could send with no hold at all. Fail closed.
-        if (ctx.caller.type === "app" && row.effect === "outward" && !draft && !outwardHeldByGrant(ctx, row, firstContact)) {
+        // C378 + Coordinator decision 2026-10-30: an app's outward tool runs only on an owner approval of THIS call, whatever held it: a
+        // Rules hold or a family of the grant. The workspace apps policy does not hold `outward` by default (C107), so without this check
+        // a workflow could send with no hold at all. `approvedHold` is set by the SDK only after it consumed the approved hold of this call.
+        if (ctx.caller.type === "app" && row.effect === "outward" && !draft && !extras(ctx).approvedHold) {
           fail(
             "app_outward_needs_approval",
-            `Nothing was sent. Connect runs an outward tool of a workflow app only when the owner must approve the call, and this call does not ask. ${
-              send && !firstContact
-                ? `Call ${row.name}${FIRST_CONTACT_SUFFIX} in the workflow instead: it waits for the owner's approval each time.`
-                : `The owner turns on approval for this kind of call in the Portal, in the workspace policy for calls from apps.`
+            `Nothing was sent. Connect runs an outward tool of a workflow app only after the owner approves that call, and nothing held this one. The owner adds a hold in the Rules app (template "Hold an app's outward actions", app ${ctx.caller.name}), then runs the workflow again.${
+              send && !firstContact ? ` Or call ${row.name}${FIRST_CONTACT_SUFFIX} in the workflow: it waits for the owner's approval each time.` : ""
             }`,
             409,
             { retryable: false, tool: row.name },
@@ -822,7 +811,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const finish = async (account: Account | null, out: { summary: string; view: string }) => {
         const result = {
           summary: scrub(asked?.workflow ? `${out.summary} (workflow ${asked.workflow})`.slice(0, 280) : out.summary),
-          view: scrub(asked ? `${out.view}\n\n${asked.lines}${row.effect === "outward" && variant !== "draft" && !outwardHeldByGrant(ctx, row, firstContact) ? "\nConnect will refuse this call after an approval: approval from a Rules hold alone does not reach Connect. Deny it, and change the workflow or the workspace policy for calls from apps." : ""}` : out.view),
+          view: scrub(asked ? `${out.view}\n\n${asked.lines}` : out.view),
         };
         await recordHoldDetails(ctx, s, row, tool, account, scrub(sortedJson(upstreamArgs)), result.view);
         return result;

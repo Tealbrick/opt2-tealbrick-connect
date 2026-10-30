@@ -251,14 +251,14 @@ test("approval reuse: another run with identical input gets its own hold, and th
   await decide(String(b.body.holdId), "deny");
 });
 
-test("outward: runs only when the grant holds its family; a Rules hold alone is refused after the approval and the card says so", async () => {
+test("outward: refused with no approval and names the Rules hold; a Rules hold or a held family runs it once after the owner approves (C378)", async () => {
   const SEND = "gmail_send_email__first_contact";
   const args = { recipient_email: "person@example.com", subject: "Hello", body: "Fictional" } as Record<string, Json>;
   const before = count("GMAIL_SEND_EMAIL");
   const refused = await callTool(SEND, args, { run: "run_o1", held: [] });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(errCode(refused), "app_outward_needs_approval");
-  assert.match(JSON.stringify(refused.body), /Portal/u);
+  assert.match(JSON.stringify(refused.body), /Rules app/u);
   assert.equal(count("GMAIL_SEND_EMAIL") - before, 0);
   // the default policy holds first_contact: the owner approves, it sends once
   const held = await callTool(SEND, args, { run: "run_o2", held: ["first_contact"] });
@@ -267,22 +267,41 @@ test("outward: runs only when the grant holds its family; a Rules hold alone is 
   const ran = await callTool(SEND, args, { run: "run_o2", held: ["first_contact"] });
   assert.equal(ran.status, 200, JSON.stringify(ran.body));
   assert.equal(count("GMAIL_SEND_EMAIL") - before, 1);
-  // the contact is known now: the plain tool under the default policy is refused and names the form that waits
+  // the contact is known now: the plain tool with no hold is refused, and the text also names the form that waits
   const plain = await callTool("gmail_send_email", args, { run: "run_o3", held: ["first_contact"] });
   assert.equal(errCode(plain), "app_outward_needs_approval", JSON.stringify(plain.body));
   assert.match(JSON.stringify(plain.body), /gmail_send_email__first_contact/u);
-  // an apps policy that holds outward: the plain tool is held
+  // an apps policy that holds outward: held; deny sends nothing
   const policy = await callTool("gmail_send_email", args, { run: "run_o4", held: ["outward"] });
   assert.equal(policy.status, 202, JSON.stringify(policy.body));
   await decide(String(policy.body.holdId), "deny");
-  // a Rules hold alone: held, the card warns, and after the approval Connect still refuses: nothing is sent
+  assert.equal(count("GMAIL_SEND_EMAIL") - before, 1);
+  // C378: a Rules hold alone takes effect: held, the owner approves, it runs exactly once, a retry gives the stored answer
   const rule = await callTool("gmail_send_email", args, { run: "run_o5", held: [], ruleHold: true });
   assert.equal(rule.status, 202, JSON.stringify(rule.body));
-  assert.match(holdView(String(rule.body.holdId)), /Connect will refuse this call after an approval/u);
+  assert.doesNotMatch(holdView(String(rule.body.holdId)), /refuse/u);
   await decide(String(rule.body.holdId), "approve");
   const after = await callTool("gmail_send_email", args, { run: "run_o5", held: [], ruleHold: true });
-  assert.equal(errCode(after), "app_outward_needs_approval", JSON.stringify(after.body));
-  assert.equal(count("GMAIL_SEND_EMAIL") - before, 1, "only the approved first contact was sent");
+  assert.equal(after.status, 200, JSON.stringify(after.body));
+  assert.equal(count("GMAIL_SEND_EMAIL") - before, 2);
+  const retry = await callTool("gmail_send_email", args, { run: "run_o5", held: [], ruleHold: true });
+  assert.equal(retry.status, 200, JSON.stringify(retry.body));
+  assert.equal(count("GMAIL_SEND_EMAIL") - before, 2, "no second send on a retry");
+  // the approval of another run proves nothing for this one
+  const stolen = await callTool("gmail_send_email", args, { run: "run_o6", held: [] });
+  assert.equal(errCode(stolen), "app_outward_needs_approval", JSON.stringify(stolen.body));
+});
+
+test("approval binding: two identical runs both approved each run on their own approval, in any order (SDK 0.1.44)", async () => {
+  const before = count("GMAIL_CREATE_EMAIL_DRAFT");
+  const a = await callTool(DRAFT, draftArgs("both"), { run: "run_b1", ruleHold: true });
+  const b = await callTool(DRAFT, draftArgs("both"), { run: "run_b2", ruleHold: true });
+  assert.deepEqual([a.status, b.status], [202, 202]);
+  await decide(String(a.body.holdId), "approve");
+  await decide(String(b.body.holdId), "approve");
+  assert.equal((await callTool(DRAFT, draftArgs("both"), { run: "run_b1", ruleHold: true })).status, 200);
+  assert.equal((await callTool(DRAFT, draftArgs("both"), { run: "run_b2", ruleHold: true })).status, 200);
+  assert.equal(count("GMAIL_CREATE_EMAIL_DRAFT") - before, 2);
 });
 
 test("a delete tool stays refused with a write share (read_update has no delete)", async () => {

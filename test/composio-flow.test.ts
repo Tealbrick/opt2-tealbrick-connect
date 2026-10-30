@@ -177,7 +177,7 @@ test("catalog search offers only connected services; resolve returns the class",
   const s = setup();
   const dyn = s.app.dynamic?.tools;
   assert.ok(dyn);
-  const hookCtx = { db: s.db, log: testCtx({ db: s.db }).log, getKey: async () => KEY, signal: new AbortController().signal, secrets: secretsFor(s.db) };
+  const hookCtx = { db: s.db, log: testCtx({ db: s.db }).log, getKey: async () => KEY, modelRole: async () => null as never, signal: new AbortController().signal, secrets: secretsFor(s.db) };
   assert.deepEqual(await dyn.catalog({ query: "gmail" }, hookCtx), []);
   await connectInbox(s, "Work inbox");
   const hits = await dyn.catalog({ query: "send email" }, hookCtx);

@@ -5,8 +5,11 @@
   "name": "Connect",
   "summary": "Connect your agents to the services you use: Gmail and 1,000+ apps through Composio, self-hosted apps, MCP servers and team chat.",
   "description": "Connect holds all outside connectivity for your agents.\n\n- **Services:** search a service, press Connect, sign in. Several accounts per service (for example two Gmail inboxes).\n- **Access per account and agent:** READ, READ/UPDATE (includes create and send) or READ/UPDATE/DELETE.\n- **As me or as itself:** an agent can use your account, or its own identity (for example its own Buzz identity).\n- **Channels:** each agent connected to Connect gets its own Buzz identity at once, on one or more Buzz relays.\n- **Senders:** pick the identity your apps send from (for example Operator Inbox alerts), per channel.\n\nBy default, deletions, payments, first messages to a new person and profile changes wait for your approval. Ordinary messages and posts go out at once and leave a receipt, unless you turn on approval for every message in the agent policy.",
-  "version": "0.7.12",
+  "version": "0.7.13",
   "sdkMajor": 1,
+  "requires": {
+    "bridge": "0.2.11"
+  },
   "publisher": {
     "name": "Tealbrick",
     "url": "https://tealbrick.com"
@@ -3375,7 +3378,7 @@
     {
       "id": "account_tools_share",
       "title": "Share an account with a workflow app",
-      "description": "Let ONE installed Evolving Workflows instance call the READ tools of one of your connected accounts (a mailbox, a sheet, an own API, an MCP server), so a scheduled workflow can read it. With writes true you also let it call WRITE tools (a draft, a label, a new record) and OUTWARD tools; an outward tool runs only when the call waits for your approval. Deletions and payments are never shared with apps. Off by default, writes off by default; share false stops it at once. A reinstalled app needs a new share. The SDK also checks the app instance's own scope row: set it with tb.scopes_set (agent = the instance id, type account, this account, access read, or read_update with writes); the Accounts page does both.",
+      "description": "Let ONE installed Evolving Workflows instance call the READ tools of one of your connected accounts (a mailbox, a sheet, an own API, an MCP server), so a scheduled workflow can read it. With writes true you also let it call WRITE tools (a draft, a label, a new record) and OUTWARD tools; an outward tool runs only after you approve that call (a Rules hold, or a hold family of the workspace policy). Deletions and payments are never shared with apps. Off by default, writes off by default; share false stops it at once. A reinstalled app needs a new share. The SDK also checks the app instance's own scope row: set it with tb.scopes_set (agent = the instance id, type account, this account, access read, or read_update with writes); the Accounts page does both.",
       "input": {
         "type": "object",
         "additionalProperties": false,
