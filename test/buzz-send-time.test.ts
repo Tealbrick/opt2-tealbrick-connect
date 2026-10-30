@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type BuzzSendCheck, buzzSendCheck, runDueBuzzPosts, SEND_CHECK_GIVE_UP_MS } from "../src/app.ts";
+import { type BuzzSendCheck, buzzSendCheck, runDueBuzzPosts, SEND_CHECK_GIVE_UP_MS, SEND_CHECK_RETRY_MS } from "../src/app.ts";
 import type { BuzzRelay } from "../src/channels/buzz/relay.ts";
 import { testDb } from "./helpers.ts";
 
@@ -60,19 +60,24 @@ test("fail closed: defer and a throwing check post nothing, the row waits, and i
   assert.equal(await w.run(async () => ({ decision: "defer", code: "bridge_unavailable" })), 0);
   assert.equal(w.row().status, "scheduled");
   assert.match(String(w.row().detail), /could not check/u);
-  assert.equal(await w.run(async () => { throw new Error("socket closed"); }), 0, "a throw is no answer");
+  await w.run(async () => assert.fail("not asked before the retry time"));
+  const later = NOW + SEND_CHECK_RETRY_MS + 1000;
+  assert.equal(await w.run(async () => { throw new Error("socket closed"); }, later), 0, "a throw is no answer");
   assert.equal(w.row().status, "scheduled");
   assert.deepEqual(w.posts, []);
-  assert.equal(await w.run(async () => ({ decision: "run" })), 1, "the next answer decides");
+  // an answer that is not one of the four posts nothing either
+  assert.equal(await w.run((async () => ({ decision: "maybe" })) as unknown as BuzzSendCheck, later + SEND_CHECK_RETRY_MS + 1000), 0);
+  assert.deepEqual(w.posts, []);
+  assert.equal(await w.run(async () => ({ decision: "run" }), later + 2 * SEND_CHECK_RETRY_MS + 2000), 1, "the next answer decides");
   assert.deepEqual(w.posts, ["post 1"]);
 });
 
 test("fail closed: a post that cannot be checked for a day is cancelled, not sent late", async () => {
   const w = world();
   const defer: BuzzSendCheck = async () => ({ decision: "defer", code: "x" });
-  await w.run(defer, NOW - 1000 + SEND_CHECK_GIVE_UP_MS);
-  assert.equal(w.row().status, "scheduled", "at the limit it still waits");
-  await w.run(defer, NOW - 1000 + SEND_CHECK_GIVE_UP_MS + 1);
+  await w.run(defer, NOW - 1000 + SEND_CHECK_GIVE_UP_MS - 60_000);
+  assert.equal(w.row().status, "scheduled", "before the limit it still waits");
+  await w.run(defer, NOW - 1000 + SEND_CHECK_GIVE_UP_MS + SEND_CHECK_RETRY_MS);
   assert.deepEqual(w.row(), { status: "cancelled", detail: "Not sent: Connect could not check the post with the bridge for a day.", hold_id: null });
   assert.deepEqual(w.posts, []);
 });
@@ -110,17 +115,58 @@ test("hold: the row keeps one hold id, is asked with it on each tick, and then t
   assert.deepEqual(denied.posts, []);
 });
 
-test("restart: a tick cut during the check is reported failed and never re-sent; a post that waits on a hold carries on", async () => {
-  const w = world(2);
-  await w.run(async (q) => ((q.input as { content: string }).content === "post 1" ? { decision: "wait", holdId: "hld_1" } : { decision: "defer", code: "x" }));
-  // the process dies while bsp_2 is claimed
-  w.db.prepare("UPDATE connect_buzz_scheduled SET status = 'sending', claimed_at = ? WHERE id = 'bsp_2'").run(NOW);
-  assert.equal(await w.run(async () => ({ decision: "run" }), NOW + 60_000), 1, "only the post with the hold");
+test("restart: a process that dies during the check loses nothing: the lease ends and the row is asked again, once", async () => {
+  const w = world();
+  // a check that never comes back stands for the dead process
+  void w.run(() => new Promise(() => undefined));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(w.asked.length, 1);
+  assert.equal(w.row().status, "scheduled", "not failed: nothing was posted");
+  await w.run(async () => assert.fail("the lease still holds"), NOW + 60_000);
+  assert.equal(await w.run(async () => ({ decision: "run" }), NOW + 6 * 60_000), 1);
   assert.deepEqual(w.posts, ["post 1"]);
-  assert.equal(w.row("bsp_2").status, "sending");
-  assert.equal(await w.run(async () => ({ decision: "run" }), NOW + 11 * 60_000), 0);
-  assert.equal(w.row("bsp_2").status, "failed");
-  assert.deepEqual(w.posts, ["post 1"]);
+});
+
+test("restart: a process that dies during the post is reported failed and never re-sent", async () => {
+  const w = world();
+  w.db.prepare("UPDATE connect_buzz_scheduled SET status = 'sending', claimed_at = ? WHERE id = 'bsp_1'").run(NOW);
+  await w.run(async () => assert.fail("no question for a row in sending"), NOW + 11 * 60_000);
+  assert.equal(w.row().status, "failed");
+  assert.deepEqual(w.posts, []);
+});
+
+test("a cancel during the check wins: an owner's cancel or a key rotation is not overwritten, and nothing goes out", async () => {
+  for (const answer of [{ decision: "run" }, { decision: "wait", holdId: "hld_1" }, { decision: "defer", code: "x" }, { decision: "refused", code: "hook_denied", reason: "No" }] as const) {
+    const w = world();
+    await w.run(async () => {
+      w.db.prepare("UPDATE connect_buzz_scheduled SET status = 'cancelled', detail = 'by the owner' WHERE id = 'bsp_1' AND status = 'scheduled'").run();
+      return answer;
+    });
+    assert.deepEqual(w.posts, [], answer.decision);
+    assert.deepEqual(w.row(), { status: "cancelled", detail: "by the owner", hold_id: null }, answer.decision);
+  }
+});
+
+test("a defer keeps the hold id; a relay that cannot answer the bar check posts nothing and is asked again", async () => {
+  const w = world();
+  await w.run(async () => ({ decision: "wait", holdId: "hld_1" }));
+  await w.run(async () => ({ decision: "defer", code: "x" }));
+  assert.equal(w.row().hold_id, "hld_1");
+  const u = world();
+  u.db.prepare("INSERT INTO connect_sender_bars (handle, at) VALUES ('buzz:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6', 1)").run();
+  const down = { query: async () => { throw new Error("relay down"); }, post: async () => assert.fail("no post") } as unknown as BuzzRelay;
+  assert.equal(await runDueBuzzPosts(u.db, down, log, async () => assert.fail("no question"), NOW), 0);
+  assert.equal(u.row().status, "scheduled");
+  assert.match(String(u.row().detail), /relay/u);
+});
+
+test("posts that cannot be checked do not fill the window: newer posts are still asked", async () => {
+  const w = world(25);
+  await w.run(async () => ({ decision: "defer", code: "x" }));
+  assert.equal(w.asked.length, 20);
+  w.asked.length = 0;
+  await w.run(async () => ({ decision: "run" }), NOW + 1);
+  assert.deepEqual(w.posts.sort(), ["post 21", "post 22", "post 23", "post 24", "post 25"]);
 });
 
 test("two ticks at once: the claim comes before the check, so one question, one hold, one post", async () => {
