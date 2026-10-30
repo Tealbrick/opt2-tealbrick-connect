@@ -587,21 +587,24 @@ function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }:
  *   - moving a share to another instance is a new share: "Include the last 30 days" starts unticked again.
  * An instance on the owner's own server is named as such.
  */
-/** C373 Jarvis: share this account with one Evolving Workflows instance for READ tools only (off by default; Stop = at once). */
+/**
+ * C373 Jarvis + Connect-writes: share this account with one Evolving Workflows instance for READ tools (off by default; Stop = at
+ * once) and, as a separate owner choice, for WRITE tools. Deletions and payments never go to apps.
+ */
 function ToolSharing({ account, apps, onChanged }: { account: Account; apps: ToolApp[]; onChanged(): Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const run = async (product: string, share: boolean, instance?: string) => {
+  const run = async (product: string, share: boolean, instance?: string, writes = false) => {
     setBusy(true);
     setError(null);
     try {
-      // Two rows make a share (C373 Jarvis): Connect's share (product + exact instance) and the SDK scope row of that instance
-      // (read on this account), because the SDK checks the caller's scope before Connect runs. Stop removes Connect's row
-      // first (the kill path), then the scope row.
+      // Two rows make a share (C373 Jarvis): Connect's share (product + exact instance + writes) and the SDK scope row of that instance
+      // (read or read_update on this account), because the SDK checks the caller's scope before Connect runs. Connect's row goes first:
+      // it is the kill path on Stop and on Back to read only, and on Allow writes the call stays refused until the scope row is set too.
       const current = (account.toolShares ?? []).find((t) => t.product === product)?.instance;
-      await accountToolsShare(account.id, product, share, instance);
+      await accountToolsShare(account.id, product, share, instance, writes);
       const who = share ? instance : current;
-      if (who) await scopesSet(who, account.id, share ? "read" : null);
+      if (who) await scopesSet(who, account.id, share ? (writes ? "read_update" : "read") : null);
       await onChanged();
     } catch (e) {
       setError(errorText(e));
@@ -615,21 +618,35 @@ function ToolSharing({ account, apps, onChanged }: { account: Account; apps: Too
         .filter((a) => a.instances.length > 0)
         .map((app) => {
           const share = (account.toolShares ?? []).find((t) => t.product === app.product);
+          const writes = share?.writes === true;
           return (
             <p key={app.product} className="tb-row">
               <span>
                 {share ? (
                   <>
-                    <strong>{app.name}</strong> can call the <strong>read</strong> tools of this account{share.current ? "" : " (that app instance was removed; it can no longer read)"}
-                    {share.scopeRow === false ? " — not complete: press Share again" : ""}. Sends, changes, deletions and payments never go to apps.
+                    <strong>{app.name}</strong> can call the <strong>{writes ? "read and write" : "read"}</strong> tools of this account{share.current ? "" : " (that app instance was removed; it can no longer use it)"}
+.{" "}
+                    {writes
+                      ? "A workflow can create drafts and change records here without asking you, unless a Rules hold asks you. Sends and posts run only when the call waits for your approval. Deletions and payments never go to apps."
+                      : "Writes, sends, deletions and payments are not shared."}
                   </>
                 ) : (
-                  <>Let {app.name} read this account in your workflows (read tools only; sends, changes, deletions and payments stay with agents and your approval).</>
+                  <>Let {app.name} read this account in your workflows (read tools only; writes, sends, deletions and payments are not shared).</>
                 )}
               </span>
-              {share?.scopeRow === false ? (
-                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, share.instance)} aria-label={`Complete the share of ${account.label} with ${app.name}`}>
+              {error && share ? (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, share.instance, writes)} aria-label={`Complete the share of ${account.label} with ${app.name}`}>
                   Share again
+                </Button>
+              ) : null}
+              {share && !writes && share.current ? (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, share.instance, true)} aria-label={`Allow ${app.name} to write to ${account.label}`}>
+                  Also allow writes
+                </Button>
+              ) : null}
+              {writes && share ? (
+                <Button size="sm" disabled={busy} onClick={() => void run(app.product, true, share.instance, false)} aria-label={`Back to read tools only for ${app.name} on ${account.label}`}>
+                  Back to read only
                 </Button>
               ) : null}
               {share ? (
