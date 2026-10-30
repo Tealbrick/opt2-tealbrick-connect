@@ -12,6 +12,7 @@ import { defineApp, startApp, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type { Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json, OpContext } from "@opt2-tealbrick/spec/sdk";
 
+import { conformanceManifest, GUARDED_OPS } from "./conformance.strip.ts";
 import { AccountStore } from "./src/accounts.ts";
 import { createConnectApp, PRODUCT_SCOPE } from "./src/app.ts";
 import { BuzzIdentities, WORKSPACE_SENDER } from "./src/channels/buzz/identity.ts";
@@ -24,7 +25,7 @@ import { entrySchema, ToolRegistry, toolName } from "./src/tools.ts";
 
 // A21 (conformance >= 0.1.25, C283b/C283c): the suite simulates an app update that widens or narrows an access level
 // through TBCONF_LEVEL_CRUD; the harness serves the manifest with that change applied (absent or malformed = unchanged).
-const manifest = applyLevelCrud(JSON.parse(readFileSync(join(import.meta.dirname, "tealbrick.manifest.json"), "utf8")) as Manifest, parseLevelCrud(process.env[LEVEL_CRUD_ENV]));
+const manifest = applyLevelCrud(conformanceManifest(JSON.parse(readFileSync(join(import.meta.dirname, "tealbrick.manifest.json"), "utf8")) as Manifest), parseLevelCrud(process.env[LEVEL_CRUD_ENV]));
 /** Sentinel `sendAt` of the capsAgent setup step in tealbrick-conformance.json. */
 const CONFORMANCE_SEND_AT = "conformance:in-one-hour";
 const TEST_RELAY = "wss://relay.conformance.example";
@@ -102,7 +103,8 @@ export default async function start(env: Record<string, string>): Promise<{ url:
   // into "one hour from now" before the real handler runs. Every other input goes to the real handler unchanged.
   const realSchedule = definition.handlers.buzz_schedule as (input: Json, ctx: OpContext) => Promise<Json>;
   const handlers = {
-    ...definition.handlers,
+    // C380: the suite's manifest has no guarded op (conformance.strip.ts), so no handler for it either
+    ...Object.fromEntries(Object.entries(definition.handlers).filter(([id]) => !GUARDED_OPS.includes(id))),
     buzz_schedule: (input: Json, ctx: OpContext) =>
       realSchedule(input && typeof input === "object" && !Array.isArray(input) && input.sendAt === CONFORMANCE_SEND_AT ? { ...input, sendAt: new Date(Date.now() + 3_600_000).toISOString() } : input, ctx),
   };

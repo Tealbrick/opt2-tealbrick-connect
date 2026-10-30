@@ -1,0 +1,73 @@
+{
+  "description": "The guard of every tb.access/1 op, as data. Type app, verified caller.product fleet, caller.listed true: allowed. Each target's guard passes all 6 cases. A person caller gets the agent answer.",
+  "cases": [
+    {
+      "name": "fleet_listed",
+      "caller": {
+        "type": "app",
+        "id": "ins_01M4TNVDHPXJGTHATZV5SVJHX9",
+        "product": "fleet",
+        "listed": true
+      },
+      "allow": true
+    },
+    {
+      "name": "other_product",
+      "caller": {
+        "type": "app",
+        "id": "ins_01M4TNVDHPXJGTHATZV5SVJHX9",
+        "product": "connect",
+        "listed": true
+      },
+      "allow": false,
+      "code": "no_access",
+      "status": 403
+    },
+    {
+      "name": "no_product",
+      "caller": {
+        "type": "app",
+        "id": "ins_01M4TNVDHPXJGTHATZV5SVJHX9",
+        "listed": true
+      },
+      "allow": false,
+      "code": "caller_unverified",
+      "status": 403
+    },
+    {
+      "name": "fleet_not_listed",
+      "caller": {
+        "type": "app",
+        "id": "ins_01M4TNVDHPXJGTHATZV5SVJHX9",
+        "product": "fleet",
+        "listed": false
+      },
+      "allow": false,
+      "code": "caller_unverified",
+      "status": 403
+    },
+    {
+      "name": "fleet_no_listed_flag",
+      "caller": {
+        "type": "app",
+        "id": "ins_01M4TNVDHPXJGTHATZV5SVJHX9",
+        "product": "fleet"
+      },
+      "allow": false,
+      "code": "caller_unverified",
+      "status": 403
+    },
+    {
+      "name": "agent",
+      "caller": {
+        "type": "agent",
+        "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9",
+        "product": "fleet",
+        "listed": true
+      },
+      "allow": false,
+      "code": "no_access",
+      "status": 403
+    }
+  ]
+}

@@ -10,7 +10,7 @@ import { channelSenderId } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, SdkAppDefinition, SdkOpContext, SdkPublicContext } from "@opt2-tealbrick/miniapp-sdk";
 import type { CrudAction, DynamicCatalogEntry, DynamicResolution, DynamicSearchInput, Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Caller, Db, DynamicHandlers, Handler, HandlerSpec, Json, Logger, OpContext, PublicHandler } from "@opt2-tealbrick/spec/sdk";
-
+import { accessListHandler, accessRevokeHandler } from "./access.ts";
 import { type Account, AccountStore, CONNECTION_KINDS, type ConnectionKind, normalizeLabel } from "./accounts.ts";
 import { emojiMap, heldKey, pollBuzzActions, purgeBuzzActions, recordBuzzActions } from "./channels/buzz/actions.ts";
 import { BuzzIdentities, WORKSPACE_SENDER } from "./channels/buzz/identity.ts";
@@ -610,6 +610,23 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     if (origin && key && heldKey(ctx.db, key))
       fail("actions_invalid", "This Buzz key belongs to an agent or the workspace sender in Connect, so it cannot approve by reaction. Send to the owner's own Buzz key.");
     return origin;
+  };
+  /** The owner's disconnect, also the end of an `account_as_itself` item (src/access.ts). */
+  const disconnectAccount = async (ctx: OpContext, s: Services, account: Account): Promise<Account> => {
+    const revoked =
+      account.source === "composio"
+        ? await s.composio.disconnect(account)
+        : account.source === "catalog"
+          ? await s.catalog.disconnect(account)
+          : account.source === "mcp"
+            ? await s.mcp.disconnect(account)
+            : account.source === "channel"
+              ? await s.channels.disconnect(account)
+              : s.accounts.update(account.id, { status: "revoked" });
+    // C230 R3: a disconnected account is shared with no app any more (a new connection starts at none).
+    s.shares.clearAccount(account.id);
+    clearSeen(ctx.db, account.id);
+    return revoked;
   };
   const refuseBarred = (): never => fail(BAR_REFUSED_CODE, BAR_REFUSED_TEXT, 403, { retryable: false });
   /** C380: nothing is written into a Buzz direct conversation with a barred person. */
@@ -2054,20 +2071,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           return { account: dbAccountView(await s.databases.revoke(db.id)) } as unknown as Json;
         }
         const account = s.accounts.get(id) ?? fail("account_not_found", "Account not found.", 404);
-        const revoked =
-          account.source === "composio"
-            ? await s.composio.disconnect(account)
-            : account.source === "catalog"
-              ? await s.catalog.disconnect(account)
-              : account.source === "mcp"
-                ? await s.mcp.disconnect(account)
-                : account.source === "channel"
-                  ? await s.channels.disconnect(account)
-                  : s.accounts.update(id, { status: "revoked" });
-        // C230 R3: a disconnected account is shared with no app any more (a new connection starts at none).
-        s.shares.clearAccount(id);
-        clearSeen(ctx.db, id);
-        return { account: accountView(revoked) };
+        return { account: accountView(await disconnectAccount(ctx, s, account)) };
       });
     },
     async tools_refresh(input, ctx) {
@@ -2367,6 +2371,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
 
   // G-5 (C373): companion-only contacts list for Governance (src/contacts.ts)
   handlers.contacts_list = contactsListHandler(fail);
+  // C380: tb.access/1 for Governance (src/access.ts)
+  const accessDeps = { fail, accounts: (ctx: OpContext) => services(ctx).accounts, disconnect: async (ctx: OpContext, account: Account) => void (await disconnectAccount(ctx, services(ctx), account)) };
+  handlers.access_list = accessListHandler(accessDeps);
+  handlers.access_revoke = accessRevokeHandler(accessDeps);
 
   // C354a: without the operations in the manifest there is no route to the lease code
   if (!leasesEnabled) for (const id of LEASE_OP_IDS) delete handlers[id];

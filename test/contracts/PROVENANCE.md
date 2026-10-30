@@ -31,3 +31,21 @@ and never returns the page. The fixtures `valid` and `invalid` run through the s
 How this app uses it: `src/data/documents.ts` validates EVERY `data_pull` page for dataset `documents` against the schema
 (`validateAgainstSchema`, as for messages) and every row before it is added; a page that does not conform answers
 `data_contract_violation` (500) and is never returned, a row that does not conform is skipped and counted (`quarantined`).
+
+## tb.access/1 (C380)
+
+- Source repo: `Tealbrick/opt2-tealbrick-specs`, tag `spec-v0.1.89` (commit d543905 on branch `c380/b1-access-contract` when copied). Not a manifest contract id. Contract: `docs/ACCESS.md`.
+- The manifest ops `access_list` and `access_revoke` embed the four schemas as parsed JSON (`test/access.test.ts` compares them).
+
+| File here | Path in the source repo | sha256 |
+|---|---|---|
+| `access.caller_vector.1.json` | `packages/spec/examples/contracts/access.caller_vector.1.json` | `faf832b1a3fa7e122f252677e9a946be11668cacd23ce0f765fcaa57ebe5cd49` |
+| `access.digest.1.json` | `packages/spec/examples/contracts/access.digest.1.json` | `e4db19dd894802348b9e87c2251d85383fb2e4f47e90b26dde76c42e17b42daa` |
+| `access.list_in.1.json` | `packages/spec/examples/contracts/access.list_in.1.json` | `dc1745d9a0bd6d83fdd672fbc14e119f9637b19537162e77455b246676535c85` |
+| `access.list_in.1.schema.json` | `packages/spec/schemas/contracts/access.list_in.1.schema.json` | `83f1c2f7c2c399d8e11a93418e469d01c777af5f6c8bfe7cd2643539f3a04fe5` |
+| `access.list_out.1.json` | `packages/spec/examples/contracts/access.list_out.1.json` | `efc7e1389eb7a7eac55e3149c2ac111959a5664ebaccf630a0155668c70b5c49` |
+| `access.list_out.1.schema.json` | `packages/spec/schemas/contracts/access.list_out.1.schema.json` | `571feb6b833d392f8eec3212b21d53aa7e529dfb65a34f8a54b89d07160c7f48` |
+| `access.revoke_in.1.json` | `packages/spec/examples/contracts/access.revoke_in.1.json` | `5cab7e5c4b15ddf172aac5a4dab0f55a1028eeaa4ac491a712c4b88f6221783d` |
+| `access.revoke_in.1.schema.json` | `packages/spec/schemas/contracts/access.revoke_in.1.schema.json` | `edbe7c6b94ffb74e4dff0c3f986ccaa29e83d8d6fd1fa9f1e2986d2802e60c51` |
+| `access.revoke_out.1.json` | `packages/spec/examples/contracts/access.revoke_out.1.json` | `76ed608d69f86c43d217ce18516ffe7b233d20f5971a962e862184a62b296281` |
+| `access.revoke_out.1.schema.json` | `packages/spec/schemas/contracts/access.revoke_out.1.schema.json` | `b36b1c6474fc858daf93e2a4d9605067113937b984e8b26833fa13eae314d919` |
