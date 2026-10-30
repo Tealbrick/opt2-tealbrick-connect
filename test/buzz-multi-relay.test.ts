@@ -238,7 +238,7 @@ test("profiles publish to every relay of each agent; scheduled posts keep the ag
   await s.call("buzz_schedule", { channel: CHANNEL, content: "later on B", sendAt: new Date(Date.now() + 60_000).toISOString(), relays: [B] });
   await s.call("buzz_schedule", { channel: CHANNEL, content: "later on all", sendAt: new Date(Date.now() + 60_000).toISOString() });
   const relay = new BuzzRelay(new BuzzIdentities({ db: s.db, secrets: secretsFor(s.db), relayUrls: `${A}\n${B}`, allowRelayOrigins: ORIGINS }), s.net.impl);
-  assert.equal(await runDueBuzzPosts(s.db, relay, testCtx({ db: s.db }).log, Date.now() + 61_000), 2);
+  assert.equal(await runDueBuzzPosts(s.db, relay, testCtx({ db: s.db }).log, async () => ({ decision: "run" }), Date.now() + 61_000), 2);
   assert.deepEqual(s.net.events[A]?.filter((e) => e.kind === 9).map((e) => e.content), ["later on all"]);
   assert.deepEqual(s.net.events[B]?.filter((e) => e.kind === 9).map((e) => e.content).sort(), ["later on B", "later on all"].sort());
 });

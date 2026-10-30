@@ -2394,11 +2394,12 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       // C276a: accounts connected before a classifier or catalog change get the new tool rows (background, best effort).
       const marker = toolClassMarker(env.manifest.artifacts?.find((a) => a.id === "catalog")?.version, policyDigest);
       void resyncToolClasses(ctx.db, s, marker, ctx.log).catch((e: unknown) => ctx.log.warn("tool re-sync failed", { code: (e as { code?: string }).code ?? "error" }));
+      const sendCheck = buzzSendCheck(ctx as unknown as Parameters<typeof buzzSendCheck>[0]);
       const tick = async () => {
         s.channels.purge();
         ctx.db.prepare("DELETE FROM connect_data_audit WHERE at < ?").run(Date.now() - 90 * 24 * 60 * 60 * 1000);
         s.leases.prune(Date.now() - 90 * 24 * 60 * 60 * 1000);
-        await runDueBuzzPosts(ctx.db, s.relay, ctx.log);
+        await runDueBuzzPosts(ctx.db, s.relay, ctx.log, sendCheck);
         // C343a: the owner's ✅ / ❌ reactions on Buzz alerts with buttons
         await pollBuzzActions({ db: ctx.db, secrets: s.secrets, reader: s.relay, relay: relayClick, now: Date.now, log: ctx.log });
         await purgeBuzzActions({ db: ctx.db, secrets: s.secrets, now: Date.now }, INBOX_RETENTION_MS);
@@ -2511,44 +2512,89 @@ function cancelScheduled(db: Db, agent: string, detail: string): number {
   return db.prepare("UPDATE connect_buzz_scheduled SET status = 'cancelled', detail = ? WHERE agent = ? AND status = 'scheduled'").run(detail, agent).changes;
 }
 
+/** A post that could not be checked for this long after it was due is not sent: the world it was written for may be gone. */
+export const SEND_CHECK_GIVE_UP_MS = 24 * 60 * 60_000;
+/** The cap of a bridge that answers the send-time check (0.2.13). Without it the SDK would answer "run", so Connect does not ask. */
+const SEND_CHECK_CAP = "acting_agents";
+/** miniapp-sdk 0.1.45 `ctx.sendTimeCheck` (spec 0.1.88, BRIDGE 8.7 rule 6). */
+export type BuzzSendCheck = (input: { op: string; input: Json; caller: { type: "agent"; id: string }; holdId?: string | null }) => Promise<
+  { decision: "run" } | { decision: "wait"; holdId: string } | { decision: "refused"; code: string; reason: string } | { decision: "defer"; code: string }
+>;
+
+/** The send-time check of the running app. A bridge with no check is no answer, never a pass (audit hole 4: fail closed). */
+export function buzzSendCheck(ctx: { sendTimeCheck: BuzzSendCheck; bridgeCaps(): readonly string[] }): BuzzSendCheck {
+  return async (input) => (ctx.bridgeCaps().includes(SEND_CHECK_CAP) ? ctx.sendTimeCheck(input) : { decision: "defer", code: "bridge_cap_missing" });
+}
+
 /**
- * Post due scheduled Buzz messages. CON-01: the post was authorised when it was scheduled, so at send time Connect checks
- * again what it can see in the slice: the agent must still be in Connect's slice and not paused. The workspace kill switch
- * and connection revocations are not visible to app timers in SDK 0.1.18 (REQUESTS `## connect: send-time pause read`).
- * Claim = `sending` + claimed_at, then `sent` or `failed`; a stale `sending` row is reported failed, never re-sent.
+ * Post due scheduled Buzz messages. The post was accepted when it was scheduled, up to 30 days ago, so everything is asked again at
+ * send time. CON-01: the agent must still be in Connect's slice and not paused. C380: not a direct conversation with a barred person.
+ * Audit hole 4: the bridge's before hooks (Rules, its floor, the pause) run again for `buzz_post`:
+ * - run: post. A hold the owner approved is used up here, once.
+ * - refused: cancelled, with the reason. A denied or expired hold ends the same way.
+ * - wait: a hold exists; the row stays `scheduled` with `hold_id` and is asked about again, which makes no second hold.
+ * - defer, or any error from the check: nothing is posted; asked again next tick; cancelled after SEND_CHECK_GIVE_UP_MS.
+ * Claim first = `sending` + claimed_at: the claim is the lock across the awaits, so two ticks cannot make two holds or two posts.
+ * Then `sent` or `failed`; a stale `sending` row is reported failed, never re-sent.
  */
-export async function runDueBuzzPosts(db: Db, relay: BuzzRelay, log: Logger, now = Date.now()): Promise<number> {
+export async function runDueBuzzPosts(db: Db, relay: BuzzRelay, log: Logger, check: BuzzSendCheck, now = Date.now()): Promise<number> {
   const stale = db
     .prepare("UPDATE connect_buzz_scheduled SET status = 'failed', detail = ? WHERE status = 'sending' AND claimed_at <= ?")
     .run("Interrupted: Connect restarted while sending. The post may not have gone out; check the channel and schedule it again.", now - SENDING_STALE_MS);
   if (stale.changes > 0) log.warn("scheduled buzz posts interrupted", { count: String(stale.changes) });
-  const due = db.prepare("SELECT id, agent, channel, content, relays FROM connect_buzz_scheduled WHERE status = 'scheduled' AND send_at <= ? ORDER BY send_at LIMIT 20").all(now);
+  // posts that wait for the owner go last: they make no bridge call, and must not fill the window
+  const due = db.prepare("SELECT id, agent, channel, content, relays, send_at, hold_id FROM connect_buzz_scheduled WHERE status = 'scheduled' AND send_at <= ? ORDER BY hold_id IS NOT NULL, send_at LIMIT 20").all(now);
   let sent = 0;
   for (const r of due) {
     const id = String(r.id);
-    const agentRow = db.prepare("SELECT status FROM connect_agents WHERE id = ?").get(String(r.agent));
+    const agent = String(r.agent);
+    const agentRow = db.prepare("SELECT status FROM connect_agents WHERE id = ?").get(agent);
     const refusal = !agentRow ? "Not sent: the agent is no longer connected to Connect." : agentRow.status !== "active" ? "Not sent: the agent was paused when the post was due." : null;
     if (refusal) {
       db.prepare("UPDATE connect_buzz_scheduled SET status = 'cancelled', detail = ? WHERE id = ? AND status = 'scheduled'").run(refusal, id);
-      log.warn("scheduled buzz post not sent", { agent: String(r.agent), reason: agentRow ? "paused" : "removed" });
+      log.warn("scheduled buzz post not sent", { agent, reason: agentRow ? "paused" : "removed" });
       continue;
     }
     const claim = db.prepare("UPDATE connect_buzz_scheduled SET status = 'sending', claimed_at = ? WHERE id = ? AND status = 'scheduled'").run(now, id);
     if (claim.changes === 0) continue;
+    const end = (status: "cancelled" | "failed", detail: string) => db.prepare("UPDATE connect_buzz_scheduled SET status = ?, detail = ? WHERE id = ?").run(status, detail.slice(0, 300), id);
+    const giveBack = (detail: string, holdId: string | null) => db.prepare("UPDATE connect_buzz_scheduled SET status = 'scheduled', detail = ?, hold_id = ?, claimed_at = NULL WHERE id = ?").run(detail, holdId, id);
     try {
       const narrow = r.relays === null || r.relays === undefined ? undefined : (JSON.parse(String(r.relays)) as string[]);
       // C380: a post scheduled before the bar does not go into a direct conversation with the barred person.
-      if (await buzzChannelBarred(db, relay, String(r.agent), String(r.channel), narrow)) {
-        db.prepare("UPDATE connect_buzz_scheduled SET status = 'cancelled', detail = ? WHERE id = ?").run("Not sent: refused by company policy.", id);
+      if (await buzzChannelBarred(db, relay, agent, String(r.channel), narrow)) {
+        end("cancelled", "Not sent: refused by company policy.");
         continue;
       }
-      const out = await relay.post(String(r.agent), { channel: String(r.channel), content: String(r.content), ...(narrow ? { relays: narrow } : {}) });
+      const holdId = r.hold_id === null || r.hold_id === undefined ? null : String(r.hold_id);
+      let answer: Awaited<ReturnType<BuzzSendCheck>>;
+      try {
+        answer = await check({ op: "buzz_post", input: { channel: String(r.channel), content: String(r.content), ...(narrow ? { relays: narrow } : {}) }, caller: { type: "agent", id: agent }, holdId });
+      } catch (error) {
+        answer = { decision: "defer", code: (error as { code?: string }).code ?? "error" };
+      }
+      if (answer.decision === "refused") {
+        end("cancelled", `Not sent: ${answer.reason}`);
+        log.warn("scheduled buzz post refused at send time", { agent, code: answer.code });
+        continue;
+      }
+      if (answer.decision === "wait") {
+        giveBack("Waiting for the owner's approval.", answer.holdId);
+        continue;
+      }
+      if (answer.decision === "defer") {
+        log.warn("scheduled buzz post could not be checked", { agent, code: answer.code });
+        if (now - Number(r.send_at) > SEND_CHECK_GIVE_UP_MS) end("cancelled", "Not sent: Connect could not check the post with the bridge for a day.");
+        else giveBack("Waiting: Connect could not check this post with the bridge. It tries again.", holdId);
+        continue;
+      }
+      const out = await relay.post(agent, { channel: String(r.channel), content: String(r.content), ...(narrow ? { relays: narrow } : {}) });
       const failedOn = out.relays.filter((o) => !o.ok).map((o) => `${o.relay} (${o.ok ? "" : o.error})`);
       db.prepare("UPDATE connect_buzz_scheduled SET status = 'sent', event_id = ?, detail = ? WHERE id = ?").run(out.id, failedOn.length ? `Sent; failed on ${failedOn.join(", ")}`.slice(0, 300) : "", id);
-      rememberBuzzSent(db, String(r.agent), out.id, String(r.channel));
+      rememberBuzzSent(db, agent, out.id, String(r.channel));
       sent += 1;
     } catch (error) {
-      db.prepare("UPDATE connect_buzz_scheduled SET status = 'failed', detail = ? WHERE id = ?").run(error instanceof Error ? error.message.slice(0, 300) : "failed", id);
+      end("failed", error instanceof Error ? error.message : "failed");
       log.warn("scheduled buzz post failed", { code: (error as { code?: string }).code ?? "error" });
     }
   }
