@@ -3,11 +3,12 @@
  * One row per third-party tool; the bridge reads it through the SDK bridge ops catalog / resolve.
  * Only tools of services with at least one connected account are offered (search filters on that).
  */
-import type { CrudAction, DynamicCatalogEntry, DynamicResolution, Effect, HoldFamily, JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
+import type { CrudAction, DynamicCatalogEntry, Effect, HoldFamily, JsonSchemaObject } from "@opt2-tealbrick/spec/manifest";
 import type { Db } from "@opt2-tealbrick/spec/sdk";
 
 import { isSendTool, type ToolClass } from "./effect.ts";
 import { isPostizCreatePost } from "./postiz.ts";
+import { dynamicRecipients, type ResolutionWithRecipients } from "./recipients.ts";
 import { sha256Hex } from "./util/ids.ts";
 
 export const TOOL_SOURCES = ["composio", "catalog", "mcp"] as const;
@@ -125,6 +126,12 @@ export function toEntry(row: ToolRow): DynamicCatalogEntry {
   };
 }
 
+/** `{recipients}` for a resolution, or nothing (absent = unknown: Rules fail closed). */
+function recipientsOf(row: ToolRow): Pick<ResolutionWithRecipients, "recipients"> {
+  const recipients = dynamicRecipients(row);
+  return recipients ? { recipients } : {};
+}
+
 export class ToolRegistry {
   readonly #db: Db;
 
@@ -186,11 +193,15 @@ export class ToolRegistry {
     return row ? fromRow(row) : null;
   }
 
-  resolve(name: string): DynamicResolution | null {
+  /**
+   * C373 / G-6: an outward tool whose recipient arguments Connect knows also names their places (`recipients`, src/recipients.ts),
+   * pointers into the call's arguments; a variant has the places of its base (the `__draft` form is a write: none).
+   */
+  resolve(name: string): ResolutionWithRecipients | null {
     if (name.endsWith(FIRST_CONTACT_SUFFIX)) {
       const base = this.get(name.slice(0, -FIRST_CONTACT_SUFFIX.length));
       if (!base || !isSendTool(base)) return null;
-      return { tool: name, crud: base.crud, effect: base.effect, holdFamily: "first_contact" };
+      return { tool: name, crud: base.crud, effect: base.effect, holdFamily: "first_contact", ...recipientsOf(base) };
     }
     if (name.endsWith(DRAFT_SUFFIX)) {
       const base = this.get(name.slice(0, -DRAFT_SUFFIX.length));
@@ -201,7 +212,7 @@ export class ToolRegistry {
     }
     const row = this.get(name);
     if (!row) return null;
-    return { tool: row.name, crud: row.crud, effect: row.effect, ...(row.holdFamily ? { holdFamily: row.holdFamily } : {}) };
+    return { tool: row.name, crud: row.crud, effect: row.effect, ...(row.holdFamily ? { holdFamily: row.holdFamily } : {}), ...recipientsOf(row) };
   }
 
   /**

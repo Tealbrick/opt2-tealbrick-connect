@@ -22,6 +22,8 @@ const KEY = "ck_test_key_value";
 const BASE = "https://backend.composio.dev/api/v3.1";
 const ME = "agt_01AGENTME000000000000000000";
 const OTHER = "agt_01AGENTOTHER0000000000000";
+/** C373: where GMAIL_SEND_EMAIL names its recipients (src/recipients.ts) */
+const GMAIL_SEND_PLACES = [{ pointer: "/recipient_email", kind: "email" }, { pointer: "/to", kind: "email" }, { pointer: "/extra_recipients", kind: "email" }, { pointer: "/cc", kind: "email" }, { pointer: "/bcc", kind: "email" }];
 
 function composioFake() {
   const accounts = new Map<string, { status: string; user: string; auth: string }>();
@@ -188,7 +190,8 @@ test("catalog search offers only connected services; resolve returns the class",
   assert.equal(await dyn.resolve("nope", hookCtx), null);
   // C107: a send resolves WITH the "outward" family (the READ-UPDATE tier is the consent; not held by default). Never
   // first_contact: resolve sees no recipient and Connect keeps no third-party correspondence history.
-  assert.deepEqual(await dyn.resolve("gmail_send_email", hookCtx), { tool: "gmail_send_email", crud: ["create", "update"], effect: "outward", holdFamily: "outward" });
+  // C373 / G-6: and with the places of its recipients in the call arguments (src/recipients.ts).
+  assert.deepEqual(await dyn.resolve("gmail_send_email", hookCtx), { tool: "gmail_send_email", crud: ["create", "update"], effect: "outward", holdFamily: "outward", recipients: GMAIL_SEND_PLACES });
   assert.equal(hits[0]?.holdFamily, "outward");
   assert.deepEqual(await dyn.resolve("gmail_fetch_emails", hookCtx), { tool: "gmail_fetch_emails", crud: ["read"], effect: "read" });
   // F85: natural queries find the tool by word overlap with its title and description, not only its slug.
@@ -246,8 +249,15 @@ test("X-02: a Gmail send to a new recipient is a held first contact; known recip
   const sends = () => s.upstream.calls.filter((c) => c.url.pathname.endsWith("/GMAIL_SEND_EMAIL")).length;
 
   // resolve: the plain tool is outward (not held by default); the first-contact form carries hold family first_contact.
-  assert.deepEqual(await dyn.resolve("gmail_send_email", me), { tool: "gmail_send_email", crud: ["create", "update"], effect: "outward", holdFamily: "outward" });
-  assert.deepEqual(await dyn.resolve("gmail_send_email__first_contact", me), { tool: "gmail_send_email__first_contact", crud: ["create", "update"], effect: "outward", holdFamily: "first_contact" });
+  // C373: both name the same recipient places.
+  assert.deepEqual(await dyn.resolve("gmail_send_email", me), { tool: "gmail_send_email", crud: ["create", "update"], effect: "outward", holdFamily: "outward", recipients: GMAIL_SEND_PLACES });
+  assert.deepEqual(await dyn.resolve("gmail_send_email__first_contact", me), {
+    tool: "gmail_send_email__first_contact",
+    crud: ["create", "update"],
+    effect: "outward",
+    holdFamily: "first_contact",
+    recipients: GMAIL_SEND_PLACES,
+  });
   // quiet: reads, destructive tools and unknown names have no first-contact form
   assert.equal(await dyn.resolve("gmail_fetch_emails__first_contact", me), null);
   assert.equal(await dyn.resolve("gmail_delete_message__first_contact", me), null);
