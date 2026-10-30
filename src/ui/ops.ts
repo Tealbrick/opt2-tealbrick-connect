@@ -136,7 +136,17 @@ export interface ToolShareView {
 export const accountToolsShare = (account: string, product: string, share: boolean, instance?: string, writes = false) =>
   callOp<{ account: string; product: string; shared: boolean; writes?: boolean }>("account_tools_share", { account, product, share, ...(share && instance ? { instance } : {}), ...(share ? { writes } : {}) });
 export const accountsOverview = () =>
-  callOp<{ accounts: Account[]; toolApps?: ToolApp[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean; databaseRecommendation?: string; leasesEnabled?: boolean }>("accounts_overview", {});
+  callOp<{ accounts: Account[]; toolApps?: ToolApp[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean; databaseRecommendation?: string; leasesEnabled?: boolean; senderBars?: SenderBarRow[] }>("accounts_overview", {});
+/** C380: one blocked sender. `name` is the newest name Connect saw for it; `handle` belongs under Details. */
+export interface SenderBarRow {
+  handle: string;
+  name: string | null;
+  at: string;
+  dropped: number;
+  fromGovernance: boolean;
+}
+export const senderBarAdd = (handle: string) => callOp<{ handle: string }>("sender_bar_add", { handle });
+export const senderBarRemove = (handle: string) => callOp<{ handle: string; removed: boolean }>("sender_bar_remove", { handle });
 export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null, route?: ShareRoute) =>
   callOp<{ account: string; product: string; level: ShareLevel; shares: AppShare[] }>("account_app_share", {
     account,

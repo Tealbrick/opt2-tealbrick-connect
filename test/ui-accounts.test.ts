@@ -51,6 +51,10 @@ const stub: {
   mcpTools?: Record<string, unknown>[];
   /** replaces the one chat account when set */
   accounts?: Record<string, unknown>[];
+  /** C380: the blocked senders of accounts_overview, and the bar ops the page sent */
+  senderBars?: Record<string, unknown>[];
+  barOps?: [string, Record<string, unknown>][];
+  barError?: boolean;
 } = {
   shares: [],
   entries: [],
@@ -70,7 +74,13 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const path = url.pathname.replace("/a/connect/tb/v1/", "");
   if (path === "session") return json(200, { principal: { type: "person", id: "per_1", instance: "ins_1" }, csrf: "csrf-token", idempotencyRequired: [] });
   const op = /^ops\/(.+)$/.exec(path)?.[1];
-  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: stub.accounts ?? [account()], dataApps: stub.dataApps, callersKnown: stub.callersKnown, ...(stub.ownerRowsEffective ? { ownerRowsEffective: true } : {}) } });
+  if (op === "accounts_overview") return json(200, { status: "ok", output: { accounts: stub.accounts ?? [account()], dataApps: stub.dataApps, callersKnown: stub.callersKnown, ...(stub.ownerRowsEffective ? { ownerRowsEffective: true } : {}), ...(stub.senderBars ? { senderBars: stub.senderBars } : {}) } });
+  if (op === "sender_bar_add" || op === "sender_bar_remove") {
+    if (stub.barError) return json(400, { error: { code: "handle_invalid", message: "Give a sender as channel:id." } });
+    const body = JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> };
+    stub.barOps = [...(stub.barOps ?? []), [op, body.input ?? (body as Record<string, unknown>)]];
+    return json(200, { status: "ok", output: { handle: "x", removed: true } });
+  }
   if (op === "account_app_share") {
     const body = JSON.parse(String(init?.body ?? "{}")) as { input?: Record<string, unknown> };
     stub.sent.push(body.input ?? (body as Record<string, unknown>));
@@ -513,5 +523,68 @@ describe("Accounts page: an MCP server is shared with Observer as documents (C37
     assert.match(k ?? "", /Knowledge reads this server only through Observer\./u);
     assert.match(o ?? "", /reads the text files this server lists, as documents\. Connect never runs a tool of the server for it\./u);
     await shared.unmount();
+  });
+});
+
+describe("Accounts page: Blocked senders (C380)", () => {
+  const section = (host: Element) => host.querySelector("section[aria-labelledby=blocked-senders]") as HTMLElement;
+  const button = (root: Element, label: string) => [...root.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === label) as HTMLButtonElement;
+  const click = async (el: Element) => {
+    await act(async () => (el as HTMLElement).click());
+    await flush();
+  };
+  const reset = () => {
+    stub.accounts = [];
+    stub.senderBars = [];
+    stub.barOps = [];
+    stub.barError = false;
+    stub.entries = [];
+  };
+
+  it("the empty state says so, and shows the form; Block needs text", async () => {
+    reset();
+    const page = await mount(h(mod.Accounts));
+    assert.match(text(section(page.host)), /No sender is blocked\./u);
+    assert.equal(button(section(page.host), "Block").disabled, true);
+    await page.unmount();
+  });
+
+  it("a row names the sender in plain words, keeps the handle under Details, and Unblock asks first", async () => {
+    reset();
+    stub.senderBars = [
+      { handle: "telegram:111", name: "Bob", at: "2026-10-30T10:00:00.000Z", dropped: 3, fromGovernance: true },
+      { handle: "discord:222", name: null, at: "2026-10-30T10:00:00.000Z", dropped: 1, fromGovernance: false },
+    ];
+    const page = await mount(h(mod.Accounts));
+    const words = text(section(page.host));
+    assert.match(words, /Bob/u);
+    assert.match(words, /Telegram · Blocked by Governance on .+ · 3 messages dropped/u);
+    assert.match(words, /A Discord sender/u);
+    assert.match(words, /Blocked by you on .+ · 1 message dropped/u);
+    assert.equal(section(page.host).querySelector("details code")?.textContent, "telegram:111");
+    await click(button(section(page.host), "Unblock"));
+    assert.deepEqual(stub.barOps, [], "nothing before the confirm");
+    const dialog = page.host.querySelector("dialog[open], [role=dialog]") ?? section(page.host);
+    assert.match(text(dialog), /Later messages from Bob reach agents again/u);
+    const buttons = [...dialog.querySelectorAll("button")].filter((b) => (b.textContent ?? "").trim() === "Unblock");
+    await click(buttons.at(-1) as HTMLButtonElement);
+    assert.deepEqual(stub.barOps, [["sender_bar_remove", { handle: "telegram:111" }]]);
+    await page.unmount();
+  });
+
+  it("a refused handle shows the reason and the page stays usable", async () => {
+    reset();
+    stub.barError = true;
+    const page = await mount(h(mod.Accounts));
+    const input = section(page.host).querySelector("input") as HTMLInputElement;
+    await act(async () => {
+      const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")?.set;
+      set?.call(input, "nope");
+      input.dispatchEvent(new (globalThis as unknown as { Event: typeof Event }).Event("input", { bubbles: true }));
+    });
+    await flush();
+    await click(button(section(page.host), "Block"));
+    assert.match(text(section(page.host)), /Give a sender as channel:id\./u);
+    await page.unmount();
   });
 });

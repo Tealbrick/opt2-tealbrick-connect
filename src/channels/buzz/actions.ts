@@ -15,6 +15,7 @@
 import type { AppSecrets } from "@opt2-tealbrick/miniapp-sdk";
 import type { Db, Logger } from "@opt2-tealbrick/spec/sdk";
 
+import { SenderBars } from "../../sender-bars.ts";
 import type { MessageAction } from "../provider.ts";
 import type { ActionOrigin, ActionRelay } from "../service.ts";
 import { type NostrEvent, verifyEvent } from "./nostr.ts";
@@ -111,6 +112,7 @@ export async function recordBuzzActions(
 
 const REPLY_EXPIRED = "These reactions expired. Decide in Operator Inbox.";
 const REPLY_HELD_KEY = "This alert went to a key that Connect holds for an agent or the workspace, so a reaction cannot decide it. Decide in Operator Inbox.";
+const RESULT_BARRED = "Closed: the recipient is under a sender bar. Decide in Operator Inbox.";
 const REPLY_AMBIGUOUS = "Both ✅ and ❌ arrived at the same time, so nothing was decided. Decide in Operator Inbox.";
 
 /** One poll over ALL open Buzz alerts (the 15 s scheduler tick), page by page. Never throws: a problem is logged and retried next tick. */
@@ -154,6 +156,12 @@ async function pollOne(d: BuzzActionsDeps, r: Record<string, unknown>): Promise<
   if (Number(r.expires_at) <= d.now()) return close(REPLY_EXPIRED);
   // the key became an agent's or the sender's after the send: never decide with it
   if (heldKey(d.db, String(r.owner_pubkey))) return close(REPLY_HELD_KEY);
+  // C380: the recipient is under a sender bar: their reaction decides nothing, and nothing is written to them.
+  if (new SenderBars(d.db).buzzKey(String(r.owner_pubkey))) {
+    d.db.prepare("UPDATE connect_buzz_actions SET state = 'done', result = ?, updated_at = ? WHERE id = ? AND state IN ('open', 'busy')").run(RESULT_BARRED, d.now(), id);
+    await d.secrets.delete(secretName(id));
+    return;
+  }
   const eventIds = new Set(sent.map((s) => s.id));
   const events: NostrEvent[] = [];
   for (const channel of new Set(sent.map((s) => s.channel))) {
