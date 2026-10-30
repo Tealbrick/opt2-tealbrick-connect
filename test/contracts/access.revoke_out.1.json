@@ -1,0 +1,81 @@
+{
+  "valid": [
+    {
+      "v": 1,
+      "asOf": "2026-10-30T16:00:00Z",
+      "results": [
+        {
+          "id": "account_as_itself:acc_1",
+          "outcome": "revoked"
+        },
+        {
+          "id": "account_as_me:acc_2",
+          "outcome": "not_revocable",
+          "code": "agent_running",
+          "detail": "The agent is still running."
+        },
+        {
+          "id": "channel_sender:slack:U012ABCDEF",
+          "outcome": "already_gone"
+        },
+        {
+          "id": "team_grant:tg_1",
+          "outcome": "changed"
+        },
+        {
+          "id": "routine:r1",
+          "outcome": "failed",
+          "code": "upstream_failed"
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "why": "unknown outcome",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "results": [
+          {
+            "id": "account_as_itself:acc_1",
+            "outcome": "ok"
+          }
+        ]
+      }
+    },
+    {
+      "why": "no outcome",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "results": [
+          {
+            "id": "account_as_itself:acc_1"
+          }
+        ]
+      }
+    },
+    {
+      "why": "code form",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "results": [
+          {
+            "id": "account_as_itself:acc_1",
+            "outcome": "failed",
+            "code": "Not Good"
+          }
+        ]
+      }
+    },
+    {
+      "why": "no asOf",
+      "doc": {
+        "v": 1,
+        "results": []
+      }
+    }
+  ]
+}

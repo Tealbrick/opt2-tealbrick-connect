@@ -1,0 +1,215 @@
+{
+  "valid": [
+    {
+      "v": 1,
+      "plan": "pln_01M66",
+      "attempt": 1,
+      "subject": {
+        "kind": "agent",
+        "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+      },
+      "items": [
+        {
+          "id": "account_as_itself:acc_1",
+          "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+        }
+      ]
+    },
+    {
+      "v": 1,
+      "plan": "pln_01M66",
+      "attempt": 2,
+      "subject": {
+        "kind": "person",
+        "id": "ct_anna"
+      },
+      "items": [
+        {
+          "id": "channel_sender:slack:U012ABCDEF",
+          "digest": "sha256:d839b26dabbeb70d0d4b6777d3ae51e646a812ae6b36904fd26b33dd57d23a27"
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "why": "no item",
+      "doc": {
+        "v": 1,
+        "plan": "pln_1",
+        "attempt": 1,
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "items": []
+      }
+    },
+    {
+      "why": "11 items",
+      "doc": {
+        "v": 1,
+        "plan": "pln_1",
+        "attempt": 1,
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "items": [
+          {
+            "id": "routine:r0",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r1",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r2",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r3",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r4",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r5",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r6",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r7",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r8",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r9",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          },
+          {
+            "id": "routine:r10",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ]
+      }
+    },
+    {
+      "why": "free text",
+      "doc": {
+        "v": 1,
+        "plan": "pln_1",
+        "attempt": 1,
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "items": [
+          {
+            "id": "account_as_itself:acc_1",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ],
+        "reason": "left"
+      }
+    },
+    {
+      "why": "free text on an item",
+      "doc": {
+        "v": 1,
+        "plan": "pln_1",
+        "attempt": 1,
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "items": [
+          {
+            "id": "account_as_itself:acc_1",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8",
+            "note": "x"
+          }
+        ]
+      }
+    },
+    {
+      "why": "attempt zero",
+      "doc": {
+        "v": 1,
+        "plan": "pln_1",
+        "attempt": 0,
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "items": [
+          {
+            "id": "account_as_itself:acc_1",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ]
+      }
+    },
+    {
+      "why": "plan form",
+      "doc": {
+        "v": 1,
+        "plan": "plan 1",
+        "attempt": 1,
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "items": [
+          {
+            "id": "account_as_itself:acc_1",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ]
+      }
+    },
+    {
+      "why": "subject unlinked",
+      "doc": {
+        "v": 1,
+        "plan": "pln_1",
+        "attempt": 1,
+        "subject": {
+          "kind": "unlinked"
+        },
+        "items": [
+          {
+            "id": "account_as_itself:acc_1",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ]
+      }
+    },
+    {
+      "why": "subject all",
+      "doc": {
+        "v": 1,
+        "plan": "pln_1",
+        "attempt": 1,
+        "subject": {
+          "kind": "all"
+        },
+        "items": [
+          {
+            "id": "account_as_itself:acc_1",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ]
+      }
+    }
+  ]
+}

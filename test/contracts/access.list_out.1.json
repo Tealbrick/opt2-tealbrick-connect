@@ -1,0 +1,353 @@
+{
+  "valid": [
+    {
+      "v": 1,
+      "asOf": "2026-10-30T16:00:00Z",
+      "items": [
+        {
+          "direction": "held_by",
+          "state": "active",
+          "revocable": true,
+          "label": "Sales mailbox",
+          "since": "2026-10-30T16:00:00Z",
+          "id": "account_as_itself:acc_1",
+          "kind": "account_as_itself",
+          "subject": {
+            "kind": "agent",
+            "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+          },
+          "resource": "acc_1",
+          "level": "use",
+          "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+        },
+        {
+          "direction": "held_by",
+          "state": "active",
+          "revocable": false,
+          "label": "A connected account",
+          "since": "2026-10-30T16:00:00Z",
+          "id": "account_as_me:acc_2",
+          "kind": "account_as_me",
+          "subject": {
+            "kind": "unlinked"
+          },
+          "resource": "acc_2",
+          "level": "use",
+          "digest": "sha256:6225bd4c4074607a9abaf7a2d75bfb4198d7fad064a2a03ffacede5734409cb2"
+        },
+        {
+          "direction": "held_by",
+          "state": "active",
+          "revocable": true,
+          "label": "Slack sender",
+          "since": "2026-10-30T16:00:00Z",
+          "id": "channel_sender:slack:U012ABCDEF",
+          "kind": "channel_sender",
+          "subject": {
+            "kind": "person",
+            "id": "ct_anna"
+          },
+          "resource": "slack:U012ABCDEF",
+          "level": "use",
+          "digest": "sha256:d839b26dabbeb70d0d4b6777d3ae51e646a812ae6b36904fd26b33dd57d23a27"
+        },
+        {
+          "direction": "about",
+          "state": "active",
+          "revocable": true,
+          "label": "Sales team reads this area",
+          "since": "2026-10-30T16:00:00Z",
+          "id": "team_grant:tg_1",
+          "kind": "team_grant",
+          "subject": {
+            "kind": "person",
+            "id": "ct_anna"
+          },
+          "resource": "area_1",
+          "level": "read",
+          "digest": "sha256:5f68872ae4c3ee15cf627820783293f9048dde5244431d7fe153ff993d40a6a2"
+        }
+      ],
+      "nextCursor": null,
+      "notShown": [],
+      "complete": true
+    },
+    {
+      "v": 1,
+      "asOf": "2026-10-30T16:00:00Z",
+      "sweepId": "swp_1",
+      "items": [],
+      "nextCursor": null,
+      "notShown": [],
+      "complete": true
+    },
+    {
+      "v": 1,
+      "asOf": "2026-10-30T16:00:00Z",
+      "items": [
+        {
+          "direction": "held_by",
+          "state": "active",
+          "revocable": true,
+          "label": "Sales mailbox",
+          "since": "2026-10-30T16:00:00Z",
+          "id": "account_as_itself:acc_1",
+          "kind": "account_as_itself",
+          "subject": {
+            "kind": "agent",
+            "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+          },
+          "resource": "acc_1",
+          "level": "use",
+          "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+        }
+      ],
+      "nextCursor": "c2",
+      "notShown": [],
+      "complete": false
+    },
+    {
+      "v": 1,
+      "asOf": "2026-10-30T16:00:00Z",
+      "items": [],
+      "nextCursor": null,
+      "notShown": [
+        {
+          "kind": "held_calls",
+          "reason": "This version cannot list held calls."
+        }
+      ],
+      "complete": false
+    },
+    {
+      "v": 1,
+      "asOf": "2026-10-30T16:00:00Z",
+      "items": [],
+      "nextCursor": "c2",
+      "notShown": [
+        {
+          "kind": "held_calls",
+          "reason": "This version cannot list held calls."
+        }
+      ],
+      "complete": false
+    }
+  ],
+  "invalid": [
+    {
+      "why": "complete true with a next page",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [],
+        "nextCursor": "c2",
+        "notShown": [],
+        "complete": true
+      }
+    },
+    {
+      "why": "complete true with notShown",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [],
+        "nextCursor": null,
+        "notShown": [
+          {
+            "kind": "held_calls",
+            "reason": "x"
+          }
+        ],
+        "complete": true
+      }
+    },
+    {
+      "why": "complete false with nothing open",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [],
+        "nextCursor": null,
+        "notShown": [],
+        "complete": false
+      }
+    },
+    {
+      "why": "no complete",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [],
+        "nextCursor": null,
+        "notShown": []
+      }
+    },
+    {
+      "why": "unknown kind",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [
+          {
+            "direction": "held_by",
+            "state": "active",
+            "revocable": true,
+            "label": "Sales mailbox",
+            "since": "2026-10-30T16:00:00Z",
+            "id": "account_as_itself:acc_1",
+            "kind": "public_link",
+            "subject": {
+              "kind": "agent",
+              "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+            },
+            "resource": "acc_1",
+            "level": "use",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ],
+        "nextCursor": null,
+        "notShown": [],
+        "complete": true
+      }
+    },
+    {
+      "why": "subject kind all on an item",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [
+          {
+            "direction": "held_by",
+            "state": "active",
+            "revocable": true,
+            "label": "Sales mailbox",
+            "since": "2026-10-30T16:00:00Z",
+            "id": "account_as_itself:acc_1",
+            "kind": "account_as_itself",
+            "subject": {
+              "kind": "all"
+            },
+            "resource": "acc_1",
+            "level": "use",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ],
+        "nextCursor": null,
+        "notShown": [],
+        "complete": true
+      }
+    },
+    {
+      "why": "label above 120",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [
+          {
+            "direction": "held_by",
+            "state": "active",
+            "revocable": true,
+            "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "since": "2026-10-30T16:00:00Z",
+            "id": "account_as_itself:acc_1",
+            "kind": "account_as_itself",
+            "subject": {
+              "kind": "agent",
+              "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+            },
+            "resource": "acc_1",
+            "level": "use",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ],
+        "nextCursor": null,
+        "notShown": [],
+        "complete": true
+      }
+    },
+    {
+      "why": "digest form",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [
+          {
+            "direction": "held_by",
+            "state": "active",
+            "revocable": true,
+            "label": "Sales mailbox",
+            "since": "2026-10-30T16:00:00Z",
+            "id": "account_as_itself:acc_1",
+            "kind": "account_as_itself",
+            "subject": {
+              "kind": "agent",
+              "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+            },
+            "resource": "acc_1",
+            "level": "use",
+            "digest": "abc"
+          }
+        ],
+        "nextCursor": null,
+        "notShown": [],
+        "complete": true
+      }
+    },
+    {
+      "why": "id has no kind prefix",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [
+          {
+            "direction": "held_by",
+            "state": "active",
+            "revocable": true,
+            "label": "Sales mailbox",
+            "since": "2026-10-30T16:00:00Z",
+            "id": "acc_1",
+            "kind": "account_as_itself",
+            "subject": {
+              "kind": "agent",
+              "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+            },
+            "resource": "acc_1",
+            "level": "use",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ],
+        "nextCursor": null,
+        "notShown": [],
+        "complete": true
+      }
+    },
+    {
+      "why": "unknown state",
+      "doc": {
+        "v": 1,
+        "asOf": "2026-10-30T16:00:00Z",
+        "items": [
+          {
+            "direction": "held_by",
+            "state": "gone",
+            "revocable": true,
+            "label": "Sales mailbox",
+            "since": "2026-10-30T16:00:00Z",
+            "id": "account_as_itself:acc_1",
+            "kind": "account_as_itself",
+            "subject": {
+              "kind": "agent",
+              "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+            },
+            "resource": "acc_1",
+            "level": "use",
+            "digest": "sha256:aa864274a7a284e7e6cfb2334fe68692d87a4b8fd96873af8ab4da995a1ef4d8"
+          }
+        ],
+        "nextCursor": null,
+        "notShown": [],
+        "complete": true
+      }
+    }
+  ]
+}

@@ -38,3 +38,4 @@ secrets/
 .docs-session/
 gen/
 .claude/worktrees/
+conformance.manifest.json

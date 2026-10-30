@@ -1,0 +1,67 @@
+{
+  "description": "digest = sha256: + hex of the JCS of {v:1, target, id, kind, subject, resource, level}. State, since, label, revocable and direction are not in it.",
+  "target": "evolution",
+  "jcs": "{\"id\":\"routine:aut_1\",\"kind\":\"routine\",\"level\":\"use\",\"resource\":\"aut_1\",\"subject\":{\"id\":\"agt_01M4TNVDHPXJGTHATZV5SVJHX9\",\"kind\":\"agent\"},\"target\":\"evolution\",\"v\":1}",
+  "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588",
+  "equal": [
+    {
+      "why": "active",
+      "item": {
+        "direction": "held_by",
+        "state": "active",
+        "revocable": true,
+        "label": "Nightly digest",
+        "since": "2026-10-30T16:00:00Z",
+        "id": "routine:aut_1",
+        "kind": "routine",
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "resource": "aut_1",
+        "level": "use",
+        "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588"
+      }
+    },
+    {
+      "why": "paused later, other since, label, revocable and direction",
+      "item": {
+        "direction": "about",
+        "state": "paused",
+        "revocable": false,
+        "label": "Nightly digest (paused)",
+        "since": "2026-10-30T17:00:00Z",
+        "id": "routine:aut_1",
+        "kind": "routine",
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "resource": "aut_1",
+        "level": "use",
+        "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588"
+      }
+    }
+  ],
+  "different": [
+    {
+      "why": "other resource",
+      "item": {
+        "direction": "held_by",
+        "state": "active",
+        "revocable": true,
+        "label": "Nightly digest",
+        "since": "2026-10-30T16:00:00Z",
+        "id": "routine:aut_1",
+        "kind": "routine",
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "resource": "aut_2",
+        "level": "use",
+        "digest": "sha256:37b6433eaeb358f20869d827cb373005bf33be6e2204b202d5e0965fa2082d1c"
+      }
+    }
+  ]
+}

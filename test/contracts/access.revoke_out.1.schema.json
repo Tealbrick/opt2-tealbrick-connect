@@ -1,0 +1,57 @@
+{
+  "title": "tb.access/1 access_revoke output",
+  "description": "Spec 0.1.89, docs/ACCESS.md. Embedded byte for byte as the op output (M-OP-8: no $id). Dialect: JSON Schema 2020-12. Extra members are allowed and ignored (L24).",
+  "type": "object",
+  "required": [
+    "v",
+    "asOf",
+    "results"
+  ],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "asOf": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "results": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "outcome"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z_]*:[!-~]+$",
+            "description": "Stable, <kind>:<opaque>, ASCII without spaces."
+          },
+          "outcome": {
+            "enum": [
+              "revoked",
+              "already_gone",
+              "changed",
+              "not_revocable",
+              "failed"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    }
+  }
+}
