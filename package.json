@@ -22,7 +22,7 @@
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@opt2-tealbrick/manifest": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.35/opt2-tealbrick-manifest-0.1.35.tgz",
-    "@opt2-tealbrick/miniapp-sdk": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.44/opt2-tealbrick-miniapp-sdk-0.1.44.tgz",
+    "@opt2-tealbrick/miniapp-sdk": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.45/opt2-tealbrick-miniapp-sdk-0.1.45.tgz",
     "@opt2-tealbrick/spec": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.78/opt2-tealbrick-spec-0.1.78.tgz",
     "pg": "8.23.1",
     "undici": "8.12.2"

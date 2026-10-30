@@ -69,6 +69,17 @@ const scopesStub = {
 };
 
 /** miniapp-sdk 0.1.21 JobsView (jobs, schedule, paused): Connect handlers use none of it, so any use fails loudly. */
+/** miniapp-sdk 0.1.45 (C378): Connect's handlers use no acting ticket; the send-time check runs on the start context only. */
+const actingStub = {
+  acting: () => null,
+  actingTickets: async (): Promise<never> => {
+    throw new Error("ctx.actingTickets not used by Connect");
+  },
+  sendTimeCheck: async (): Promise<never> => {
+    throw new Error("ctx.sendTimeCheck is not used in handlers");
+  },
+};
+
 const jobsStub = {
   jobs: new Proxy({}, {
     get() {
@@ -198,6 +209,7 @@ export function testCtx(input: {
     scopes: scopesStub,
     secrets: secretsFor(input.db),
     ...jobsStub,
+    ...actingStub,
     receipts,
   };
 }
@@ -220,6 +232,7 @@ export function eventCtx(db: Db): SdkEventContext {
     agentScopeRequest: () => null,
     ownerLinkFor: () => null,
     ...jobsStub,
+    ...actingStub,
   };
 }
 
