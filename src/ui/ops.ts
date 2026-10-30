@@ -37,7 +37,7 @@ export interface Account {
   detail: string;
   /** Chat and database accounts (C230 R3, C336): the apps the owner shared this account with. */
   shares?: AppShare[];
-  /** Tool accounts (C373 Jarvis): the workflow app instances that may call this account's READ tools. */
+  /** Tool accounts (C373 Jarvis): the workflow app instances that may call this account's tools (READ, and WRITE when `writes`). */
   toolShares?: ToolShareView[];
   /** Database accounts only: `host:port/database`. Never a user or a password. */
   endpoint?: string;
@@ -119,7 +119,7 @@ export type RelayOutcome = { relay: string; ok: true } | { relay: string; ok: fa
 export const servicesSearch = (query: string) => callOp<{ composioKey: boolean; catalogAvailable?: boolean; services: ServiceHit[] }>("services_search", { query });
 /** `callersKnown` false = this Connect build cannot list the installed apps yet (miniapp-sdk < 0.1.32): no share can be made. */
 /** `ownerRowsEffective` false/absent = the workspace bridge does not admit owner rows above the Portal grant yet (QA-CON060-1). */
-/** C373 Jarvis: a workflow app (Evolving Workflows) the owner can share an account with for READ tools, and its instances. */
+/** C373 Jarvis: a workflow app (Evolving Workflows) the owner can share an account with for tools, and its instances. */
 export interface ToolApp {
   product: string;
   name: string;
@@ -130,11 +130,11 @@ export interface ToolShareView {
   instance: string;
   current: boolean;
   setAt: string;
-  /** false = the SDK scope row of the instance is missing, so the SDK refuses the calls (press Share again) */
-  scopeRow?: boolean;
+  /** the owner also allowed write tools */
+  writes?: boolean;
 }
-export const accountToolsShare = (account: string, product: string, share: boolean, instance?: string) =>
-  callOp<{ account: string; product: string; shared: boolean }>("account_tools_share", { account, product, share, ...(share && instance ? { instance } : {}) });
+export const accountToolsShare = (account: string, product: string, share: boolean, instance?: string, writes = false) =>
+  callOp<{ account: string; product: string; shared: boolean; writes?: boolean }>("account_tools_share", { account, product, share, ...(share && instance ? { instance } : {}), ...(share ? { writes } : {}) });
 export const accountsOverview = () =>
   callOp<{ accounts: Account[]; toolApps?: ToolApp[]; dataApps?: DataApp[]; callersKnown?: boolean; ownerRowsEffective?: boolean; databaseRecommendation?: string; leasesEnabled?: boolean }>("accounts_overview", {});
 export const accountAppShare = (account: string, product: string, level: ShareLevel, includeHistory: boolean, instance: string | null, route?: ShareRoute) =>

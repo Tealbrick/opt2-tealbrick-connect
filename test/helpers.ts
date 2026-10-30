@@ -128,6 +128,10 @@ export function testCtx(input: {
   publicUrl?: string | null;
   /** capture log lines (default: dropped) */
   log?: Logger;
+  /** the call's idempotency key (`ctx.idempotencyKey`) */
+  idempotencyKey?: string;
+  /** the call's context (`ctx.context`) */
+  context?: Record<string, Json>;
 }): SdkOpContext & { receipts: { summary: string[]; meta: Json[] } } {
   const access = input.access ?? {};
   const receipts = { summary: [] as string[], meta: [] as Json[] };
@@ -145,7 +149,7 @@ export function testCtx(input: {
     grant: input.person
       ? null
       : input.app
-        ? ({ ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantHeld ? { held: input.grantHeld } : {}) } as never, caller: { type: "app", id: input.app as `ins_${string}` } } as never)
+        ? ({ ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantCrud ? { crud: input.grantCrud } : {}), ...(input.grantHeld ? { held: input.grantHeld } : {}) } as never, caller: { type: "app", id: input.app as `ins_${string}` } } as never)
         : { ok: true, token: "t", claims: { ws: input.ws ?? "ws_TEST", ...(input.grantCrud ? { crud: input.grantCrud } : {}), ...(input.grantHeld ? { held: input.grantHeld } : {}) } as never, caller: { type: "agent", id: agent as `agt_${string}` } },
     op: {} as never,
     scope: {
@@ -155,8 +159,8 @@ export function testCtx(input: {
       can,
     },
     callId: null,
-    idempotencyKey: null,
-    context: {},
+    idempotencyKey: input.idempotencyKey ?? null,
+    context: input.context ?? {},
     receipt: { summary: (t) => receipts.summary.push(t), meta: (m) => receipts.meta.push(m) },
     getKey: async (name) => input.keys?.[name] ?? null,
     callApp: async () => {

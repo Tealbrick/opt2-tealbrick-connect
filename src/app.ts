@@ -170,15 +170,41 @@ export interface ConnectEnv {
 /** The SDK passes `SdkOpContext` (publicUrl, workspace, scopes, secrets: C31) where the frozen types say OpContext. */
 const extras = (ctx: OpContext): SdkOpContext => ctx as SdkOpContext;
 /**
- * C373 Jarvis: does the SDK hold a read scope row for this app instance on this account? The SDK checks it before Connect runs,
- * so a tool share needs it too (the owner page writes it with tb.scopes_set). Read only; the SDK's own table, never written here.
+ * Connect-writes: the family that holds this outward call, and whether the caller's grant holds it. When it does, the SDK reaches the
+ * handler only after an owner approval (authorize: family in grant.held → hold, an approved hold for this exact call → run). This is
+ * the only proof a handler has: the SDK gives no approval signal and its authorizer denies app code the `tb_*` tables.
  */
-const scopeRowOf = (db: Db, instance: string, account: string): boolean => {
-  try {
-    return !!db.prepare("SELECT 1 FROM tb_scopes WHERE agent = ? AND type = ? AND instance_id = ? AND access IS NOT NULL").get(instance, PRODUCT_SCOPE, account);
-  } catch {
-    return false;
-  }
+const outwardHeldByGrant = (ctx: OpContext, row: { holdFamily?: string }, firstContact: boolean): boolean => {
+  const family = firstContact ? "first_contact" : (row.holdFamily ?? "outward");
+  const held: readonly string[] = ctx.grant?.claims.held ?? [];
+  return held.includes(family);
+};
+/** One context value as plain text for a hold card: no control or format characters, cut short. */
+const contextText = (value: Json | undefined): string | null => {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value).replace(/[\p{Cc}\p{Cf}]+/gu, " ").trim().slice(0, 120);
+  return text || null;
+};
+/**
+ * Who asked, for the hold card of an app call: the verified app and, from the `<product>.*` keys of the call context, its workflow,
+ * version, run and step. The text is part of the hash-bound hold view, so an approval serves this run only: another run with the same
+ * input computes another text and gets its own hold (QA approval reuse, qa/VERDICTS.md 2026-10-30). Null for agents and people.
+ */
+const askedBy = (ctx: OpContext): { lines: string; workflow: string | null } | null => {
+  const product = verifiedAppCaller(ctx)?.product;
+  if (!product) return null;
+  const at = (name: string) => contextText((ctx.context as Record<string, Json> | undefined)?.[`${product}.${name}`]);
+  const workflow = at("workflow");
+  const version = at("version");
+  const run = at("run");
+  const step = at("step");
+  const lines = [
+    `Asked by: ${contextText(ctx.caller.name) ?? product} (an app, not a person or an agent)`,
+    ...(workflow ? [`Workflow: ${workflow}${version ? `, version ${version}` : ""}`] : []),
+    ...(run ? [`Run: ${run}`] : []),
+    ...(step ? [`Step: ${step}`] : []),
+  ];
+  return { lines: lines.join("\n"), workflow };
 };
 type ServiceCtx = { db: Db; getKey(name: string): Promise<string | null>; secrets?: AppSecrets; log?: Logger };
 
@@ -416,18 +442,34 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
 
 
   /**
-   * C373 Jarvis (Coordinator approval): an APP caller (the Evolving Workflows engine) uses an account only through an owner tool
-   * share (connect_tool_shares, migration 0024) bound to its verified product AND exact instance, while that instance is still
-   * listed, and only for a tool whose resolved class is READ. Every check runs per call; write, outward, destructive and money
-   * tools stay agent-only (holds). Agents and people never take this path.
+   * C373 Jarvis + Connect-writes (C366b): an APP caller (the Evolving Workflows engine) uses an account only through an owner tool
+   * share (connect_tool_shares) bound to its verified product AND exact instance, while that instance is still listed. Every check
+   * runs per call. READ tools need the share. WRITE and OUTWARD tools also need the share's `writes` flag and a companion grant
+   * whose crud covers the tool (the owner's canvas edge, C370). DESTRUCTIVE and MONEY tools stay agent-only. Agents and people never
+   * take this path.
    */
   const appToolAccounts = (ctx: OpContext, s: Services, row: { service: string; crud: readonly CrudAction[]; effect?: string }): Account[] => {
     const caller = verifiedAppCaller(ctx) ?? fail("caller_unverified", "The calling app has no verified product, so it cannot use connected accounts.", 403);
     if (!isToolShareApp(caller.product)) fail("no_access", "Apps cannot call connected-service tools, except a workflow app the owner shared an account with.", 403);
-    if (row.effect !== "read" || row.crud.some((a) => a !== "read")) fail("app_read_only", "An app may call only READ tools of a shared account. Writes, sends, deletions and payments stay with agents and the owner's approval.", 403);
+    const reads = row.effect === "read" && row.crud.every((a) => a === "read");
+    if (!reads && ((row.effect !== "write" && row.effect !== "outward") || row.crud.includes("delete"))) {
+      fail("app_tool_refused", "Deletions and payments stay with agents and the owner's approval. A workflow app cannot call this tool, whatever the account share says.", 403);
+    }
+    if (!reads) {
+      const allowed: readonly string[] = ctx.grant?.claims.crud ?? [];
+      if (!row.crud.every((a) => allowed.includes(a))) {
+        fail("app_edge_read_only", "The owner's connection from this app to Connect does not allow writes. Update the app, or allow writes on that connection in the Portal.", 403);
+      }
+    }
     stillListed(ctx);
     const shares = new ToolShareStore(ctx.db);
-    return s.accounts.list({ service: row.service, status: "connected" }).filter((a) => a.kind === "as_me" && shares.get(a.id, caller.product)?.instance === caller.instance);
+    const mine = s.accounts.list({ service: row.service, status: "connected" }).filter((a) => a.kind === "as_me" && shares.get(a.id, caller.product)?.instance === caller.instance);
+    if (reads) return mine;
+    const writable = mine.filter((a) => shares.get(a.id, caller.product)?.writes === true);
+    if (mine.length > 0 && writable.length === 0) {
+      fail("app_read_only", "This account is shared with the app for READ tools only. To let a workflow write, the owner turns on writes for this app on Connect's Accounts page.", 403);
+    }
+    return writable;
   };
 
   // ── callers and sender identities (C86, F20) ──
@@ -712,7 +754,8 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
               { retryable: false, tool: row.name },
             );
         }
-        const account = await pickAccount(ctx, s, row, selector);
+        // C368: the checked draft form of a tool is a plain write for an app share as well
+        const account = await pickAccount(ctx, s, draft ? { ...row, effect: "write" } : row, selector);
         // C276c: a catalog send names where its recipients are; other send tools use the top-level recipient arguments (X-02).
         const recipients = !send ? [] : row.sendRecipients !== undefined ? recipientsAt(upstreamArgs, row.sendRecipients) : recipientsOf(upstreamArgs);
         if (send && !firstContact) {
@@ -730,8 +773,23 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
             });
           }
         }
+        // Coordinator decision 2026-10-30: an app's outward tool runs only on an owner approval. The workspace apps policy does not hold
+        // `outward` by default (C107), so without this check a workflow could send with no hold at all. Fail closed.
+        if (ctx.caller.type === "app" && row.effect === "outward" && !draft && !outwardHeldByGrant(ctx, row, firstContact)) {
+          fail(
+            "app_outward_needs_approval",
+            `Nothing was sent. Connect runs an outward tool of a workflow app only when the owner must approve the call, and this call does not ask. ${
+              send && !firstContact
+                ? `Call ${row.name}${FIRST_CONTACT_SUFFIX} in the workflow instead: it waits for the owner's approval each time.`
+                : `The owner turns on approval for this kind of call in the Portal, in the workspace policy for calls from apps.`
+            }`,
+            409,
+            { retryable: false, tool: row.name },
+          );
+        }
+        const asked = askedBy(ctx);
         ctx.receipt.summary(`${row.title} via ${account.label}${firstContact ? " (first contact)" : ""}${draft ? " (draft)" : ""}`.slice(0, 280));
-        ctx.receipt.meta({ subjectKind: account.kind, tool: row.upstream, service: row.service, account: account.label });
+        ctx.receipt.meta({ subjectKind: account.kind, tool: row.upstream, service: row.service, account: account.label, ...(asked?.workflow ? { workflow: asked.workflow } : {}) });
         let data: unknown;
         if (row.source === "composio") data = await s.composio.execute(account, row.upstream, upstreamArgs, workspace(ctx));
         else if (row.source === "catalog") data = await s.catalog.execute(account, row.name, upstreamArgs);
@@ -760,15 +818,19 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const { [ACCOUNT_ARGUMENT]: selector, ...upstreamArgs } = args;
       const key = row.source === "composio" ? await ctx.getKey(COMPOSIO_KEY) : null;
       const scrub = (t: string) => (key ? scrubSecrets(t, [key]) : t);
+      const asked = askedBy(ctx);
       const finish = async (account: Account | null, out: { summary: string; view: string }) => {
-        const result = { summary: scrub(out.summary), view: scrub(out.view) };
+        const result = {
+          summary: scrub(asked?.workflow ? `${out.summary} (workflow ${asked.workflow})`.slice(0, 280) : out.summary),
+          view: scrub(asked ? `${out.view}\n\n${asked.lines}${row.effect === "outward" && variant !== "draft" && !outwardHeldByGrant(ctx, row, firstContact) ? "\nConnect will refuse this call after an approval: approval from a Rules hold alone does not reach Connect. Deny it, and change the workflow or the workspace policy for calls from apps." : ""}` : out.view),
+        };
         await recordHoldDetails(ctx, s, row, tool, account, scrub(sortedJson(upstreamArgs)), result.view);
         return result;
       };
       if (!isSendTool(row)) {
         // no account is a hold card too: the call fails later with account_ambiguous / scope_denied, the owner still reads the rest
         let refusal = "(not chosen yet)";
-        const account = await pickAccount(ctx, s, row, selector).catch((error: unknown) => {
+        const account = await pickAccount(ctx, s, variant === "draft" ? { ...row, effect: "write" } : row, selector).catch((error: unknown) => {
           const code = (error as { code?: string }).code;
           refusal = code === "account_ambiguous" ? "(several accounts fit; the agent has not picked one)" : "(no account of this agent can run this tool)";
           return null;
@@ -1636,7 +1698,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       const toolCallers = companionCallersFor(ctx).filter((c) => isToolShareApp(c.product));
       const withToolShares = accounts.map((a) => {
         const row = a as { id?: string; source?: string };
-        return row.id && ["composio", "catalog", "mcp"].includes(String(row.source)) ? { ...a, toolShares: toolShares.forAccount(row.id).map((t) => ({ product: t.product, instance: t.instance, current: toolCallers.some((c) => c.product === t.product && c.instance === t.instance), setAt: new Date(t.setAt).toISOString(), scopeRow: scopeRowOf(ctx.db, t.instance, row.id ?? "") })) } : a;
+        return row.id && ["composio", "catalog", "mcp"].includes(String(row.source)) ? { ...a, toolShares: toolShares.forAccount(row.id).map((t) => ({ product: t.product, instance: t.instance, current: toolCallers.some((c) => c.product === t.product && c.instance === t.instance), setAt: new Date(t.setAt).toISOString(), writes: t.writes })) } : a;
       });
       const toolApps = Object.entries(TOOL_SHARE_APPS).map(([product, name]) => ({ product, name, instances: toolCallers.filter((c) => c.product === product).map((c) => ({ instance: c.instance, name: c.name })) }));
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
@@ -2012,16 +2074,17 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         return { service, tools } as unknown as Json;
       });
     },
-    // C373 Jarvis: the owner shares one account with one Evolving Workflows instance for READ tools (off by default; false = kill).
+    // C373 Jarvis + Connect-writes: the owner shares one account with one Evolving Workflows instance for READ tools, and, as a separate
+    // choice, for WRITE tools (`writes`, off by default; absent = false). share false = kill.
     async account_tools_share(input, ctx) {
       return guard(async () => {
         if (ctx.caller.type !== "person") fail("no_access", "Only the owner shares accounts with apps.", 403);
         const s = services(ctx);
         const i = asInput(input);
         const account = s.accounts.get(str(i.account) ?? fail("account_required", "Pick the account to share.")) ?? fail("account_not_found", "No such account.", 404);
-        if (!["composio", "catalog", "mcp"].includes(account.source)) fail("account_not_found", "Only accounts with tools (Composio, catalog, own API, MCP) can be shared for read tools.", 404);
+        if (!["composio", "catalog", "mcp"].includes(account.source)) fail("account_not_found", "Only accounts with tools (Composio, catalog, own API, MCP) can be shared with a workflow app.", 404);
         const product = str(i.product) ?? fail("product_required", "Pick the app to share with.");
-        if (!isToolShareApp(product)) fail("product_unknown", `Accounts can be shared for read tools with: ${Object.values(TOOL_SHARE_APPS).join(", ")}.`);
+        if (!isToolShareApp(product)) fail("product_unknown", `Accounts can be shared for tools with: ${Object.values(TOOL_SHARE_APPS).join(", ")}.`);
         const store = new ToolShareStore(ctx.db);
         if (i.share !== true) {
           const removed = store.remove(account.id, product);
@@ -2032,9 +2095,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         if (account.kind !== "as_me") fail("account_kind_invalid", "An account an agent owns (as itself) cannot be shared with an app.", 409);
         const instance = str(i.instance) ?? fail("instance_required", "Pick the installed app instance.");
         if (!companionCallersFor(ctx).some((c) => c.product === product && c.instance === instance)) fail("instance_unknown", "That app instance is not installed in this workspace (or Connect cannot check it). Pick it again from the list.", 409);
-        store.set(account.id, product, instance);
-        ctx.log.info("tool share set", { account: account.id, product, instance });
-        return { account: account.id, product, instance, shared: true };
+        const writes = i.writes === true;
+        store.set(account.id, product, instance, writes);
+        ctx.log.info("tool share set", { account: account.id, product, instance, writes });
+        return { account: account.id, product, instance, shared: true, writes };
       });
     },
     // C373 T3: a hold policy per MCP server; it can only raise classes (a budget change named update_* becomes money).
@@ -2256,6 +2320,25 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
     const out = await services(ctx).channels.webhook("teams", { headers: req.headers, body });
     return new Response(out.body, { status: out.status, headers: { "content-type": out.contentType ?? "text/plain", "cache-control": "no-store" } });
   };
+
+  // Connect-writes: what the calling workflow app may do here, for its activation review. Reads only; authorizes nothing.
+  handlers.tool_shares_mine = async (input, ctx) =>
+    guard(async () => {
+      const caller = verifiedAppCaller(ctx);
+      if (!caller || !isToolShareApp(caller.product)) fail("no_access", "Only a workflow app the owner can share accounts with may call this.", 403);
+      stillListed(ctx);
+      const s = services(ctx);
+      const accounts = new ToolShareStore(ctx.db).forInstance((caller as { product: string }).product, (caller as { instance: string }).instance).flatMap((share) => {
+        const account = s.accounts.get(share.account);
+        return account?.status === "connected" ? [{ account: account.id, service: account.service, label: account.label, writes: share.writes }] : [];
+      });
+      const names = asInput(input).tools;
+      const tools = (Array.isArray(names) ? names : []).map((name) => {
+        const resolved = s.tools.resolve(String(name));
+        return resolved ? { tool: String(name), known: true, effect: resolved.effect, ...(resolved.holdFamily ? { holdFamily: resolved.holdFamily } : {}) } : { tool: String(name), known: false };
+      });
+      return { accounts, tools } as unknown as Json;
+    });
 
   // G-5 (C373): companion-only contacts list for Governance (src/contacts.ts)
   handlers.contacts_list = contactsListHandler(fail);
