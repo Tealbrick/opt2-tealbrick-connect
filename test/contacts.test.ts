@@ -57,7 +57,8 @@ function setup() {
 test("manifest: contacts_list is an agent-audience read, workflow-listed (no MCP tool for agent cards), no hold, no receipt", () => {
   const op = manifest.operations.find((o) => o.id === "contacts_list");
   assert.ok(op);
-  assert.equal(manifest.operations.at(-1)?.id, "contacts_list", "appended at the end of operations");
+  const ids = manifest.operations.map((o) => o.id);
+  assert.ok(ids.indexOf("contacts_list") > ids.indexOf("tool_shares_mine"), "appended after the older operations");
   assert.equal(op.audience, "agent");
   assert.deepEqual(op.crud, ["read"]);
   assert.equal(op.effect, "read");

@@ -27,11 +27,14 @@ import {
   mcpPolicySet,
   mcpToolReadSet,
   mcpToolsList,
+  type SenderBarRow,
   type ShareLevel,
   type ShareRoute,
   type SslMode,
   scopesAcceptOffer,
   scopesSet,
+  senderBarAdd,
+  senderBarRemove,
   type ToolApp,
   toolsRefresh,
 } from "../ops.ts";
@@ -204,6 +207,8 @@ export function Accounts() {
 
       {accounts.data && leasesEnabled && hasDatabase ? <DataLeases tick={leaseTick} /> : null}
 
+      {accounts.data ? <BlockedSenders rows={accounts.data.senderBars ?? []} onChanged={() => void accounts.reload()} /> : null}
+
       {accounts.data && (accounts.data.accounts.some((a) => a.source === "channel" || a.source === "database") || (access.data?.entries.length ?? 0) > 0) ? (
         <RecentAccess entries={access.data?.entries ?? null} error={access.error} busy={access.loading} databases={hasDatabase} onReload={() => void access.reload()} />
       ) : null}
@@ -222,6 +227,100 @@ export function Accounts() {
         busy={busy}
         onConfirm={() => void disconnect()}
         onCancel={() => setConfirm(null)}
+      />
+    </section>
+  );
+}
+
+const CHANNEL_WORD: Record<string, string> = { buzz: "Buzz", slack: "Slack", telegram: "Telegram", email: "Email", teams: "Teams", discord: "Discord" };
+const channelWord = (handle: string) => CHANNEL_WORD[handle.slice(0, handle.indexOf(":"))] ?? "Chat";
+
+/** C380: senders whose messages no longer reach agents. Governance adds a row when a person leaves; the owner can add or remove one. */
+function BlockedSenders(props: { rows: SenderBarRow[]; onChanged(): void }) {
+  const [handle, setHandle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<SenderBarRow | null>(null);
+  const add = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await senderBarAdd(handle);
+      setHandle("");
+      props.onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => {
+    if (!removing) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await senderBarRemove(removing.handle);
+      props.onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setRemoving(null);
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="tb-stack" aria-labelledby="blocked-senders">
+      <div className="group-head">
+        <h2 id="blocked-senders">Blocked senders</h2>
+      </div>
+      <Card>
+        <div className="tb-stack">
+          <p className="tb-soft">Connect drops messages from these senders and hides their earlier messages from agents. Agents cannot write to them. This does not remove them from a channel or group on the chat service.</p>
+          {error ? <Notice tone="error">{error}</Notice> : null}
+          {props.rows.length === 0 ? (
+            <p className="tb-soft">No sender is blocked.</p>
+          ) : (
+            <ul className="tb-stack">
+              {props.rows.map((row) => (
+                <li key={row.handle} className="tb-row">
+                  <div>
+                    <strong>{row.name ?? `A ${channelWord(row.handle)} sender`}</strong>
+                    <div className="tb-soft">
+                      {channelWord(row.handle)} · {row.fromGovernance ? "Blocked by Governance" : "Blocked by you"} on {new Date(row.at).toLocaleDateString()} · {row.dropped === 1 ? "1 message dropped" : `${row.dropped} messages dropped`}
+                    </div>
+                    <details>
+                      <summary className="tb-soft">Details</summary>
+                      <code>{row.handle}</code>
+                    </details>
+                  </div>
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={() => setRemoving(row)}>
+                    Unblock
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form className="tb-stack" onSubmit={(e) => void add(e)}>
+            <Field label="Block a sender" hint="Use the form channel:id, for example slack:U0123456, telegram:123456 or discord:123456789.">
+              <TextInput value={handle} onChange={(e) => setHandle(e.target.value)} />
+            </Field>
+            <div>
+              <Button type="submit" disabled={busy || handle.trim() === ""}>
+                Block
+              </Button>
+            </div>
+          </form>
+        </div>
+      </Card>
+      <ConfirmDialog
+        open={removing !== null}
+        title="Unblock this sender?"
+        body={<p>Later messages from {removing?.name ?? "this sender"} reach agents again, and agents can write to them. Messages that were dropped do not come back.</p>}
+        confirmLabel="Unblock"
+        busy={busy}
+        onConfirm={() => void remove()}
+        onCancel={() => setRemoving(null)}
       />
     </section>
   );

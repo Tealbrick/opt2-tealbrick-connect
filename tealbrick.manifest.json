@@ -3712,6 +3712,66 @@
       "receipt": false,
       "audience": "agent",
       "listing": "workflow"
+    },
+    {
+      "id": "sender_bar_add",
+      "title": "Block a sender",
+      "description": "Connect drops this sender's messages, hides what they sent earlier from agents, ignores their buttons and reactions, and refuses every message to them. Works without the Rules app.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "handle"
+        ],
+        "properties": {
+          "handle": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 300,
+            "description": "The sender as channel:id, for example slack:U0123456, telegram:123456, buzz:npub1..., email:a@example.com, teams:29:abc or discord:123456789."
+          }
+        }
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "sender_bar_remove",
+      "title": "Unblock a sender",
+      "description": "Removes a block. Later messages from this sender reach agents again. Messages dropped while the block was on do not come back.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "handle"
+        ],
+        "properties": {
+          "handle": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 300,
+            "description": "The sender as channel:id, for example slack:U0123456, telegram:123456, buzz:npub1..., email:a@example.com, teams:29:abc or discord:123456789."
+          }
+        }
+      },
+      "output": {
+        "type": "object"
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": false,
+      "audience": "person"
     }
   ],
   "companions": [

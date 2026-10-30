@@ -52,6 +52,7 @@ import { isToolShareApp, TOOL_SHARE_APPS, ToolShareStore } from "./data/tool-sha
 import { classifyMcpTool, inferFromName, isInviteTool, isSendTool, namesMoney, plainName, readsMoneyRecords, recipientsAt, recipientsOf } from "./effect.ts";
 import { gmailContentRead, holdSummary, mailFromArgs, mailFromGmail, readableTitle, renderGenericHold, renderHoldView } from "./hold-view.ts";
 import { type ChannelLookup, draftCheck, isPostizChannelList, isPostizCreatePost, parseChannels, renderPostizPost } from "./postiz.ts";
+import { BAR_REFUSED_CODE, BAR_REFUSED_TEXT, barHandle, buzzChannelBarred, SenderBars } from "./sender-bars.ts";
 import { isSenderChannel, SENDER_CHANNELS, SENDERS_PAGE, type SenderChannel, SenderStore, senderScopeId } from "./senders.ts";
 import { CatalogCallError } from "./sources/catalog/http.ts";
 import { type OwnApiInput, OwnApiStore } from "./sources/catalog/own-api.ts";
@@ -610,8 +611,15 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       fail("actions_invalid", "This Buzz key belongs to an agent or the workspace sender in Connect, so it cannot approve by reaction. Send to the owner's own Buzz key.");
     return origin;
   };
+  const refuseBarred = (): never => fail(BAR_REFUSED_CODE, BAR_REFUSED_TEXT, 403, { retryable: false });
+  /** C380: nothing is written into a Buzz direct conversation with a barred person. */
+  const refuseBarredBuzz = async (ctx: OpContext, s: Services, key: string, channel: string, relays?: readonly string[]): Promise<void> => {
+    if (await buzzChannelBarred(ctx.db, s.relay, key, channel, relays)) refuseBarred();
+  };
   /** Sends a Buzz DM, with reaction buttons when the app asked for them (and they have not expired). */
   const buzzSend = async (ctx: OpContext, s: Services, sender: SenderUsed, i: Record<string, unknown>, to: string) => {
+    const key = parsePubkey(to);
+    if (key && new SenderBars(ctx.db).buzzKey(key)) refuseBarred();
     const origin = buzzOrigin(ctx, i);
     const content = origin?.expired ? `${String(i.content ?? "")}\n\n${ACTIONS_EXPIRED_NOTE}` : String(i.content ?? "");
     const sent = await s.relay.directMessage(sender.key, { to, content, ...relaysArg(i.relays) });
@@ -748,6 +756,10 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const account = await pickAccount(ctx, s, draft ? { ...row, effect: "write" } : row, selector);
         // C276c: a catalog send names where its recipients are; other send tools use the top-level recipient arguments (X-02).
         const recipients = !send ? [] : row.sendRecipients !== undefined ? recipientsAt(upstreamArgs, row.sendRecipients) : recipientsOf(upstreamArgs);
+        // C380: a send tool that names a barred person is refused in both forms. A first-contact approval does not lift the bar.
+        const bars = new SenderBars(ctx.db);
+        // The list is cut after 100: with a bar in the workspace, a longer list cannot be checked, so it does not run.
+        if (bars.any() && (recipients.length > 100 || recipients.some((r) => bars.recipient(row.service, r)))) refuseBarred();
         if (send && !firstContact) {
           const caller = ctx.caller.id;
           const accountId = account.id;
@@ -1324,7 +1336,9 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           ...(typeof i.limit === "number" ? { limit: i.limit } : {}),
           ...relaysArg(i.relays),
         });
-        return { untrusted: true, messages, relays };
+        // C380: Buzz has no ingest (the relay is read live), so a barred person's messages are hidden here.
+        const bars = new SenderBars(ctx.db);
+        return { untrusted: true, messages: bars.any() ? messages.filter((m) => !bars.has(`buzz:${m.author}`)) : messages, relays };
       });
     },
     buzz_post: {
@@ -1336,6 +1350,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
           const channel = String(i.channel ?? "");
           const replyTo = str(i.replyTo);
           const root = str(i.threadRoot);
+          await refuseBarredBuzz(ctx, s, sender.key, channel, relaysArg(i.relays).relays);
           ctx.receipt.summary(`Buzz post to channel ${channel.slice(0, 8)}…${sender.kind === "workspace" ? " as the workspace sender" : ""}`);
           ctx.receipt.meta({ ...senderMeta(sender), channel });
           const posted = await s.relay.post(sender.key, {
@@ -1375,6 +1390,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const i = asInput(input);
         const s = services(ctx);
         const agent = await buzzAgent(ctx, s);
+        await refuseBarredBuzz(ctx, s, agent, String(i.channel ?? ""), relaysArg(i.relays).relays);
         ctx.receipt.summary("Buzz reaction");
         return s.relay.react(agent, { channel: String(i.channel ?? ""), messageId: String(i.messageId ?? ""), emoji: String(i.emoji ?? ""), ...relaysArg(i.relays) });
       });
@@ -1385,6 +1401,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const s = services(ctx);
         const agent = await buzzAgent(ctx, s);
         const channel = String(i.channel ?? "");
+        await refuseBarredBuzz(ctx, s, agent, channel, relaysArg(i.relays).relays);
         const messageId = String(i.messageId ?? "");
         ownBuzzMessage(ctx.db, agent, messageId, fail);
         ctx.receipt.summary("Buzz message edited");
@@ -1415,6 +1432,7 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         const channel = String(i.channel ?? "");
         const content = String(i.content ?? "").trim();
         const sendAt = Date.parse(String(i.sendAt ?? ""));
+        await refuseBarredBuzz(ctx, s, agent, channel, relaysArg(i.relays).relays);
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(channel)) fail("buzz_channel_invalid", "channel must be a Buzz channel id.");
         if (!content) fail("buzz_content_invalid", "The message is empty.");
         if (!Number.isFinite(sendAt) || sendAt < Date.now() + 30_000 || sendAt > Date.now() + 30 * 86_400_000) fail("buzz_send_at_invalid", "sendAt must be an ISO time between 30 seconds and 30 days from now.");
@@ -1691,7 +1709,25 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
       });
       const toolApps = Object.entries(TOOL_SHARE_APPS).map(([product, name]) => ({ product, name, instances: toolCallers.filter((c) => c.product === product).map((c) => ({ instance: c.instance, name: c.name })) }));
       // callersKnown false: this build's SDK cannot list the apps (miniapp-sdk < 0.1.32), so no share can be made; the page says so
-      return { accounts: withToolShares, toolApps, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION, leasesEnabled } as unknown as Json;
+      return { accounts: withToolShares, toolApps, dataApps, callersKnown: companionCallersKnown(ctx), ownerRowsEffective: env.bridgeOwnerRows === true, databaseRecommendation: DATABASE_RECOMMENDATION, leasesEnabled, senderBars: senderBarViews(ctx.db) } as unknown as Json;
+    },
+    // C380: the owner sets and removes a sender bar here. Governance sets it through access_revoke. Agents cannot reach these ops.
+    async sender_bar_add(input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner changes who is blocked.", 403);
+        const handle = barHandle(str(asInput(input).handle) ?? "") ?? fail("handle_invalid", "Give a sender as channel:id, for example slack:U0123456 or discord:123456789.", 400);
+        new SenderBars(ctx.db).add(handle, null);
+        return { handle };
+      });
+    },
+    async sender_bar_remove(input, ctx) {
+      return guard(async () => {
+        if (ctx.caller.type !== "person") fail("no_access", "Only the owner changes who is blocked.", 403);
+        const handle = barHandle(str(asInput(input).handle) ?? "") ?? fail("handle_invalid", "This is not a sender handle.", 400);
+        const removed = new SenderBars(ctx.db).remove(handle);
+        ctx.log.info("sender bar removed by the owner", { removed: String(removed) });
+        return { handle, removed };
+      });
     },
     // The owner (a person) decides which app sees which chat account. Agents cannot reach this op; an app cannot widen itself.
     async account_app_share(input, ctx) {
@@ -2426,6 +2462,21 @@ function ownBuzzMessage(db: Db, agent: string, eventId: string, fail: (code: str
   }
 }
 
+/** C380: the Accounts page rows. The name comes from the newest stored message of that sender; the handle is for Details. */
+function senderBarViews(db: Db): { handle: string; name: string | null; at: string; dropped: number; fromGovernance: boolean }[] {
+  return new SenderBars(db).list().map((bar) => {
+    const colon = bar.handle.indexOf(":");
+    const id = bar.handle.slice(colon + 1);
+    const row = db
+      .prepare(
+        `SELECT i.sender_name FROM connect_channel_inbox i JOIN connect_accounts a ON a.id = i.account_id
+         WHERE a.service = ? AND (i.sender_id = ? OR i.sender_id LIKE ?) ORDER BY i.seq DESC LIMIT 1`,
+      )
+      .get(bar.handle.slice(0, colon), id, `%|${id.replace(/[%_]/gu, "")}`);
+    return { handle: bar.handle, name: row ? String(row.sender_name) : null, at: new Date(bar.at).toISOString(), dropped: bar.dropped, fromGovernance: bar.plan !== null };
+  });
+}
+
 /** A scheduled post can wait at most this many per agent (CON-01: an injected agent cannot queue without bound). */
 export const MAX_SCHEDULED_PER_AGENT = 50;
 /** A post still `sending` after this long was cut by a restart: reported failed, never re-sent (no double post, L7). */
@@ -2478,6 +2529,11 @@ export async function runDueBuzzPosts(db: Db, relay: BuzzRelay, log: Logger, now
     if (claim.changes === 0) continue;
     try {
       const narrow = r.relays === null || r.relays === undefined ? undefined : (JSON.parse(String(r.relays)) as string[]);
+      // C380: a post scheduled before the bar does not go into a direct conversation with the barred person.
+      if (await buzzChannelBarred(db, relay, String(r.agent), String(r.channel), narrow)) {
+        db.prepare("UPDATE connect_buzz_scheduled SET status = 'cancelled', detail = ? WHERE id = ?").run("Not sent: refused by company policy.", id);
+        continue;
+      }
       const out = await relay.post(String(r.agent), { channel: String(r.channel), content: String(r.content), ...(narrow ? { relays: narrow } : {}) });
       const failedOn = out.relays.filter((o) => !o.ok).map((o) => `${o.relay} (${o.ok ? "" : o.error})`);
       db.prepare("UPDATE connect_buzz_scheduled SET status = 'sent', event_id = ?, detail = ? WHERE id = ?").run(out.id, failedOn.length ? `Sent; failed on ${failedOn.join(", ")}`.slice(0, 300) : "", id);

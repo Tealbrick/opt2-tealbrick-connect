@@ -10,6 +10,7 @@ import type { AppSecrets } from "@opt2-tealbrick/miniapp-sdk";
 import type { Db, Logger } from "@opt2-tealbrick/spec/sdk";
 
 import type { Account, AccountStore } from "../accounts.ts";
+import { BAR_REFUSED_CODE, BAR_REFUSED_TEXT, SenderBars } from "../sender-bars.ts";
 import {
   type BotIdentity,
   CHANNEL_SERVICES,
@@ -99,6 +100,7 @@ const NOT_STORED_MAX = 1000;
 
 export class ChannelHub {
   readonly #d: ChannelDeps;
+  readonly #bars: SenderBars;
   readonly #workers = new Map<string, AbortController>();
   #relay: ActionRelay | null = null;
   /** account id → keys of messages not stored yet (QA-CON25-1: counted once per message, removed when a redelivery is stored) */
@@ -106,6 +108,7 @@ export class ChannelHub {
 
   constructor(deps: ChannelDeps) {
     this.#d = deps;
+    this.#bars = new SenderBars(deps.db);
   }
 
   provider(service: string): ChannelProvider {
@@ -215,6 +218,14 @@ export class ChannelHub {
   ingest(account: Account, m: InboundMessage): boolean {
     const own = this.#d.db.prepare("SELECT 1 FROM connect_channel_sent WHERE account_id = ? AND conversation = ? AND message_id = ?").get(account.id, m.conversation, m.messageId);
     if (own) return false;
+    // C380: a barred sender's new message or edit stops here, with a count. A deletion only removes text, so it still applies.
+    const barred = m.change?.kind === "delete" ? null : this.#barredInbound(account, m);
+    if (barred) {
+      this.#bars.countDrop(barred);
+      if (m.conversationType === "direct" && !m.change) this.#bars.noteConversation(barred, account.id, m.conversation);
+      this.#d.log?.info("channel: inbound message from a barred sender dropped", { service: account.service, account: account.id });
+      return false;
+    }
     // R3: a reported edit or deletion changes a message that is already logged (it takes a new `rev`). One that is not
     // logged (older than the retention, from before the bot connected, or dropped) is an ORPHAN: it is counted and logged
     // (metadata only) and never becomes a row, so an agent never sees an edit as a new message.
@@ -253,6 +264,28 @@ export class ChannelHub {
         m.senderIsBot ? 1 : 0,
       );
     return r.changes > 0;
+  }
+
+  /** The barred handle behind an inbound message or edit: its sender, or for an edit the sender of the stored row. */
+  #barredInbound(account: Account, m: InboundMessage): string | null {
+    if (!this.#bars.any()) return null;
+    const direct = this.#bars.sender(account.service, m.senderId);
+    if (direct || !m.change) return direct;
+    const stored = this.#d.db.prepare("SELECT sender_id FROM connect_channel_inbox WHERE account_id = ? AND conversation = ? AND message_id = ?").get(account.id, m.conversation, m.messageId);
+    return stored ? this.#bars.sender(account.service, String(stored.sender_id)) : null;
+  }
+
+  /** C380: refuses anything an agent or app could write into a direct conversation with a barred person, or under their message. */
+  #refuseBarred(account: Account, conversation: string, messageId?: string | null): void {
+    if (!this.#bars.any()) return;
+    const service = account.service;
+    const db = this.#d.db;
+    const barred =
+      this.#bars.sender(service, conversation) !== null ||
+      this.#bars.conversation(account.id, conversation) ||
+      db.prepare("SELECT person_id FROM connect_channel_contacts WHERE account_id = ? AND conversation = ?").all(account.id, conversation).some((r) => this.#bars.sender(service, String(r.person_id)) !== null) ||
+      (!!messageId && db.prepare("SELECT sender_id FROM connect_channel_inbox WHERE account_id = ? AND conversation = ? AND message_id = ?").all(account.id, conversation, messageId).some((r) => this.#bars.sender(service, String(r.sender_id)) !== null));
+    if (barred) throw new ChannelError(BAR_REFUSED_CODE, BAR_REFUSED_TEXT, 403);
   }
 
   /** R3: the next change number of this account's `messages` dataset (a per-account sequence; a duplicate message wastes one). */
@@ -306,12 +339,33 @@ export class ChannelHub {
   inbox(accountIds: readonly string[], sinceSeq: number, limit: number): { messages: InboxRow[]; nextSeq: number } {
     if (accountIds.length === 0) return { messages: [], nextSeq: sinceSeq };
     const placeholders = accountIds.map(() => "?").join(", ");
-    const rows = this.#d.db
-      .prepare(
-        `SELECT i.*, a.service FROM connect_channel_inbox i JOIN connect_accounts a ON a.id = i.account_id
-         WHERE i.account_id IN (${placeholders}) AND i.seq > ? AND i.deleted = 0 AND i.sender_is_bot = 0 ORDER BY i.seq LIMIT ?`,
-      )
-      .all(...accountIds, sinceSeq, Math.max(1, Math.min(limit, 100)));
+    const want = Math.max(1, Math.min(limit, 100));
+    const page = this.#d.db.prepare(
+      `SELECT i.*, a.service FROM connect_channel_inbox i JOIN connect_accounts a ON a.id = i.account_id
+       WHERE i.account_id IN (${placeholders}) AND i.seq > ? AND i.deleted = 0 AND i.sender_is_bot = 0 ORDER BY i.seq LIMIT ?`,
+    );
+    // C380: what a barred person sent before the bar is hidden from agents. Hidden rows must not shorten the window: the rule
+    // below reads a short window as "nothing is left", so the next page is read until the window is full or the log ends.
+    const bars = this.#bars.any();
+    const hidden = new Map<string, boolean>();
+    const isHidden = (r: Record<string, unknown>): boolean => {
+      const key = `${String(r.service)}:${String(r.sender_id)}`;
+      let value = hidden.get(key);
+      if (value === undefined) {
+        value = this.#bars.sender(String(r.service), String(r.sender_id)) !== null;
+        hidden.set(key, value);
+      }
+      return value;
+    };
+    const rows: Record<string, unknown>[] = [];
+    for (let after = sinceSeq; ; ) {
+      const read = page.all(...accountIds, after, want);
+      for (const r of read) {
+        after = Number(r.seq);
+        if (rows.length < want && !(bars && isHidden(r))) rows.push(r);
+      }
+      if (!bars || read.length < want || rows.length >= want) break;
+    }
     const botIds = new Map(accountIds.map((id) => [id, this.bot(id)?.botId.toLowerCase() ?? null]));
     const messages = rows.map((r) => {
       const ids = parseMentions(r.mentions);
@@ -333,7 +387,7 @@ export class ChannelHub {
     });
     // Fewer than `limit` visible rows means the window is exhausted: skip past hidden rows (deleted messages, other bots')
     // too, so the next call does not scan them again. A full window ends at its last visible row.
-    if (messages.length >= Math.max(1, Math.min(limit, 100))) return { messages, nextSeq: messages.at(-1)?.seq ?? sinceSeq };
+    if (messages.length >= want) return { messages, nextSeq: messages.at(-1)?.seq ?? sinceSeq };
     const head = this.#d.db.prepare(`SELECT MAX(seq) AS seq FROM connect_channel_inbox WHERE account_id IN (${placeholders})`).get(...accountIds)?.seq;
     return { messages, nextSeq: Math.max(sinceSeq, messages.at(-1)?.seq ?? sinceSeq, head === null || head === undefined ? 0 : Number(head)) };
   }
@@ -374,6 +428,8 @@ export class ChannelHub {
   }
 
   #knownPerson(account: Account, personId: string): string | null {
+    // C380: a barred person is known to nobody, whatever the book says.
+    if (this.#bars.sender(account.service, personId)) return null;
     const contact = this.#d.db.prepare("SELECT conversation FROM connect_channel_contacts WHERE account_id = ? AND person_id = ?").get(account.id, personId);
     if (contact) return String(contact.conversation);
     // A person who wrote to the bot in a direct conversation is not a first contact.
@@ -391,6 +447,7 @@ export class ChannelHub {
   }
 
   async send(account: Account, agent: string, input: { conversation: string; text: string; threadId?: string | null }): Promise<{ messageId: string; conversation: string }> {
+    this.#refuseBarred(account, input.conversation, input.threadId);
     const provider = this.provider(account.service);
     const knownRow = () => this.#d.db.prepare("SELECT type FROM connect_channel_conversations WHERE account_id = ? AND conversation = ?").get(account.id, input.conversation);
     let known = knownRow();
@@ -419,6 +476,8 @@ export class ChannelHub {
   }
 
   async reply(account: Account, agent: string, input: { seq: number; text: string }): Promise<{ messageId: string; conversation: string }> {
+    const raw = this.#d.db.prepare("SELECT sender_id FROM connect_channel_inbox WHERE account_id = ? AND seq = ?").get(account.id, input.seq);
+    if (raw && this.#bars.sender(account.service, String(raw.sender_id))) throw new ChannelError(BAR_REFUSED_CODE, BAR_REFUSED_TEXT, 403);
     const row = this.inboundRow(account.id, input.seq);
     if (!row) throw new ChannelError("channel_message_unknown", "No inbound message with that seq on this connection.", 404);
     const threadId = account.service === "slack" || account.service === "teams" ? (row.threadId ?? row.messageId) : row.messageId;
@@ -430,6 +489,9 @@ export class ChannelHub {
     agent: string,
     input: { person: string; text: string; first: boolean; origin?: ActionOrigin },
   ): Promise<{ messageId: string; conversation: string; actions?: "shown" | "unsupported" | "expired" }> {
+    // C380: first contact is refused too. An approved or unheld `channel_dm_first` must not reach a barred person.
+    if (this.#bars.sender(account.service, input.person)) throw new ChannelError(BAR_REFUSED_CODE, BAR_REFUSED_TEXT, 403);
+    this.#refuseBarred(account, input.person);
     const provider = this.provider(account.service);
     const known = this.#knownPerson(account, input.person);
     if (!input.first && !known) throw new ChannelError("channel_first_contact_required", "You have not written to this person before. Use channel_dm_first; the owner approves first contact.", 409);
@@ -481,6 +543,8 @@ export class ChannelHub {
         this.#d.log?.warn("channel action answer failed", { service: account.service, code: (error as { code?: string }).code ?? "error" });
       }
     };
+    // C380: a barred person's click decides nothing and is not relayed. The message stays open for someone else.
+    if (this.#bars.sender(account.service, a.clickerId)) return answer("This button does not work here.", false);
     const db = this.#d.db;
     const now = this.#d.net.now();
     const row = db.prepare("SELECT * FROM connect_channel_actions WHERE account_id = ? AND conversation = ? AND message_id = ?").get(account.id, a.conversation, a.messageId);
@@ -523,6 +587,7 @@ export class ChannelHub {
   }
 
   async edit(account: Account, input: { conversation: string; messageId: string; text: string }): Promise<void> {
+    this.#refuseBarred(account, input.conversation);
     const provider = this.provider(account.service);
     this.#ownMessage(account, input.conversation, input.messageId);
     await provider.edit(await this.#creds(account), this.#d.net, { ...input, text: this.#checkText(provider, input.text) });
@@ -535,6 +600,7 @@ export class ChannelHub {
   }
 
   async react(account: Account, input: { conversation: string; messageId: string; emoji: string }): Promise<void> {
+    this.#refuseBarred(account, input.conversation, input.messageId);
     await this.provider(account.service).react(await this.#creds(account), this.#d.net, input);
   }
 
