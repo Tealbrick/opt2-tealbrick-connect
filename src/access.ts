@@ -23,12 +23,13 @@ export const REVOKE_ITEMS_MAX = 5;
 const LIMIT_DEFAULT = 100;
 const SENDER_PREFIX = "channel_sender:";
 const CONTROL = /[\p{Cc}\p{Cf}]/gu;
+const AGENT_ID = /^agt_[0-9A-HJKMNP-TV-Z]{26}$/u;
+const ITEM_ID = /^[a-z][a-z_]*:[!-~]+$/u;
 const CHANNEL_WORDS: Record<string, string> = { buzz: "Buzz", slack: "Slack", telegram: "Telegram" };
 
 const NOT_SHOWN = [
-  { kind: "held_call", reason: "Calls that wait for approval are kept outside Connect." },
-  { kind: "agent_account_access", reason: "Which agents may use an account is a scope row in the SDK. This version does not list it." },
-  { kind: "database_account", reason: "A database account is shared with apps, not agents. This version does not list it." },
+  { kind: "held_calls", reason: "Calls that wait for approval are kept outside Connect." },
+  { kind: "scope_rows", reason: "Which agents may use an account is a scope row in the SDK. This version does not list it." },
 ];
 const SENDER_NOT_SWEPT = { kind: "channel_sender", reason: "Connect does not know who a sender is. Ask with the person and their handles." };
 
@@ -70,7 +71,7 @@ export function itemDigest(item: Pick<AccessItem, "id" | "kind" | "subject" | "r
   return digest({ v: 1, target, id: item.id, kind: item.kind, subject: item.subject, resource: item.resource, level: item.level } as unknown as Json);
 }
 
-const text = (value: string): string => value.replace(CONTROL, "").trim().slice(0, 120);
+const text = (value: string): string => Array.from(value.replace(CONTROL, "").trim()).slice(0, 120).join("");
 const iso = (ms: unknown): string => new Date(Number(ms)).toISOString();
 const withDigest = (item: Omit<AccessItem, "digest">): AccessItem => ({ ...item, digest: itemDigest(item) });
 
@@ -80,33 +81,38 @@ function agentStopped(db: Db, agent: string): boolean {
   return !row || row.status === "paused";
 }
 
+const sameSubject = (a: ItemSubject, b: RevokeSubject): boolean => a.kind === b.kind && a.id === b.id;
+
 /** Everything held by an agent or by nobody Connect can name. */
 function storedItems(db: Db, accounts: AccountStore): AccessItem[] {
   const out: AccessItem[] = [];
-  const stateOf = (agent: string): AccessItem["state"] => (db.prepare("SELECT status FROM connect_agents WHERE id = ?").get(agent)?.status === "paused" ? "paused" : "active");
+  const paused = new Set(db.prepare("SELECT id FROM connect_agents WHERE status = 'paused'").all().map((r) => String(r.id)));
+  const stateOf = (agent: string): AccessItem["state"] => (paused.has(agent) ? "paused" : "active");
   for (const a of accounts.list()) {
     if (a.status === "revoked") continue;
     const label = text(`${a.service}: ${a.label}`);
     const since = iso(a.createdAt);
     const dormant = a.status !== "connected";
-    if (a.kind === "as_itself" && a.ownerAgent) {
+    if (a.kind === "as_itself" && a.ownerAgent && AGENT_ID.test(a.ownerAgent)) {
       out.push(withDigest({ id: `account_as_itself:${a.id}`, kind: "account_as_itself", subject: { kind: "agent", id: a.ownerAgent }, resource: a.id, direction: "held_by", level: "use", label, state: dormant ? "dormant" : stateOf(a.ownerAgent), revocable: true, since }));
     } else {
       // no person is linked to an account in this version; the owner names these for Governance
       out.push(withDigest({ id: `${a.kind === "as_me" ? "account_as_me" : "account_as_itself"}:${a.id}`, kind: a.kind === "as_me" ? "account_as_me" : "account_as_itself", subject: { kind: "unlinked" }, resource: a.id, direction: "held_by", level: "use", label, state: dormant ? "dormant" : "active", revocable: false, since }));
     }
   }
-  for (const r of db.prepare("SELECT agent, pubkey, created_at FROM connect_buzz_identities WHERE agent LIKE 'agt_%'").all()) {
+  for (const r of db.prepare("SELECT agent, pubkey, created_at FROM connect_buzz_identities").all()) {
     const agent = String(r.agent);
+    if (!AGENT_ID.test(agent)) continue;
     out.push(withDigest({ id: `buzz_identity:${agent}`, kind: "buzz_identity", subject: { kind: "agent", id: agent }, resource: `buzz:${npubEncode(String(r.pubkey))}`, direction: "held_by", level: "info", label: "Buzz identity", state: stateOf(agent), revocable: false, since: iso(r.created_at) }));
   }
-  for (const r of db.prepare("SELECT id, agent, send_at, created_at FROM connect_buzz_scheduled WHERE status = 'scheduled' AND agent LIKE 'agt_%'").all()) {
+  for (const r of db.prepare("SELECT id, agent, send_at, created_at FROM connect_buzz_scheduled WHERE status = 'scheduled'").all()) {
+    if (!AGENT_ID.test(String(r.agent))) continue;
     out.push(withDigest({ id: `scheduled_post:${String(r.id)}`, kind: "scheduled_post", subject: { kind: "agent", id: String(r.agent) }, resource: String(r.id), direction: "held_by", level: "write", label: `Scheduled Buzz post, ${iso(r.send_at).slice(0, 16).replace("T", " ")} UTC`, state: "scheduled", revocable: true, since: iso(r.created_at) }));
   }
   // one info row per agent: people written to, no names
   const contacts = new Map<string, { count: number; since: number }>();
   const add = (agent: unknown, count: unknown, since: unknown) => {
-    if (typeof agent !== "string" || !agent.startsWith("agt_")) return;
+    if (typeof agent !== "string" || !AGENT_ID.test(agent)) return;
     const seen = contacts.get(agent);
     contacts.set(agent, { count: (seen?.count ?? 0) + Number(count), since: Math.min(seen?.since ?? Number(since), Number(since)) });
   };
@@ -128,14 +134,16 @@ type ListSubject = { kind: "agent"; id: string } | { kind: "person"; id: string;
 
 /** What the asked subjects hold, sorted by id. A barred handle is not listed: nothing is left to end. */
 function collect(db: Db, accounts: AccountStore, subjects: readonly ListSubject[]): AccessItem[] {
-  const stored = storedItems(db, accounts);
+  const stored = subjects.some((s) => s.kind !== "person") ? storedItems(db, accounts) : [];
   const bars = new SenderBars(db);
   const byId = new Map<string, AccessItem>();
   for (const s of subjects) {
     if (s.kind === "person") {
       for (const raw of s.handles) {
         const handle = barHandle(raw);
-        if (handle && !bars.has(handle)) byId.set(`${SENDER_PREFIX}${handle}`, senderItem(s.id, handle));
+        const id = `${SENDER_PREFIX}${handle}`;
+        // one item has one subject: the first person named keeps a handle two people claim
+        if (handle && !bars.has(handle) && !byId.has(id)) byId.set(id, senderItem(s.id, handle));
       }
       continue;
     }
@@ -147,6 +155,10 @@ function collect(db: Db, accounts: AccountStore, subjects: readonly ListSubject[
 }
 
 const encodeCursor = (id: string): string => Buffer.from(id, "utf8").toString("base64url");
+const decodeCursor = (cursor: string): string | null => {
+  const id = Buffer.from(cursor, "base64url").toString("utf8");
+  return ITEM_ID.test(id) ? id : null;
+};
 
 export function accessListHandler(deps: AccessDeps): Handler {
   return async (input, ctx) => {
@@ -155,7 +167,7 @@ export function accessListHandler(deps: AccessDeps): Handler {
     const subjects = Array.isArray(i.subjects) ? i.subjects : deps.fail("input_invalid", "subjects is required.", 400);
     const limit = typeof i.limit === "number" ? i.limit : LIMIT_DEFAULT;
     const all = collect(ctx.db, deps.accounts(ctx), subjects);
-    const after = typeof i.cursor === "string" ? Buffer.from(i.cursor, "base64url").toString("utf8") : null;
+    const after = typeof i.cursor === "string" ? (decodeCursor(i.cursor) ?? deps.fail("input_invalid", "cursor is not one this op returned.", 400)) : null;
     const start = after === null ? 0 : all.findIndex((item) => item.id > after);
     const page = start < 0 ? [] : all.slice(start, start + limit);
     const more = start >= 0 && start + limit < all.length;
@@ -193,7 +205,9 @@ export function accessRevokeHandler(deps: AccessDeps): Handler {
     const i = input as unknown as { plan: string; attempt: number; subject: RevokeSubject; items: { id: string; digest: string }[] };
     if (!Array.isArray(i.items) || i.items.length === 0 || i.items.length > REVOKE_ITEMS_MAX) deps.fail("input_invalid", `Send 1 to ${REVOKE_ITEMS_MAX} items.`, 400);
     const accounts = deps.accounts(ctx);
-    const current = new Map(collect(ctx.db, accounts, i.subject.kind === "agent" ? [{ kind: "agent", id: i.subject.id }] : []).map((item) => [item.id, item]));
+    // The row, not the request: an item named for another subject is `changed`, and the running check reads the row's own agent.
+    const needRows = i.items.some((asked) => !asked.id.startsWith(SENDER_PREFIX));
+    const current = new Map(needRows ? storedItems(ctx.db, accounts).map((item) => [item.id, item]) : []);
     const results: RevokeResult[] = [];
     for (const asked of i.items) {
       if (asked.id.startsWith(SENDER_PREFIX)) {
@@ -202,11 +216,11 @@ export function accessRevokeHandler(deps: AccessDeps): Handler {
       }
       const item = current.get(asked.id);
       if (!item) results.push({ id: asked.id, outcome: "already_gone" });
-      else if (item.digest !== asked.digest) results.push({ id: asked.id, outcome: "changed" });
+      else if (item.digest !== asked.digest || !sameSubject(item.subject, i.subject)) results.push({ id: asked.id, outcome: "changed" });
       else if (!item.revocable) results.push({ id: asked.id, outcome: "not_revocable" });
-      else if (!agentStopped(ctx.db, i.subject.id)) results.push({ id: asked.id, outcome: "not_revocable", code: "agent_running" });
+      else if (!agentStopped(ctx.db, (item.subject as { id: string }).id)) results.push({ id: asked.id, outcome: "not_revocable", code: "agent_running" });
       else if (item.kind === "scheduled_post") {
-        const done = ctx.db.prepare("UPDATE connect_buzz_scheduled SET status = 'cancelled', detail = ? WHERE id = ? AND agent = ? AND status = 'scheduled'").run("Not sent: cancelled by a Governance plan.", item.resource, i.subject.id).changes;
+        const done = ctx.db.prepare("UPDATE connect_buzz_scheduled SET status = 'cancelled', detail = ? WHERE id = ? AND agent = ? AND status = 'scheduled'").run("Not sent: cancelled by a Governance plan.", item.resource, (item.subject as { id: string }).id).changes;
         results.push({ id: asked.id, outcome: done > 0 ? "revoked" : "already_gone" });
       } else {
         const account = accounts.get(item.resource);

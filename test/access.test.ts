@@ -8,7 +8,8 @@ import { test } from "node:test";
 import { canonicalize, validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import type { JsonSchemaObject, Manifest } from "@opt2-tealbrick/spec/manifest";
 import type { Json } from "@opt2-tealbrick/spec/sdk";
-import { type AccessItem, assertAccessCaller, itemDigest } from "../src/access.ts";
+import { type AccessItem, accessRevokeHandler, assertAccessCaller, itemDigest } from "../src/access.ts";
+import { AccountStore } from "../src/accounts.ts";
 import { type ConnectError, createConnectApp } from "../src/app.ts";
 import { generateSecretKey, npubEncode, publicKeyOf } from "../src/channels/buzz/nostr.ts";
 import type { ChannelProvider, InboundMessage, InboundSink } from "../src/channels/provider.ts";
@@ -115,7 +116,7 @@ test("access_list: kinds per subject, no content, valid against the schema, page
   assert.ok(!JSON.stringify(agent).includes("SECRET TEXT"));
   assert.ok(!byKind.account_as_itself?.label.includes("‮"), "control characters are gone");
   assert.equal(agent.complete, false);
-  assert.ok(agent.notShown.some((n) => n.kind === "held_call"));
+  assert.deepEqual(agent.notShown.map((n) => n.kind), ["held_calls", "scope_rows"]);
   // an agent with nothing: an empty list
   assert.deepEqual((await w.list([{ kind: "agent", id: OTHER }])).items, []);
   // unlinked: an as_me account, not revocable
@@ -167,7 +168,7 @@ test("access_revoke, sender: the bar is set with the plan, works with no Rules, 
   assert.equal((await w.list([{ ...PERSON, handles: ["telegram:111"] }])).items.length, 1);
   // another person's digest does not fit
   assert.deepEqual((await w.revoke({ kind: "person", id: "ct_bob" }, [{ id: item.id, digest: item.digest }])).results, [{ id: item.id, outcome: "changed" }]);
-  assert.equal(new Set((await w.revoke({ kind: "agent", id: AGENT }, [{ id: item.id, digest: item.digest }])).results.map((r) => r.outcome)).has("changed"), true, "an agent subject cannot set a bar");
+  assert.deepEqual((await w.revoke({ kind: "agent", id: AGENT }, [{ id: item.id, digest: item.digest }])).results, [{ id: item.id, outcome: "changed" }], "an agent subject cannot set a bar");
 });
 
 test("access_revoke, bind to the slice: a running agent's account and post are not_revocable; paused they end; a replay is already_gone", async () => {
@@ -197,7 +198,62 @@ test("access_revoke, bind to the slice: a running agent's account and post are n
   assert.ok(w.db.prepare("SELECT 1 FROM connect_accounts WHERE id = ?").get(w.account.id), "the row stays");
 });
 
-test("access_revoke: an absent agent counts as stopped; more than 5 items are refused", async () => {
+test("the spec's bind vector: the row decides; the running check reads the row's agent, never the request's", async () => {
+  const vector = contract("access.revoke_bind.1.json") as { row: { subject: { id: string } }; cases: { name: string; request: { subject: { kind: string; id: string }; digest: string }; agents: Record<string, string>; outcome: string; code?: string }[] };
+  assert.ok(vector.cases.length >= 5);
+  const owner = vector.row.subject.id;
+  for (const c of vector.cases) {
+    const w = await world();
+    w.db.prepare("DELETE FROM connect_agents").run();
+    w.db.prepare("INSERT INTO connect_buzz_scheduled (id, agent, channel, content, send_at, status, created_at) VALUES ('bsp_v', ?, 'c', 'x', ?, 'scheduled', 1)").run(owner, Date.now() + 3_600_000);
+    for (const [id, status] of Object.entries(c.agents)) w.db.prepare("INSERT INTO connect_agents (id, name, status, updated_at) VALUES (?, ?, ?, 1)").run(id, id, status);
+    const row = (await w.list([{ kind: "agent", id: owner }])).items.find((i) => i.id === "scheduled_post:bsp_v") as AccessItem;
+    // the vector's row digest stands for "the digest of the row"; any other value stands for a wrong one
+    const digest = c.request.digest === (vector.row as unknown as { digest: string }).digest ? row.digest : c.request.digest;
+    const [result] = (await w.revoke(c.request.subject, [{ id: row.id, digest }])).results;
+    assert.equal(result?.outcome, c.outcome, c.name);
+    assert.equal(result?.code, c.code, c.name);
+    assert.equal(w.db.prepare("SELECT status FROM connect_buzz_scheduled WHERE id = 'bsp_v'").get()?.status, c.outcome === "revoked" ? "cancelled" : "scheduled", c.name);
+  }
+});
+
+test("access_revoke: partial failure is per item; the failure text holds no provider detail", async () => {
+  const db = testDb();
+  const accounts = new AccountStore(db);
+  const good = accounts.create({ service: "gmail", source: "composio", kind: "as_itself", label: "A", ownerAgent: AGENT, status: "connected" });
+  const bad = accounts.create({ service: "gmail", source: "composio", kind: "as_itself", label: "B", ownerAgent: AGENT, status: "connected" });
+  const fail = (failCode: string): never => {
+    throw new Error(failCode);
+  };
+  const handler = accessRevokeHandler({
+    fail,
+    accounts: () => accounts,
+    disconnect: async (_c, a) => {
+      if (a.id === bad.id) throw Object.assign(new Error("upstream said secret-detail"), { code: "composio_key_rejected" });
+    },
+  });
+  const ctx = testCtx({ db, ...FLEET });
+  const subject = { kind: "agent", id: AGENT };
+  const digestOf = (id: string) => itemDigest({ id: `account_as_itself:${id}`, kind: "account_as_itself", subject: subject as never, resource: id, level: "use" });
+  const out = (await handler({ v: 1, plan: "pln_1", attempt: 1, subject, items: [good, bad].map((a) => ({ id: `account_as_itself:${a.id}`, digest: digestOf(a.id) })) } as never, ctx)) as unknown as { results: { outcome: string; code?: string; detail?: string }[] };
+  assert.deepEqual(out.results.map((r) => [r.outcome, r.code]), [["revoked", undefined], ["failed", "composio_key_rejected"]]);
+  assert.ok(!JSON.stringify(out).includes("secret-detail"));
+  assert.equal(validateAgainstSchema(contract("access.revoke_out.1.schema.json") as JsonSchemaObject, out as never).ok, true);
+});
+
+test("access_list: two subjects, limit, a bad cursor, a long non-ASCII label fits the schema, a handle two people claim has one subject", async () => {
+  const w = await world();
+  w.db.prepare("UPDATE connect_accounts SET label = ? WHERE id = ?").run("\u{1F600}".repeat(200), w.account.id);
+  const schema = contract("access.list_out.1.schema.json") as JsonSchemaObject;
+  const both = await w.list([{ kind: "agent", id: AGENT }, { kind: "unlinked" }, { ...PERSON, handles: ["telegram:111"] }, { kind: "person", id: "ct_bob", handles: ["telegram:111"] }]);
+  assert.equal(validateAgainstSchema(schema, both as never).ok, true);
+  assert.deepEqual(both.items.map((i) => i.kind).sort(), ["account_as_itself", "account_as_me", "buzz_identity", "channel_sender", "first_contacts", "scheduled_post"]);
+  assert.deepEqual(both.items.find((i) => i.kind === "channel_sender")?.subject, PERSON);
+  assert.equal((await w.list([{ kind: "all" }], { limit: 1 })).items.length, 1);
+  await assert.rejects(w.list([{ kind: "all" }], { cursor: "not a cursor" }), code("input_invalid", 400));
+});
+
+test("access_revoke: an absent agent counts as stopped; 5 items run, more than 5 items are refused", async () => {
   const w = await world();
   const subject = { kind: "agent", id: AGENT };
   const item = (await w.list([subject])).items.find((x) => x.kind === "account_as_itself") as AccessItem;
@@ -205,6 +261,7 @@ test("access_revoke: an absent agent counts as stopped; more than 5 items are re
   assert.deepEqual((await w.revoke(subject, [{ id: item.id, digest: item.digest }])).results.map((r) => r.outcome), ["revoked"]);
   const six = Array.from({ length: 6 }, (_, i) => ({ id: `channel_sender:telegram:${i + 1}`, digest: `sha256:${"0".repeat(64)}` }));
   await assert.rejects(w.revoke(PERSON, six), code("input_invalid", 400));
+  assert.equal((await w.revoke(PERSON, six.slice(0, 5))).results.length, 5);
 });
 
 test("fixtures: valid and invalid documents through the validator the SDK uses", () => {

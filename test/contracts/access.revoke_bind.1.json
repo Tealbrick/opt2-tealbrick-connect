@@ -1,0 +1,87 @@
+{
+  "description": "How a target answers one revoke item with a bind to Core. The target loads the row by id, recomputes the digest from its own row, and compares the request's subject with the row's subject. The running check reads the ROW's subject in the target's own signed slice, never the request's.",
+  "row": {
+    "id": "routine:aut_1",
+    "subject": {
+      "kind": "agent",
+      "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+    },
+    "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588"
+  },
+  "cases": [
+    {
+      "name": "own subject, paused",
+      "request": {
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588"
+      },
+      "agents": {
+        "agt_01M4TNVDHPXJGTHATZV5SVJHX9": "paused",
+        "agt_01M4TWGYN437B0W62JBV36HQT5": "active"
+      },
+      "outcome": "revoked"
+    },
+    {
+      "name": "own subject, absent from the slice",
+      "request": {
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588"
+      },
+      "agents": {
+        "agt_01M4TWGYN437B0W62JBV36HQT5": "active"
+      },
+      "outcome": "revoked"
+    },
+    {
+      "name": "own subject, running",
+      "request": {
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588"
+      },
+      "agents": {
+        "agt_01M4TNVDHPXJGTHATZV5SVJHX9": "active",
+        "agt_01M4TWGYN437B0W62JBV36HQT5": "paused"
+      },
+      "outcome": "not_revocable",
+      "code": "agent_running"
+    },
+    {
+      "name": "a paused agent named for a running agent's item",
+      "request": {
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TWGYN437B0W62JBV36HQT5"
+        },
+        "digest": "sha256:95825e9f2811901181b504b00b5459d31b2aebf9d01e42e2b7f3dc8ecbf6e588"
+      },
+      "agents": {
+        "agt_01M4TNVDHPXJGTHATZV5SVJHX9": "active",
+        "agt_01M4TWGYN437B0W62JBV36HQT5": "paused"
+      },
+      "outcome": "changed"
+    },
+    {
+      "name": "digest differs from the row",
+      "request": {
+        "subject": {
+          "kind": "agent",
+          "id": "agt_01M4TNVDHPXJGTHATZV5SVJHX9"
+        },
+        "digest": "sha256:d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa"
+      },
+      "agents": {
+        "agt_01M4TNVDHPXJGTHATZV5SVJHX9": "paused"
+      },
+      "outcome": "changed"
+    }
+  ]
+}

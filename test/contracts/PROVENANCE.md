@@ -34,7 +34,7 @@ How this app uses it: `src/data/documents.ts` validates EVERY `data_pull` page f
 
 ## tb.access/1 (C380)
 
-- Source repo: `Tealbrick/opt2-tealbrick-specs`, tag `spec-v0.1.89` (commit d543905 on branch `c380/b1-access-contract` when copied). Not a manifest contract id. Contract: `docs/ACCESS.md`.
+- Source repo: `Tealbrick/opt2-tealbrick-specs`, tag `spec-v0.1.89` (tag object 074f1a9). Not a manifest contract id. Contract: `docs/ACCESS.md`.
 - The manifest ops `access_list` and `access_revoke` embed the four schemas as parsed JSON (`test/access.test.ts` compares them).
 
 | File here | Path in the source repo | sha256 |
@@ -49,3 +49,4 @@ How this app uses it: `src/data/documents.ts` validates EVERY `data_pull` page f
 | `access.revoke_in.1.schema.json` | `packages/spec/schemas/contracts/access.revoke_in.1.schema.json` | `edbe7c6b94ffb74e4dff0c3f986ccaa29e83d8d6fd1fa9f1e2986d2802e60c51` |
 | `access.revoke_out.1.json` | `packages/spec/examples/contracts/access.revoke_out.1.json` | `76ed608d69f86c43d217ce18516ffe7b233d20f5971a962e862184a62b296281` |
 | `access.revoke_out.1.schema.json` | `packages/spec/schemas/contracts/access.revoke_out.1.schema.json` | `b36b1c6474fc858daf93e2a4d9605067113937b984e8b26833fa13eae314d919` |
+| `access.revoke_bind.1.json` | `packages/spec/examples/contracts/access.revoke_bind.1.json` | `18fda3ce054445dd43498e1a7fab663a44a5ca73fb44bb51c6b4fda3572e1a68` |
