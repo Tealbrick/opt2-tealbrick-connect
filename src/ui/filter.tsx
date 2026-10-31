@@ -15,8 +15,12 @@ export const filterKey = (page: string) => {
   }
 };
 
-/** Does the text filter match a row? Each part alone (so ^ and $ work on a name), or all parts together. */
-export const matches = (filter: { test: (text: string) => boolean }, parts: readonly string[]) => parts.some((t) => filter.test(t)) || filter.test(parts.join(" "));
+/**
+ * Does the text filter match a row? The first part is the name. A query with an anchor or a look-ahead (^, $, (?) is
+ * about the name alone, so ^(?!QA) hides the QA rows whatever their other columns say. Any other text is searched in all parts.
+ */
+export const matches = (filter: { test: (text: string) => boolean }, parts: readonly string[], query = "") =>
+  /[\^$]|\(\?/u.test(query) ? filter.test(parts[0] ?? "") : filter.test(parts.join(" "));
 
 /**
  * Rows that pass a remembered text filter, and the bar that says a filter is on (null for a short list). `more`: the
@@ -32,7 +36,7 @@ export function useRowFilter<T>(
 ): { shown: T[]; bar: ReactNode; on: boolean } {
   const [query, setQuery] = useAccessFilter(filterKey(page));
   const filter = accessFilter(query);
-  const shown = rows.filter((r) => matches(filter, partsOf(r)));
+  const shown = rows.filter((r) => matches(filter, partsOf(r), query));
   const on = query.trim() !== "";
   const change = (value: string) => {
     setQuery(value);
