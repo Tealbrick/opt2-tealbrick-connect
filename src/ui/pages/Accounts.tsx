@@ -966,7 +966,7 @@ function RecentAccess({ entries, error, busy, databases = false, onReload }: { e
   const { shown, bar, on } = useRowFilter(
     "accounts:recent-access",
     entries ?? [],
-    (e) => [accessWhen(e.at), accessApp(e), ACCESS_OPS[e.op] ?? e.op, e.account ?? "", accessResult(e)],
+    (e) => [accessApp(e), accessWhen(e.at), ACCESS_OPS[e.op] ?? e.op, e.account ?? "", accessResult(e)],
     "Filter the recent access",
     ACCESS_NOUN,
     { more: capped, onChange: () => setLimit(ACCESS_PAGE) },
