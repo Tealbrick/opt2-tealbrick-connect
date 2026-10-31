@@ -1,6 +1,11 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.14-dev.1 (catalog 0.3.1; sender bar and tb.access/1 for Governance, C380; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.14-dev.2 (catalog 0.3.1; sender bar and tb.access/1 for Governance, C380; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.14-dev.2 (2026-10-31; C382, DEV only, on top of 0.7.14-dev.1)
+
+Screen change only: no operation, no migration, no CLI change.
+- **Accounts:** "Agent access" is one section for the page, not a list of agents in each account card. It shows the default once, then only what differs, with "Back to default" and a one-line add. "Add or change many" opens the bulk editor (ui 0.4.0 `AccessEditor`, through `tb.scopes_set`). "Accept", "Use this access" and the "Set in Connect" text moved there and work as before. Each card keeps one line with the number of agents that have access.
 
 ## 0.7.14-dev.1 (2026-10-30; C380, DEV only, on top of 0.7.13)
 

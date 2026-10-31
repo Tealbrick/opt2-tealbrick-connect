@@ -108,7 +108,7 @@ Port 8314. 0.5 cpu, 512 MB. Data 2 GB plus backup 5 GB declared as two volumes; 
 
 ## Pinned packages
 
-0.7.0 / 0.7.1: conformance 0.1.29 (the other pins as 0.6.0). 0.6.0 (release 2): miniapp-sdk 0.1.36, manifest 0.1.28, spec 0.1.52, conformance 0.1.25, ui 0.2.4. 0.5.12 (stable, fix release on 0.5.11): miniapp-sdk 0.1.34, manifest 0.1.26, spec 0.1.49, conformance 0.1.23, ui 0.2.4. Also `@noble/curves`, `@noble/hashes`, `undici`, `pg` 8.23.1 (database accounts, 0.7.2).
+0.7.14-dev.2: ui 0.4.0 (`AccessEditor`, C382); the other pins as 0.7.14-dev.1. 0.7.0 / 0.7.1: conformance 0.1.29 (the other pins as 0.6.0). 0.6.0 (release 2): miniapp-sdk 0.1.36, manifest 0.1.28, spec 0.1.52, conformance 0.1.25, ui 0.2.4. 0.5.12 (stable, fix release on 0.5.11): miniapp-sdk 0.1.34, manifest 0.1.26, spec 0.1.49, conformance 0.1.23, ui 0.2.4. Also `@noble/curves`, `@noble/hashes`, `undici`, `pg` 8.23.1 (database accounts, 0.7.2).
 
 All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25: pre-update snapshot, migration lock, failed mode) is in this app only where the pin above says 0.1.25 (the plain version 0.5.11 is on the dev channel; its qa1 soak is the gate for stable, C221, PROMOTE-STABLE §7). All RS-3 apps pin SDK 0.1.25 (dev channel; stable after the qa1 soak of the plain version). Core restores the snapshot on an automatic rollback (portal-core#1, E3). This Core is live since 2026-10-16 22:37:58Z (Core 29ae2fe).
 
