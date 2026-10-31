@@ -170,7 +170,7 @@ describe("Recent access: filter and 25 rows at a time", () => {
     const m = await mount(h(accounts.Accounts));
     await type(filterInput(m.host) as HTMLInputElement, "zzz");
     assert.match(text(m.host), /Showing 0 of 100 loaded calls\./u);
-    assert.match(text(m.host), /The filter searches only the 100 calls loaded so far\./u);
+    assert.match(text(m.host), /The filter searches only the 100 calls this page holds\./u);
     assert.match(text(m.host), /No loaded call matches\./u);
     assert.match(text(m.host), /This list holds only the last 100 calls\. Older calls cannot be searched here\./u);
     await m.unmount();

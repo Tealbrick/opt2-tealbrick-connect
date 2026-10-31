@@ -480,19 +480,20 @@ export function ReceiptsPage({ empty = "No agent changes recorded yet.", lede }:
   const loadReceipts = useCallback(async (): Promise<ReceiptLoad> => ({ agent, page: await callOp<ReceiptPage>("tb.receipts_list", agent ? { caller: agent } : {}) }), [agent]);
   const { data, error, loading, reload } = useLoad(loadReceipts);
   const agents = useLoad(loadAgents);
-  const [olderState, setOlderState] = useState<{ agent: string; items: ReceiptRow[]; cursor: string } | null>(null);
+  const [olderState, setOlderState] = useState<{ agent: string; page: ReceiptPage | null; items: ReceiptRow[]; cursor: string } | null>(null);
   const [olderError, setOlderError] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   // rows of another agent's filter may still be in state for one render: they are not shown
   const current = data && data.agent === agent ? data.page : null;
-  const older = olderState && olderState.agent === agent ? olderState : null;
+  // older rows belong to the first page they were read after: a new first page (a reload, another agent) drops them, so no row is skipped
+  const older = olderState && olderState.agent === agent && olderState.page === current ? olderState : null;
   const next = older ? older.cursor || null : (current?.nextCursor ?? null);
   const showOlder = async () => {
     setMore(true);
     setOlderError(null);
     try {
       const page = await callOp<ReceiptPage>("tb.receipts_list", agent ? { caller: agent, cursor: next } : { cursor: next });
-      setOlderState((o) => ({ agent, items: [...(o && o.agent === agent ? o.items : []), ...page.items], cursor: page.nextCursor ?? "" }));
+      setOlderState((o) => ({ agent, page: current, items: [...(o && o.agent === agent && o.page === current ? o.items : []), ...page.items], cursor: page.nextCursor ?? "" }));
     } catch (e) {
       setOlderError(errorMessage(e));
     } finally {
@@ -527,7 +528,7 @@ export function ReceiptsPage({ empty = "No agent changes recorded yet.", lede }:
           total={loaded.length}
           facets={agent !== ""}
           more={next !== null}
-          busy={current === null}
+          busy={current === null && !error}
           onClear={clearFilter}
           onLoadMore={() => void showOlder()}
           loadingMore={more}

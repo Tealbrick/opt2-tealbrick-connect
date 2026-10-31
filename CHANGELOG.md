@@ -4,7 +4,7 @@ Versions follow `package.json` and `tealbrick.manifest.json` (product id `connec
 
 ## 0.7.14-dev.4 (2026-11-01)
 
-C382 batch 4, DEV only. No function or CLI change; ui 0.7.0.
+C382 batch 4, DEV only. No function or CLI change; ui 0.7.1.
 
 - Holds and Receipts: a filter by agent and by text. A filter always shows "Showing N of M" and Clear. Receipts filters by agent on the server; the text filter reads the loaded rows and says so while more are not loaded, with Show older in reach. Held approvals that a filter hides are counted above the list.
 - Accounts, Recent access: a filter (plain text or a regex) and 25 rows at a time with "Show 25 more", so every row stays reachable. The page says how many it lists. The server sends the last 100 calls and has no filter, so the filter reads those only; at 100 calls it says older calls are not in the list.
