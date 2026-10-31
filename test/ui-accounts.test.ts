@@ -396,7 +396,7 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
     stub.offerChanged = true;
     const p = await mount(h(mod.Accounts));
     await click(buttons(p.host, /^Accept create$/u)[0]);
-    assert.match(text(p.host), /Front desk: The offer changed\. Check the new offer, then accept again\./u);
+    assert.match(text(p.host), /Front desk to [^:]+: The offer changed\. Check the new offer, then accept again\./u);
     await p.unmount();
   });
 
@@ -424,6 +424,18 @@ describe("Accounts page: agent access is the owner's own, offers need an explici
     assert.deepEqual(stub.scopeSets, []);
     await click(buttons(p.host, /^Use this access$/u)[0]);
     assert.deepEqual(stub.scopeSets, [{ agent: "agt_1", type: "account", id: "cna_1", access: "read" }]);
+    await p.unmount();
+  });
+
+  it("C382: one access section, not one in each account: three dropdowns, one line per account, a row at None is not listed", async () => {
+    reset([{ type: "account", instanceId: "cna_1", access: "read", authority: "owner" }]);
+    const p = await mount(h(mod.Accounts));
+    assert.equal(p.host.querySelectorAll('#agent-access').length, 1);
+    assert.equal(p.host.querySelectorAll('[role="combobox"]').length - p.host.querySelectorAll(".acc-row [role='combobox']").length, 3);
+    assert.match(text(p.host), /1 agent has access to this account\./u);
+    assert.equal(p.host.querySelectorAll("[aria-label^='Back to default']").length, 1);
+    await click(p.host.querySelector("[aria-label^='Back to default']") ?? undefined);
+    assert.deepEqual(stub.scopeSets, [{ agent: "agt_1", type: "account", id: "cna_1", access: null }]);
     await p.unmount();
   });
 

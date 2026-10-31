@@ -1,5 +1,5 @@
-import { Button, Card, EmptyState, Field, Select, Table, Tag, Textarea, TextInput } from "@opt2-tealbrick/ui";
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type AccessCell, type AccessChange, AccessEditor, Button, Card, EmptyState, Field, Select, Table, Tag, Textarea, TextInput } from "@opt2-tealbrick/ui";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog, KindBadge, LoadError, Notice, PageHead, ServiceTile, StatusLabel } from "../components.tsx";
 import { errorText, useLoad } from "../hooks.ts";
@@ -104,6 +104,8 @@ export function Accounts() {
   }, [accounts.data]);
 
   const agentName = (id: string | null) => agents.data?.find((a) => a.id === id)?.name ?? id ?? "";
+  // A database is shared with apps only; agents never see it.
+  const withAgents = useMemo(() => (accounts.data?.accounts ?? []).filter((a) => a.status === "connected" && a.source !== "database"), [accounts.data]);
 
   const disconnect = async () => {
     if (!confirm) return;
@@ -154,6 +156,8 @@ export function Accounts() {
       {accounts.data && groups.length === 0 ? <EmptyState title="No accounts are connected yet.">Open Services to connect one, or add a database below.</EmptyState> : null}
       {agents.error ? <LoadError message={`Agents couldn’t be loaded: ${agents.error}`} busy={agents.loading} onRetry={() => void agents.reload()} /> : null}
 
+      {agents.data && withAgents.length > 0 ? <AgentAccess accounts={withAgents} agents={agents.data} onChanged={agents.reload} ownerRowsEffective={accounts.data?.ownerRowsEffective === true} /> : null}
+
       {groups.map(([service, list]) => (
         <section key={service} className="tb-stack" aria-labelledby={`svc-${service}`}>
           <div className="group-head">
@@ -172,8 +176,6 @@ export function Accounts() {
                   account={account}
                   ownerName={agentName(account.ownerAgent)}
                   agents={agents.data ?? []}
-                  onAgentsChanged={agents.reload}
-                  ownerRowsEffective={accounts.data?.ownerRowsEffective === true}
                   dataApps={accounts.data?.dataApps ?? []}
                   toolApps={accounts.data?.toolApps ?? []}
                   callersKnown={callersKnown}
@@ -467,8 +469,6 @@ function AccountRow(props: {
   callersKnown: boolean;
   leasesEnabled: boolean;
   onShared(): Promise<void>;
-  onAgentsChanged(): Promise<void>;
-  ownerRowsEffective: boolean;
   onRenamed(): void;
   onDisconnect(): void;
 }) {
@@ -528,7 +528,7 @@ function AccountRow(props: {
       {account.source === "database" && account.endpoint ? <p className="tb-soft">{account.endpoint} (Postgres). Agents never see this account; only the apps you share it with.</p> : null}
       {account.source === "database" && account.sslmode ? <p className="tb-soft">{`Connection: ${SSL_OPTIONS.find((o) => o.value === account.sslmode)?.label ?? account.sslmode}.`}</p> : null}
       {account.source === "database" && account.sslmode === "disable" ? <Notice tone="error">The connection to this database is not encrypted. The password and the rows that you share travel in clear text. Switch it to an encrypted connection when your database allows it.</Notice> : null}
-      {account.status === "connected" && account.source !== "database" ? <AgentAccess account={account} agents={props.agents} onChanged={props.onAgentsChanged} ownerRowsEffective={props.ownerRowsEffective} /> : null}
+      {account.status === "connected" && account.source !== "database" ? <AccessLine account={account} agents={props.agents} /> : null}
       {account.status === "connected" && account.kind === "as_me" && (account.source === "composio" || account.source === "catalog" || account.source === "mcp") && props.toolApps.some((t) => t.instances.length > 0) ? (
         <ToolSharing account={account} apps={props.toolApps} onChanged={props.onShared} />
       ) : null}
@@ -573,103 +573,119 @@ function TestConnection({ id, label }: { id: string; label: string }) {
   );
 }
 
+/** The levels of `scopes[].access` in tealbrick.manifest.json that an agent can hold. `apps_only` is not usable by agents and is not offered (C276 (1): each level is named by its CRUD set). */
+export const AGENT_LEVELS: { id: AccessLevel; label: string }[] = LEVEL_OPTIONS.filter((o) => o.value !== "none").map((o) => ({ id: o.value as AccessLevel, label: o.label }));
+/** `scopes[].defaultGrants` in the manifest gives accounts nothing for an agent: only a shared scope (a workspace sender, not an account) is apps only. */
+const noDefault = () => null;
+const CRUD_WORDS: Record<string, string> = { read: "read", read_update: "read, create and update", read_update_delete: "read, create, update and delete" };
+
 /**
- * C283 A1 / C283d: the owner sets each agent's access to this account. A level the owner saves here is the agent's own access
- * ("set in Connect"), also above the agent's Portal grant. A row Connect or the Portal made ("limited by the Portal grant")
- * becomes the owner's own only on the owner's click ("Use this access"). When a level now allows more than the owner accepted
- * (an app update widened it), the extra actions are NOT used until the owner clicks "Accept".
+ * C283 A1 / C283d: the page's cells. A level the owner saves is the agent's own access ("set in Connect"), also above the agent's
+ * Portal grant. A row Connect or the Portal made ("limited by the Portal grant") becomes the owner's own only on the owner's click
+ * ("Use this access"). When a level now allows more than the owner accepted (an app update widened it), the extra actions are NOT
+ * used until the owner clicks "Accept".
  */
-function AgentAccess({ account, agents, onChanged, ownerRowsEffective = false }: { account: Account; agents: AgentInfo[]; onChanged?(): Promise<void>; ownerRowsEffective?: boolean }) {
-  // Levels set in this session win over the (possibly unknown) list shape.
-  const [local, setLocal] = useState<Record<string, Picked>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function accountCells(agents: readonly AgentInfo[], ownerRowsEffective: boolean): AccessCell[] {
+  return agents.flatMap((agent) =>
+    Object.entries(agent.rows).map(([account, row]): AccessCell => {
+      const words = row.offerAdds.join(", ");
+      const cell: AccessCell = { agent: agent.id, scope: account, level: row.level };
+      if (row.offerAdds.length > 0) {
+        cell.action = {
+          text: `This level now also allows ${words}. ${agent.name} cannot use it until you accept.`,
+          label: `Accept ${words}`,
+          run: () => scopesAcceptOffer(agent.id, account, row.level, row.offerAdds),
+        };
+      } else if (row.authority === "bounded") {
+        cell.action = {
+          text: ownerRowsEffective
+            ? `${agent.name}'s Portal grant may allow less than this level. If you use this access, ${agent.name} can ${CRUD_WORDS[row.level]} on this account, also where the Portal grant allows less.`
+            : `${agent.name}'s Portal grant may allow less than this level. If you use this access, Connect saves it as ${agent.name}'s own access (${CRUD_WORDS[row.level]}); above the Portal grant it takes effect after a future bridge update.`,
+          label: "Use this access",
+          run: () => scopesSet(agent.id, account, row.level),
+        };
+      }
+      if (row.authority === "owner") {
+        cell.note = ownerRowsEffective
+          ? `Set in Connect: ${agent.name} can ${CRUD_WORDS[row.level]} on this account, also where the Portal grant allows less.`
+          : row.level === "read"
+            ? // C331 (demo gap 5): READ is the lowest level; it works now wherever the Portal grant includes read
+              `Your setting is saved. ${agent.name} can read this account now where its Portal grant includes read.`
+            : `Your setting is saved. It takes effect after a future bridge update; until then the Portal grant still limits ${agent.name}.`;
+      }
+      return cell;
+    }),
+  );
+}
 
-  if (agents.length === 0) return <p className="tb-soft">No agents yet. Add an agent in Tealbrick Portal to give it access.</p>;
+const accessError = (e: unknown) => ((e as { code?: string }).code === "offer_changed" ? "The offer changed. Check the new offer, then accept again." : errorText(e));
+const writeAccess = (change: AccessChange) => scopesSet(change.agent, change.scope, change.level as AccessLevel | null);
+const AGENT_ACCESS_ID = "agent-access";
 
-  const currentLevel = (agent: AgentInfo): Picked | "" => local[agent.id] ?? (agent.levels ? (agent.levels[account.id] ?? "none") : "");
-
-  const run = async (agent: AgentInfo, action: () => Promise<unknown>, after?: () => void) => {
-    setBusy(agent.id);
-    setError(null);
-    try {
-      await action();
-      after?.();
-      await onChanged?.();
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      setError(`${agent.name}: ${code === "offer_changed" ? "The offer changed. Check the new offer, then accept again." : errorText(e)}`);
-      if (code === "offer_changed") await onChanged?.();
-    } finally {
-      setBusy(null);
-    }
-  };
-  // S4-1 (review #18): with a reload the page shows what the server holds (authority, offer); the local level only bridges a
-  // page that cannot reload.
-  const change = (agent: AgentInfo, value: Picked) =>
-    run(agent, () => scopesSet(agent.id, account.id, value === "none" ? null : value), onChanged ? undefined : () => setLocal((l) => ({ ...l, [agent.id]: value })));
-  const crudWords = (adds: readonly string[]) => adds.join(", ");
-  const LEVEL_CRUD: Record<string, string> = { read: "read", read_update: "read, create and update", read_update_delete: "read, create, update and delete" };
-
+/** C382: the kit's AccessEditor: who may do what with the connected accounts, once for the page instead of a list in every account. */
+function AgentAccess({ accounts, agents: loaded, onChanged, ownerRowsEffective }: { accounts: readonly Account[]; agents: readonly AgentInfo[]; onChanged(): Promise<void>; ownerRowsEffective: boolean }) {
+  // What the last read-back returned: the bulk editor skips pairs by these levels, so they must not lag behind the page's own reload.
+  const [fresh, setFresh] = useState<readonly AgentInfo[] | null>(null);
+  const agents = fresh ?? loaded;
+  const cells = useMemo(() => accountCells(agents, ownerRowsEffective), [agents, ownerRowsEffective]);
+  const people = useMemo(() => agents.map((a) => ({ id: a.id, name: a.name })), [agents]);
+  const scopes = useMemo(() => accounts.map((a) => ({ id: a.id, name: a.label })), [accounts]);
+  const reload = useCallback(async () => {
+    const list = await agentsList();
+    setFresh(list);
+    void onChanged(); // the count on each account card
+    return accountCells(list, ownerRowsEffective);
+  }, [onChanged, ownerRowsEffective]);
   return (
-    <fieldset className="tb-stack access">
-      <legend className="tb-label access-legend">Agent access</legend>
+    <section className="tb-stack" aria-labelledby={AGENT_ACCESS_ID}>
+      <div className="group-head">
+        <h2 id={AGENT_ACCESS_ID} tabIndex={-1}>
+          Agent access
+        </h2>
+      </div>
       <p className="tb-soft access-note">
         {ownerRowsEffective
           ? "A level you choose here is the agent's own access to this account, also where its Portal grant allows less."
           : "A level you choose here is saved as the agent's own access. Above the Portal grant it takes effect after a future bridge update; until then the Portal grant still limits the agent."}
       </p>
-      {error ? <Notice tone="error">{error}</Notice> : null}
-      {agents.map((agent) => {
-        const row = local[agent.id] === undefined ? agent.rows[account.id] : undefined;
-        return (
-          <div key={agent.id} className="tb-stack">
-            <div className="acc-row">
-              <span>{agent.name}</span>
-              <Select
-                aria-label={`${agent.name} access to ${account.label}`}
-                options={LEVEL_OPTIONS}
-                value={currentLevel(agent)}
-                placeholder="Choose access"
-                disabled={busy === agent.id}
-                onValueChange={(v) => v !== currentLevel(agent) && void change(agent, v as Picked)}
-              />
-            </div>
-            {row && row.offerAdds.length > 0 ? (
-              <div className="acc-row acc-offer">
-                <span className="access-note">
-                  This level now also allows {crudWords(row.offerAdds)}. {agent.name} cannot use it until you accept.
-                </span>
-                <Button size="sm" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesAcceptOffer(agent.id, account.id, row.level, row.offerAdds))}>
-                  Accept {crudWords(row.offerAdds)}
-                </Button>
-              </div>
-            ) : null}
-            {row && row.authority === "bounded" ? (
-              <div className="acc-row acc-bounded">
-                <span className="access-note">
-                  {ownerRowsEffective
-                    ? `${agent.name}'s Portal grant may allow less than this level. If you use this access, ${agent.name} can ${LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.`
-                    : `${agent.name}'s Portal grant may allow less than this level. If you use this access, Connect saves it as ${agent.name}'s own access (${LEVEL_CRUD[row.level]}); above the Portal grant it takes effect after a future bridge update.`}
-                </span>
-                <Button size="sm" variant="secondary" disabled={busy === agent.id} onClick={() => void run(agent, () => scopesSet(agent.id, account.id, row.level))}>
-                  Use this access
-                </Button>
-              </div>
-            ) : row && row.authority === "owner" ? (
-              <span className="tb-soft access-note">
-                {ownerRowsEffective
-                  ? `Set in Connect: ${agent.name} can ${LEVEL_CRUD[row.level]} on this account, also where the Portal grant allows less.`
-                  : row.level === "read"
-                    ? // C331 (demo gap 5): READ is the lowest level; it works now wherever the Portal grant includes read
-                      `Your setting is saved. ${agent.name} can read this account now where its Portal grant includes read.`
-                    : `Your setting is saved. It takes effect after a future bridge update; until then the Portal grant still limits ${agent.name}.`}
-              </span>
-            ) : null}
-          </div>
-        );
-      })}
-    </fieldset>
+      {agents.length === 0 ? (
+        <p className="tb-soft">No agents yet. Add an agent in Tealbrick Portal to give it access.</p>
+      ) : (
+        <AccessEditor
+          agents={people}
+          scopes={scopes}
+          levels={AGENT_LEVELS}
+          noneLabel="None"
+          scopeWord={{ one: "account", many: "accounts" }}
+          defaults={[{ what: "Every connected account, for every agent", level: null }]}
+          cells={cells}
+          defaultOf={noDefault}
+          write={writeAccess}
+          reload={reload}
+          explain={accessError}
+          storageKey="connect-access"
+          headingLevel={3}
+        />
+      )}
+    </section>
+  );
+}
+
+/** One line in an account card: how many agents have access, and the way to the place where it is set. */
+function AccessLine({ account, agents }: { account: Account; agents: readonly AgentInfo[] }) {
+  const n = agents.filter((a) => a.rows[account.id]).length;
+  const go = () => {
+    const heading = document.getElementById(AGENT_ACCESS_ID);
+    heading?.scrollIntoView();
+    heading?.focus();
+  };
+  return (
+    <p className="tb-row access-line">
+      <span className="tb-soft">{n === 0 ? "No agent has access to this account." : n === 1 ? "1 agent has access to this account." : `${n} agents have access to this account.`}</span>
+      <Button onClick={go} aria-label={`Change agent access to ${account.label}`}>
+        Change agent access
+      </Button>
+    </p>
   );
 }
 
