@@ -2,6 +2,7 @@ import { type AccessCell, type AccessChange, AccessEditor, Button, Card, EmptySt
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog, KindBadge, LoadError, Notice, PageHead, ServiceTile, StatusLabel } from "../components.tsx";
+import { FILTER_FROM, useRowFilter } from "../filter.tsx";
 import { errorText, useLoad } from "../hooks.ts";
 import {
   type AccessEntry,
@@ -945,11 +946,33 @@ function accessWhen(iso: string): string {
   return new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+/** The server lists this many calls at most (ACCESS_LOG_LIMIT) and has no filter or page; the page shows them 25 at a time. */
+const ACCESS_LIST_LIMIT = 100;
+const ACCESS_PAGE = 25;
+const ACCESS_NOUN = { one: "call", many: "calls" };
+
+const accessResult = (e: AccessEntry) => (e.ok ? "Served" : `Refused: ${REFUSED_TEXT[e.outcome] ?? e.outcome}`);
+const accessApp = (e: AccessEntry) => e.app ?? (e.callerType === "app" ? "Unverified app" : e.callerType === "agent" ? "An agent" : e.callerType);
+
 /**
  * C230 R3 (S3-2): which app asked Connect for chat data, newest first, the last 100 calls. The owner only. No message text.
  * A refusal repeated within a minute is one line with a count.
+ * C382 batch 4: a filter (plain text or a regex) and 25 rows at a time. The server sends the last 100 calls and has no filter,
+ * so the filter is the page's and reads those calls only; at 100 the bar says that older calls are not in the list.
  */
 function RecentAccess({ entries, error, busy, databases = false, onReload }: { entries: AccessEntry[] | null; error: string | null; busy: boolean; databases?: boolean; onReload(): void }) {
+  const [limit, setLimit] = useState(ACCESS_PAGE);
+  const capped = (entries?.length ?? 0) >= ACCESS_LIST_LIMIT;
+  const { shown, bar, on } = useRowFilter(
+    "accounts:recent-access",
+    entries ?? [],
+    (e) => [accessApp(e), accessWhen(e.at), ACCESS_OPS[e.op] ?? e.op, e.account ?? "", accessResult(e)],
+    "Filter the recent access",
+    ACCESS_NOUN,
+    { more: capped, onChange: () => setLimit(ACCESS_PAGE) },
+  );
+  const visible = shown.slice(0, limit);
+  const left = shown.length - visible.length;
   return (
     <section className="tb-stack" aria-labelledby="recent-access">
       <div className="group-head">
@@ -973,36 +996,50 @@ function RecentAccess({ entries, error, busy, databases = false, onReload }: { e
       ) : entries.length === 0 ? (
         <EmptyState title={databases ? "No app has asked for your data yet." : "No app has asked for your chat messages yet."} />
       ) : (
-        <Table>
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>App</th>
-              <th>Request</th>
-              <th>Account</th>
-              <th>Messages</th>
-              <th>Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e.id}>
-                <td className="num">{accessWhen(e.at)}</td>
-                <td>{e.app ?? (e.callerType === "app" ? "Unverified app" : e.callerType === "agent" ? "An agent" : e.callerType)}</td>
-                <td>
-                  {ACCESS_OPS[e.op] ?? e.op}
-                  {e.leaseId ? <span className="tb-soft">{` · lease ends ${accessWhen(e.leaseExpiresAt ?? e.at)} · ${tablesText(e.datasets ?? [])}`}</span> : null}
-                </td>
-                <td>{e.account ?? ""}</td>
-                <td className="num">{e.op === "data_pull" && e.ok ? e.rows : ""}</td>
-                <td>
-                  <Tag status={e.ok ? "live" : "default"}>{e.ok ? "Served" : `Refused: ${REFUSED_TEXT[e.outcome] ?? e.outcome}`}</Tag>
-                  {e.repeats > 0 ? <span className="tb-soft">{` and ${e.repeats} more in the same minute`}</span> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </Table>
+        <>
+          {bar}
+          {on && capped ? <p className="tb-soft">This list holds only the last {ACCESS_LIST_LIMIT} calls. Older calls cannot be searched here.</p> : null}
+          {visible.length > 0 ? (
+            <Table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>App</th>
+                  <th>Request</th>
+                  <th>Account</th>
+                  <th>Messages</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((e) => (
+                  <tr key={e.id}>
+                    <td className="num">{accessWhen(e.at)}</td>
+                    <td>{accessApp(e)}</td>
+                    <td>
+                      {ACCESS_OPS[e.op] ?? e.op}
+                      {e.leaseId ? <span className="tb-soft">{` · lease ends ${accessWhen(e.leaseExpiresAt ?? e.at)} · ${tablesText(e.datasets ?? [])}`}</span> : null}
+                    </td>
+                    <td>{e.account ?? ""}</td>
+                    <td className="num">{e.op === "data_pull" && e.ok ? e.rows : ""}</td>
+                    <td>
+                      <Tag status={e.ok ? "live" : "default"}>{accessResult(e)}</Tag>
+                      {e.repeats > 0 ? <span className="tb-soft">{` and ${e.repeats} more in the same minute`}</span> : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          ) : null}
+          {shown.length > ACCESS_PAGE || entries.length >= FILTER_FROM ? (
+            <div className="tb-row">
+              <span className="tb-soft" role="status">
+                {`Listing ${visible.length.toLocaleString("en")} of ${shown.length.toLocaleString("en")} ${shown.length === 1 ? ACCESS_NOUN.one : ACCESS_NOUN.many}${on ? " that match" : ""}.`}
+              </span>
+              {left > 0 ? <Button onClick={() => setLimit((n) => n + ACCESS_PAGE)}>{`Show ${Math.min(ACCESS_PAGE, left)} more`}</Button> : null}
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   );

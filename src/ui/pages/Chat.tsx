@@ -3,8 +3,9 @@ import { Button, Card, EmptyState, Field, type FlowStep, Segmented, Select, Step
 import { useState } from "react";
 
 import { LoadError, Notice, PageHead, PageNote, StatusLabel } from "../components.tsx";
+import { useRowFilter } from "../filter.tsx";
 import { errorText, useLoad } from "../hooks.ts";
-import { type ChannelProviderInfo, channelAccountConnect, channelAccounts, channelProviders } from "../ops.ts";
+import { type ChannelAccountInfo, type ChannelProviderInfo, channelAccountConnect, channelAccounts, channelProviders } from "../ops.ts";
 
 type Service = ChannelProviderInfo["service"];
 
@@ -78,27 +79,42 @@ export function Chat() {
       <h2 className="sub-head">Connected bots</h2>
       {accounts.error ? <LoadError message={accounts.error} busy={accounts.loading} onRetry={() => void accounts.reload()} /> : null}
       {accounts.data && accounts.data.accounts.length === 0 ? <EmptyState title="No chat bots yet." /> : null}
-      {accounts.data && accounts.data.accounts.length > 0 ? (
-        <div className="ruled">
-          {accounts.data.accounts.map((a) => (
-            <div key={a.id} className="item">
-              <Swatch />
-              <h3>{a.label}</h3>
-              {a.bot ? (
-                <p>
-                  Bot {a.bot.name}. Inbound: {a.bot.inbound}
-                  {a.bot.detail ? ` (${a.bot.detail})` : ""}
-                </p>
-              ) : null}
-              <div className="side">
-                <Tag>{NAMES[a.service as Service] ?? a.service}</Tag>
-                <StatusLabel status={a.status} />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : null}
+      {accounts.data && accounts.data.accounts.length > 0 ? <ConnectedBots accounts={accounts.data.accounts} /> : null}
     </section>
+  );
+}
+
+/** C382 batch 4: the connected bots with a filter. The page lists every bot (not paged), so the filter reads all of them. */
+function ConnectedBots({ accounts }: { accounts: ChannelAccountInfo[] }) {
+  const { shown, bar } = useRowFilter(
+    "chat-bots",
+    accounts,
+    (a) => [a.label, a.bot?.name ?? "", NAMES[a.service as Service] ?? a.service, a.status === "revoked" ? "Disconnected" : a.status],
+    "Filter the chat bots",
+    { one: "chat bot", many: "chat bots" },
+  );
+  return (
+    <>
+      {bar}
+      <div className="ruled">
+        {shown.map((a) => (
+          <div key={a.id} className="item">
+            <Swatch />
+            <h3>{a.label}</h3>
+            {a.bot ? (
+              <p>
+                Bot {a.bot.name}. Inbound: {a.bot.inbound}
+                {a.bot.detail ? ` (${a.bot.detail})` : ""}
+              </p>
+            ) : null}
+            <div className="side">
+              <Tag>{NAMES[a.service as Service] ?? a.service}</Tag>
+              <StatusLabel status={a.status} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
