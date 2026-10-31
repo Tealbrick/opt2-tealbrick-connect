@@ -4,7 +4,7 @@
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: var(--tb-s3); }
 .cards-wide { grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
 .cards > li { display: grid; min-width: 0; }
-.cards > li > .tb-card { display: grid; gap: var(--tb-s3); align-content: start; min-width: 0; }
+.cards > li > .tb-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--tb-s3); align-content: start; min-width: 0; overflow-wrap: anywhere; }
 .cards h3 { font-size: 1.0625rem; font-weight: var(--tb-weight-head); line-height: 22px; overflow-wrap: anywhere; }
 .sub-head { font-size: var(--tb-text-title); line-height: 26px; }
 
@@ -28,6 +28,10 @@
 .acct-head h3 { font-size: var(--tb-text-body); }
 .acct-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--tb-s2) var(--tb-s3); }
 .acct-tags { gap: var(--tb-s2); }
+.access { gap: var(--tb-s2); }
+.access-legend { padding-bottom: var(--tb-s2); }
+.access-head { font-size: 1.375rem; }
+.access-head:focus { outline: none; }
 .access-line { margin: 0; justify-content: space-between; }
 .acc-note, .access-note { grid-column: 1 / -1; margin: 0; }
 .acc-actions { grid-column: 1 / -1; }

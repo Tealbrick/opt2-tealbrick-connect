@@ -638,11 +638,9 @@ function AgentAccess({ accounts, agents: loaded, onChanged, ownerRowsEffective }
   }, [onChanged, ownerRowsEffective]);
   return (
     <section className="tb-stack" aria-labelledby={AGENT_ACCESS_ID}>
-      <div className="group-head">
-        <h2 id={AGENT_ACCESS_ID} tabIndex={-1}>
-          Agent access
-        </h2>
-      </div>
+      <h2 id={AGENT_ACCESS_ID} className="access-head" tabIndex={-1}>
+        Agent access
+      </h2>
       <p className="tb-soft access-note">
         {ownerRowsEffective
           ? "A level you choose here is the agent's own access to this account, also where its Portal grant allows less."

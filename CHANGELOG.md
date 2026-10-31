@@ -1,6 +1,12 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.14-dev.2 (catalog 0.3.1; sender bar and tb.access/1 for Governance, C380; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.14-dev.3 (catalog 0.3.1; sender bar and tb.access/1 for Governance, C380; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+
+## 0.7.14-dev.3 (2026-10-31; C382, DEV only, on top of 0.7.14-dev.2)
+
+Fixes from the live check. No operation, no migration.
+- ui 0.4.1: the level buttons no longer move under the pointer.
+- Accounts: "Agent access" keeps its plain heading; the MCP policy list keeps its spacing (a style went with the old list); a failed account with a long error no longer makes the page scroll sideways on a phone.
 
 ## 0.7.14-dev.2 (2026-10-31; C382, DEV only, on top of 0.7.14-dev.1)
 
