@@ -525,7 +525,17 @@ function AccountRow(props: {
         </div>
       )}
       {error ? <Notice tone="error">{error}</Notice> : null}
-      {account.status === "failed" && account.detail ? <p className="tb-soft">{account.detail}</p> : null}
+      {account.status === "failed" ? (
+        <div className="tb-stack">
+          <p className="tb-soft">This connection did not finish. Disconnect it, then connect again.</p>
+          {account.detail ? (
+            <details>
+              <summary className="tb-soft">Details</summary>
+              <p className="tb-soft">{account.detail}</p>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
       {account.source === "database" && account.endpoint ? <p className="tb-soft">{account.endpoint} (Postgres). Agents never see this account; only the apps you share it with.</p> : null}
       {account.source === "database" && account.sslmode ? <p className="tb-soft">{`Connection: ${SSL_OPTIONS.find((o) => o.value === account.sslmode)?.label ?? account.sslmode}.`}</p> : null}
       {account.source === "database" && account.sslmode === "disable" ? <Notice tone="error">The connection to this database is not encrypted. The password and the rows that you share travel in clear text. Switch it to an encrypted connection when your database allows it.</Notice> : null}

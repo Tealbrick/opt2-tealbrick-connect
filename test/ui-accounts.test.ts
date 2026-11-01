@@ -466,6 +466,20 @@ describe("Accounts page: group headings (C331 demo gap 6)", () => {
     await p.unmount();
   });
 
+  it("a failed account row says in plain words what to do; the raw upstream text stays behind Details", async () => {
+    stub.agentRows = [];
+    stub.accounts = [{ ...mcp("cna_m1", "Acme data"), status: "failed", detail: "Upstream answered 400: invalid_grant {\"error\":\"bad\"}" }];
+    const p = await mount(h(mod.Accounts));
+    const text = (p.host.textContent ?? "").replace(/\s+/gu, " ");
+    assert.match(text, /This connection did not finish\. Disconnect it, then connect again\./u);
+    const detail = p.host.querySelector("details");
+    assert.ok(detail, "a Details element holds the raw text");
+    assert.match(detail.textContent ?? "", /Upstream answered 400/u);
+    const outside = [...p.host.querySelectorAll("p")].filter((x) => !x.closest("details")).map((x) => x.textContent ?? "");
+    assert.ok(!outside.some((t) => t.includes("Upstream answered 400")), "no raw text outside Details");
+    await p.unmount();
+  });
+
   it("C331 D4b: a claimed read of money records says that reading moves no money", async () => {
     stub.accounts = [mcp("cna_m1", "Payments")];
     stub.mcpTools = [
