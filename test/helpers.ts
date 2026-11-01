@@ -78,6 +78,7 @@ const actingStub = {
   sendTimeCheck: async (): Promise<never> => {
     throw new Error("ctx.sendTimeCheck is not used in handlers");
   },
+  ownerDrafts: null as never,
 };
 
 const jobsStub = {
