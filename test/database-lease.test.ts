@@ -320,10 +320,12 @@ test("route via_observer (C322(6): the default for Knowledge, direct is not offe
   assert.equal((await refusal(t.op("data_pull", { account: id, dataset: "documents" }, t.ctx.knowledge))).code, "not_found");
   assert.equal((await refusal(t.lease(id, DATASETS, {}, t.ctx.knowledge))).code, "not_found");
   assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0);
-  // Knowledge cannot be shared directly
-  const direct = await refusal(t.share(id, "knowledge", "shared", { route: "direct" }));
-  assert.deepEqual([direct.code, direct.httpStatus], ["route_invalid", 400]);
-  assert.equal(t.db.prepare("SELECT route FROM connect_db_shares WHERE product = 'knowledge'").get()?.route, "via_observer", "the refused call changed nothing");
+  // C393 (C329(5)): the owner may pick direct for Knowledge; the default above is unchanged
+  const direct = (await t.share(id, "knowledge", "shared", { route: "direct" })) as unknown as { route: string };
+  assert.equal(direct.route, "direct");
+  assert.equal(t.db.prepare("SELECT route FROM connect_db_shares WHERE product = 'knowledge'").get()?.route, "direct");
+  const back = (await t.share(id, "knowledge", "shared")) as unknown as { route: string };
+  assert.equal(back.route, "via_observer", "no route = the default again");
   // Observer, shared directly
   await t.share(id, "observer", "shared");
   const granted = (await t.lease(id, DATASETS, {}, t.ctx.observer)) as unknown as { leaseId: string };
@@ -333,16 +335,29 @@ test("route via_observer (C322(6): the default for Knowledge, direct is not offe
   assert.equal((await refusal(t.lease(id, DATASETS, {}, t.ctx.knowledge))).code, "not_found");
 });
 
+test("C393: Knowledge shared direct at shared gets no lease and no credential; a route change resets the lease flag", async () => {
+  const t = await setup();
+  const id = await t.connect();
+  await t.plainShare(id, "knowledge", "shared", { route: "direct" });
+  const denied = await refusal(t.lease(id, DATASETS, {}, t.ctx.knowledge));
+  assert.equal(denied.code, "lease_unavailable");
+  assert.ok(!denied.message.includes(CANARY));
+  assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0, "no lease was issued");
+  // the lease flag resets when the route changes
+  t.db.prepare("UPDATE connect_db_shares SET lease = 1 WHERE account_id = ? AND product = 'knowledge'").run(id);
+  await t.plainShare(id, "knowledge", "shared");
+  assert.equal(t.db.prepare("SELECT lease FROM connect_db_shares WHERE product = 'knowledge'").get()?.lease, 0);
+});
+
 test("account_app_share on a database: levels, routes and refusals", async () => {
   const t = await setup();
   const id = await t.connect();
   const out = (await t.share(id, "observer", "shared")) as unknown as { route: string; shares: { route: string; level: string; current: boolean }[] };
   assert.equal(out.route, "direct", "direct is the default for Observer");
   assert.deepEqual(out.shares.map((s) => [s.route, s.level, s.current]), [["direct", "shared", true]]);
-  // via_observer is for Knowledge only; direct is not offered to Knowledge
+  // via_observer is for Knowledge only; direct is allowed for Knowledge on a database (C393)
   assert.equal((await refusal(t.share(id, "observer", "shared", { route: "via_observer" }))).code, "route_invalid");
   assert.equal((await refusal(t.share(id, "knowledge", "shared", { route: "sideways" }))).code, "route_invalid");
-  assert.equal((await refusal(t.share(id, "knowledge", "shared", { route: "direct" }))).code, "route_invalid");
   // a chat account has no route
   t.db.exec(`INSERT INTO connect_accounts (id, service, source, kind, label, owner_agent, status, detail, created_at, updated_at) VALUES ('cna_chat','telegram','channel','as_itself','bot','${AGENT}','connected','',1,1)`);
   assert.equal((await refusal(t.share("cna_chat", "knowledge", "shared", { route: "via_observer" }))).code, "route_invalid");

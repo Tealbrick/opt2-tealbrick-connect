@@ -106,7 +106,7 @@ async function setup(options: Parameters<typeof fakePg>[0] = {}) {
   const op = (name: string, input: Record<string, unknown>, ctx = person) => handlerOf(app, name)(input as Json, ctx);
   const connect = async (extra: Record<string, unknown> = {}) =>
     ((await op("database_account_connect", { label: "Acme orders", host: "sakura.proxy.example.net", port: 23634, database: "railway", user: "acme_reader", password: CANARY, sslmode: "require", ...extra })) as unknown as { account: { id: string } }).account.id;
-  const share = (account: string, product: string, level: string) => op("account_app_share", { account, product, level, ...(level === "none" ? {} : { instance: product === "knowledge" ? KNOWLEDGE : OBSERVER }) });
+  const share = (account: string, product: string, level: string, extra: Record<string, unknown> = {}) => op("account_app_share", { account, product, level, ...(level === "none" ? {} : { instance: product === "knowledge" ? KNOWLEDGE : OBSERVER }), ...extra });
   const pull = async (account: string, input: Record<string, unknown> = {}, ctx = observer) => {
     const page = (await op("data_pull", { account, dataset: "documents", ...input }, ctx)) as unknown as DocumentsPage & { schema: string };
     assert.deepEqual(validateAgainstSchema(schema, page as unknown as Json), { ok: true }, "every page is valid documents/1");
@@ -243,6 +243,25 @@ test("database documents: refusals — agent, unshared, catalog only, Knowledge 
   assert.ok(!t.fake.sent.some((s) => s.sql === POSTGRES_PULL_SQL.begin && t.fake.sent.indexOf(s) > t.fake.sent.length - 3), "no rows were read after the refusal");
   const outcomes = t.db.prepare("SELECT outcome FROM connect_data_audit WHERE op = 'data_pull'").all().map((x) => String(x.outcome));
   for (const code of ["no_access", "not_found", "scope_denied", "delivery_lease", "database_role_too_powerful"]) assert.ok(outcomes.includes(code), code);
+});
+
+test("database documents (C393): a database shared directly with Knowledge answers Knowledge's data_pull with rows; the default stays through Observer", async () => {
+  const t = await setup();
+  const id = await t.connect();
+  const k = (await t.share(id, "knowledge", "shared", { route: "direct" })) as unknown as { route: string };
+  assert.equal(k.route, "direct");
+  const page = await t.pull(id, { collection: "public.customers", limit: 1 }, t.ctx.knowledge);
+  assert.deepEqual(page.rows.map((r) => r.id), ["public.customers:1"]);
+  const line = t.db.prepare("SELECT outcome, product FROM connect_data_audit WHERE op = 'data_pull' ORDER BY id DESC LIMIT 1").get();
+  assert.deepEqual({ ...line }, { outcome: "ok", product: "knowledge" });
+  // secret-looking columns: named in Knowledge's catalog (names only), never selected, absent from the rows
+  const cat = (await t.op("data_catalog", { account: id }, t.ctx.knowledge)) as unknown as { datasets: { collections?: { id: string; droppedColumns?: string[] }[] }[] };
+  assert.deepEqual(cat.datasets[0]?.collections?.find((c) => c.id === "public.customers")?.droppedColumns, ["password_hash"]);
+  assert.ok(!JSON.stringify(page).includes(CANARY), "no secret value in the rows Knowledge gets");
+  assert.ok(!t.fake.sent.some((s) => s.sql.includes("password_hash") && s.sql.includes("::text")), "a secret-looking column is never selected");
+  // no route = the default again, and Knowledge gets nothing from Connect
+  assert.equal(((await t.share(id, "knowledge", "shared")) as unknown as { route: string }).route, "via_observer");
+  assert.equal((await refusal(t.pull(id, {}, t.ctx.knowledge))).code, "not_found");
 });
 
 test("database documents: the row cap per pull and the CSV text cap", () => {

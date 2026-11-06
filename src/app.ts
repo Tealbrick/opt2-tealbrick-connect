@@ -1767,13 +1767,15 @@ export function createConnectApp(env: ConnectEnv): SdkAppDefinition {
         // C373: a database share at `shared` gives the documents dataset (rows as CSV, data_pull). It does not enable a lease:
         // leases stay unshipped (C354a) and need their own decision before a `shared` share can ever mean a lease.
         // C322(6) (Coordinator, C373): every source is ingested by Observer. A database or MCP share with Knowledge is
-        // `via_observer` (the default); `direct` is not offered for it. Observer itself is shared `direct`.
+        // `via_observer` (the default). Observer itself is shared `direct`.
+        // C329(5) / C393 revise this for databases only: the owner may pick `direct` for Knowledge's Foundry (rows as documents,
+        // `data_pull`). MCP servers stay `via_observer` for Knowledge; `direct` is refused for them.
         const routed = database !== null || mcp;
         const route = (str(i.route) ?? (routed && product === "knowledge" ? "via_observer" : "direct")) as ShareRoute;
         if (!SHARE_ROUTES.includes(route)) fail("route_invalid", "Pick direct or via_observer.");
         if (route !== "direct" && !routed) fail("route_invalid", "Only a database or MCP share has a route.");
         if (route === "via_observer" && product !== "knowledge") fail("route_invalid", "A share through Observer is for Knowledge. Share the source with Observer itself as direct.");
-        if (routed && product === "knowledge" && route === "direct" && level !== "none") fail("route_invalid", "Knowledge reads databases and MCP servers through Observer. Share the source with Observer.");
+        if (mcp && product === "knowledge" && route === "direct" && level !== "none") fail("route_invalid", "Knowledge reads MCP servers through Observer. Share the server with Observer.");
         // C240: bind the share to the verified product AND the instance the owner picked, from the CURRENT signed slice.
         // Not listed (not installed, removed, reinstalled, an SDK without companionCallers, an expired slice) = refused.
         const { callers } = dataTargets(ctx);

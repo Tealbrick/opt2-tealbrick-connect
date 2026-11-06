@@ -232,7 +232,7 @@ test("MCP documents: refusals — agent and person, unshared, catalog-only, Know
   await t.share(id, "observer", "available");
   assert.deepEqual(await refusal(t.pull(id)), { code: "scope_denied", httpStatus: 403 });
   await t.share(id, "observer", "shared");
-  // Knowledge: through Observer only (C322(6)); direct is refused; the via_observer share gives Knowledge nothing
+  // Knowledge: through Observer only (C322(6)); direct is still refused for an MCP server (C393 allows it for databases only); the via_observer share gives Knowledge nothing
   assert.equal((await refusal(t.share(id, "knowledge", "shared", { route: "direct" }))).code, "route_invalid");
   const k = (await t.share(id, "knowledge", "shared")) as unknown as { route: string };
   assert.equal(k.route, "via_observer");

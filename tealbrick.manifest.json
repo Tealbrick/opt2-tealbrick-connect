@@ -3317,7 +3317,7 @@
     {
       "id": "account_app_share",
       "title": "Share an account, MCP server or database with an app",
-      "description": "The owner shares one connected chat account, or one database, with one installed app, read only. The share is bound to that app's verified product AND its instance (instance, from the apps that can call Connect); a reinstalled app needs a new share. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (chat) or the table and column names (database), and no messages or rows. shared (chat only today): the app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days). An MCP server is shared the same way (dataset documents: available = collection names and counts, shared = the text documents; never a tool call). A database shared at shared gives its rows as documents (CSV pages, read only); a lease is not offered. route (database and MCP only): Knowledge is always via_observer (only Observer reads the source, C322(6)); Observer is direct. Agents cannot use this.",
+      "description": "The owner shares one connected chat account, or one database, with one installed app, read only. The share is bound to that app's verified product AND its instance (instance, from the apps that can call Connect); a reinstalled app needs a new share. none: not shared (default). available: the app sees the dataset names, kinds, counts and conversation names (chat) or the table and column names (database), and no messages or rows. shared (chat only today): the app may also pull messages (data_pull), by default only those Connect receives from now on; includeHistory adds the log kept before (30 days). An MCP server is shared the same way (dataset documents: available = collection names and counts, shared = the text documents; never a tool call). A database shared at shared gives its rows as documents (CSV pages, read only); a lease is not offered. route (database, MCP): Knowledge defaults to via_observer; a database may be direct for it (C393), an MCP server may not. Observer: direct. Agents cannot use this.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3360,7 +3360,7 @@
               "direct",
               "via_observer"
             ],
-            "description": "Database and MCP shares only. Knowledge: via_observer (the default; direct is refused): only Observer reads the source and Knowledge gets nothing for it. Observer: direct (the default)."
+            "description": "Database and MCP shares only. Knowledge: via_observer (the default): only Observer reads the source and Knowledge gets nothing for it. A database may be shared direct with Knowledge (C393); an MCP server may not (direct is refused). Observer: direct (the default)."
           }
         }
       },
