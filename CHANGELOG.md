@@ -2,6 +2,10 @@
 
 Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.15 (catalog 0.3.1; a first contact works through a tool with a long name, D-C383-JM1; sender bar and tb.access/1 for Governance, C380; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
 
+## Unreleased (C393, implements C329(5); no version bump)
+
+- **A database can be shared directly with Knowledge.** The owner may pick "Directly to Knowledge (rows as documents, read only)" for a database shared with Knowledge, so Knowledge's Foundry reads the rows with `data_pull`. The default stays "Through Observer" (`via_observer`). An MCP server shared with Knowledge stays through Observer only; `direct` is still refused with `route_invalid`. Chat and Observer shares do not change.
+
 ## 0.7.15 (2026-11-01; C383, D-C383-JM1, DEV only, on top of 0.7.14)
 
 - **A first contact works through a tool with a long name.** A send tool answers `first_contact_required` and names `<tool>__first_contact`. The bridge and the SDK refused that name when it had over 48 characters, so a tool with a name over 33 characters (for example an MCP account tool such as `mcp_acme_data_sources_282ebac3_gmail_send_email`) could not make a first contact, and no hold was made. Manifest 0.1.37 takes the 63 characters the spec already allows.

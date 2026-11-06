@@ -201,22 +201,39 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     sslmodeShown = undefined;
   });
 
-  it("C322(6): sends the route with the share: via_observer for Knowledge, direct for Observer; no route select; a chat share sends none", async () => {
+  it("C322(6)/C393: Knowledge gets a route choice for a database (default via_observer); Observer gets none and sends direct; a pick of direct is sent", async () => {
     reset();
     const page = await mount(h(mod.Accounts));
-    assert.equal(page.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'), null, "the direct route is not offered");
+    assert.ok(page.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'), "the route choice is offered for Knowledge");
+    assert.equal(page.host.querySelector('[aria-label="How Observer reaches Shop DB"]'), null, "Observer has no route choice");
     await choose(page.host, "Share Shop DB with Knowledge", "Table names only");
     assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "available", includeHistory: false, instance: K1, route: "via_observer" } }]);
     await page.unmount();
 
+    // C393: the owner picks "Directly to Knowledge" before sharing; the share goes out with route direct
+    reset();
+    const picked = await mount(h(mod.Accounts));
+    await choose(picked.host, "How Knowledge reaches Shop DB", "Directly to Knowledge");
+    assert.deepEqual(stub.sent, [], "the pick alone shares nothing");
+    await choose(picked.host, "Share Shop DB with Knowledge", "Share rows as documents (read only)");
+    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "shared", includeHistory: false, instance: K1, route: "direct" } }]);
+    await picked.unmount();
+
     stub.sent = [];
     stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "available", includeHistory: false, setAt: SETAT, route: "via_observer" }];
     const shared = await mount(h(mod.Accounts));
-    assert.equal(shared.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]'), null);
     assert.equal(shared.host.querySelector('input[type="checkbox"]'), null, "no 30-day history for a database");
     await choose(shared.host, "Share Shop DB with Observer", "Share rows as documents (read only)");
     assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "observer", level: "shared", includeHistory: false, instance: O1, route: "direct" } }]);
     await shared.unmount();
+
+    // a live direct share changes route at once
+    stub.sent = [];
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" }];
+    const live = await mount(h(mod.Accounts));
+    await choose(live.host, "How Knowledge reaches Shop DB", "Through Observer");
+    assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "knowledge", level: "shared", includeHistory: false, instance: K1, route: "via_observer" } }]);
+    await live.unmount();
   });
 
   it("the add form shows the advice, sends the fields once, never shows the password again and says a refusal plainly", async () => {

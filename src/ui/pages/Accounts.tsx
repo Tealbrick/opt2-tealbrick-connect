@@ -800,13 +800,20 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
   const isDb = account.source === "database";
   // C373: databases and MCP servers give the dataset `documents` and are shared with a route
   const routed = isDb || account.source === "mcp";
-  // C322(6): Knowledge reads a database or an MCP server only through Observer; the direct route is not offered to it
-  const routeFor = (app: DataApp): ShareRoute | undefined => (routed ? (app.product === "knowledge" ? "via_observer" : "direct") : undefined);
-  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null) => {
+  // C322(6): Knowledge reads an MCP server only through Observer. C329(5)/C393: for a database the owner may pick
+  // "directly" (default: through Observer). The pick is kept here until a share exists, then the share's route holds it.
+  const [routePick, setRoutePick] = useState<Record<string, ShareRoute>>({});
+  const routeFor = (app: DataApp): ShareRoute | undefined => {
+    if (!routed) return undefined;
+    if (app.product !== "knowledge") return "direct";
+    if (!isDb) return "via_observer";
+    return routePick[app.product] ?? share(app)?.route ?? "via_observer";
+  };
+  const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null, routeOverride?: ShareRoute) => {
     setBusy(app.product);
     setError(null);
     try {
-      await accountAppShare(account.id, app.product, level, includeHistory, instance, level === "none" ? undefined : routeFor(app));
+      await accountAppShare(account.id, app.product, level, includeHistory, instance, level === "none" ? undefined : (routeOverride ?? routeFor(app)));
       await onChanged();
     } catch (e) {
       setError(`${app.name}: ${errorText(e)}`);
@@ -835,7 +842,8 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
         const target = listed ? instances.find((i) => i.instance === bound?.instance) : (instances.find((i) => i.instance === pick) ?? instances[0]);
         const includeHistory = listed ? (bound?.includeHistory ?? false) : false;
         const isBusy = busy === app.product;
-        const route: ShareRoute = bound?.route ?? routeFor(app) ?? "direct";
+        const route: ShareRoute = (listed ? bound?.route : undefined) ?? routeFor(app) ?? "direct";
+        const routeChoice = isDb && app.product === "knowledge";
         const options = (isDb ? DB_SHARE_OPTIONS : routed ? MCP_SHARE_OPTIONS : SHARE_OPTIONS).map((o) => (o.value !== "none" && !target ? { ...o, disabled: true } : o));
         const where = target?.ownInfra ? " (your own server)" : "";
         const setLevel = (v: ShareLevel) => {
@@ -862,6 +870,23 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
                       // moving a live share to another instance is a new share: history starts unticked
                       if (v !== bound?.instance) void change(app, level, false, v);
                     } else setPicked((p) => ({ ...p, [app.product]: v }));
+                  }}
+                />
+              </>
+            ) : null}
+            {routeChoice ? (
+              <>
+                <span className="tb-soft">How Knowledge reaches {account.label}</span>
+                <Select
+                  aria-label={`How Knowledge reaches ${account.label}`}
+                  options={KNOWLEDGE_DB_ROUTES}
+                  value={route}
+                  disabled={isBusy || unlisted || unknown}
+                  onValueChange={(v) => {
+                    const next = v as ShareRoute;
+                    setRoutePick((p) => ({ ...p, [app.product]: next }));
+                    // a live share changes route at once (its open leases end on the server); with none, the pick waits for a level
+                    if (listed && level !== "none" && target && next !== bound?.route) void change(app, level, false, bound?.instance ?? target.instance, next);
                   }}
                 />
               </>
@@ -905,6 +930,12 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
   );
 }
 
+/** C393: the two routes an owner can pick for a database shared with Knowledge. */
+const KNOWLEDGE_DB_ROUTES: { value: ShareRoute; label: string }[] = [
+  { value: "via_observer", label: "Through Observer (default)" },
+  { value: "direct", label: "Directly to Knowledge (rows as documents, read only)" },
+];
+
 /** Two instances with the same name stay apart: where each runs and the end of its id. */
 function instanceLabel(i: { instance: string; name: string; provider: string | null; ownInfra: boolean }): string {
   const where = i.ownInfra ? "your own server" : (i.provider ?? "unknown host");
@@ -915,7 +946,7 @@ function instanceLabel(i: { instance: string; name: string; provider: string | n
 function documentsShareSentence(level: ShareLevel, route: ShareRoute, app: string, database: boolean): string {
   const what = database ? "this database" : "this server";
   if (level === "none") return `This app sees nothing of ${what}. Pick a level to share; you can revoke it at any time.`;
-  if (route === "via_observer") return `${app} reads ${what} only through Observer. Share it with Observer too; ${app} gets nothing from Connect directly.`;
+  if (route === "via_observer") return `${app} reads ${what} only through Observer. Share it with Observer too; ${app} gets nothing from Connect directly.${database && app === "Knowledge" ? " You can also pick “Directly to Knowledge”." : ""}`;
   if (level === "available")
     return database
       ? "This app sees the names of the tables and views, their columns and types, and about how many rows each holds. It sees no values. You can stop sharing at any time."
