@@ -55,7 +55,7 @@ export interface AppShare {
   /** the owner included the log kept before the share began (30 days) */
   includeHistory: boolean;
   setAt: string;
-  /** database shares only (C336): direct = the app may lease; via_observer = only Observer reads it */
+  /** database shares only (C336): direct = the app reads rows itself (data_pull); leases stay unshipped; via_observer = only Observer reads it */
   route?: ShareRoute;
 }
 

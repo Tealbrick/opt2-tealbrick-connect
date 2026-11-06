@@ -227,6 +227,15 @@ describe("Accounts page: database accounts (C336 RQ-3)", () => {
     assert.deepEqual(stub.sent, [{ op: "account_app_share", input: { account: "cdb_1", product: "observer", level: "shared", includeHistory: false, instance: O1, route: "direct" } }]);
     await shared.unmount();
 
+    // a pick is cleared once a share succeeds: the live share's route (changed elsewhere) wins afterwards
+    reset();
+    const stale = await mount(h(mod.Accounts));
+    await choose(stale.host, "How Knowledge reaches Shop DB", "Directly to Knowledge");
+    stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "via_observer" }];
+    await choose(stale.host, "Share Shop DB with Knowledge", "Share rows as documents (read only)");
+    assert.match(stale.host.querySelector('[aria-label="How Knowledge reaches Shop DB"]')?.textContent ?? "", /Through Observer/u, "the stale pick no longer wins");
+    await stale.unmount();
+
     // a live direct share changes route at once
     stub.sent = [];
     stub.shares = [{ product: "knowledge", instance: K1, current: true, level: "shared", includeHistory: false, setAt: SETAT, route: "direct" }];

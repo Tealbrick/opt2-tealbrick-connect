@@ -807,13 +807,18 @@ function AppSharing({ account, apps, callersKnown, onChanged }: { account: Accou
     if (!routed) return undefined;
     if (app.product !== "knowledge") return "direct";
     if (!isDb) return "via_observer";
-    return routePick[app.product] ?? share(app)?.route ?? "via_observer";
+    return routePick[app.product] ?? share(app)?.route ?? "via_observer"; // a pending pick wins; it is cleared once a share succeeds
   };
   const change = async (app: DataApp, level: ShareLevel, includeHistory: boolean, instance: string | null, routeOverride?: ShareRoute) => {
     setBusy(app.product);
     setError(null);
     try {
       await accountAppShare(account.id, app.product, level, includeHistory, instance, level === "none" ? undefined : (routeOverride ?? routeFor(app)));
+      // the live share holds the route now; a stale pick must not win over a later change made elsewhere
+      setRoutePick((p) => {
+        const { [app.product]: _gone, ...rest } = p;
+        return rest;
+      });
       await onChanged();
     } catch (e) {
       setError(`${app.name}: ${errorText(e)}`);
@@ -946,7 +951,7 @@ function instanceLabel(i: { instance: string; name: string; provider: string | n
 function documentsShareSentence(level: ShareLevel, route: ShareRoute, app: string, database: boolean): string {
   const what = database ? "this database" : "this server";
   if (level === "none") return `This app sees nothing of ${what}. Pick a level to share; you can revoke it at any time.`;
-  if (route === "via_observer") return `${app} reads ${what} only through Observer. Share it with Observer too; ${app} gets nothing from Connect directly.${database && app === "Knowledge" ? " You can also pick “Directly to Knowledge”." : ""}`;
+  if (route === "via_observer") return `${app} reads ${what} only through Observer. Share it with Observer too; ${app} gets nothing from Connect directly.${database && app === "Knowledge" ? " You can also pick “Directly to Knowledge”. Rows Knowledge already pulled while the share was direct stay with Knowledge." : ""}`;
   if (level === "available")
     return database
       ? "This app sees the names of the tables and views, their columns and types, and about how many rows each holds. It sees no values. You can stop sharing at any time."

@@ -335,6 +335,20 @@ test("route via_observer (C322(6): the default for Knowledge, direct is not offe
   assert.equal((await refusal(t.lease(id, DATASETS, {}, t.ctx.knowledge))).code, "not_found");
 });
 
+test("C393: Knowledge shared direct at shared gets no lease and no credential; a route change resets the lease flag", async () => {
+  const t = await setup();
+  const id = await t.connect();
+  await t.plainShare(id, "knowledge", "shared", { route: "direct" });
+  const denied = await refusal(t.lease(id, DATASETS, {}, t.ctx.knowledge));
+  assert.equal(denied.code, "lease_unavailable");
+  assert.ok(!denied.message.includes(CANARY));
+  assert.equal(t.db.prepare("SELECT COUNT(*) AS n FROM connect_data_leases").get()?.n, 0, "no lease was issued");
+  // the lease flag resets when the route changes
+  t.db.prepare("UPDATE connect_db_shares SET lease = 1 WHERE account_id = ? AND product = 'knowledge'").run(id);
+  await t.plainShare(id, "knowledge", "shared");
+  assert.equal(t.db.prepare("SELECT lease FROM connect_db_shares WHERE product = 'knowledge'").get()?.lease, 0);
+});
+
 test("account_app_share on a database: levels, routes and refusals", async () => {
   const t = await setup();
   const id = await t.connect();

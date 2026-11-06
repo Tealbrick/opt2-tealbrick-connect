@@ -254,6 +254,11 @@ test("database documents (C393): a database shared directly with Knowledge answe
   assert.deepEqual(page.rows.map((r) => r.id), ["public.customers:1"]);
   const line = t.db.prepare("SELECT outcome, product FROM connect_data_audit WHERE op = 'data_pull' ORDER BY id DESC LIMIT 1").get();
   assert.deepEqual({ ...line }, { outcome: "ok", product: "knowledge" });
+  // secret-looking columns: named in Knowledge's catalog (names only), never selected, absent from the rows
+  const cat = (await t.op("data_catalog", { account: id }, t.ctx.knowledge)) as unknown as { datasets: { collections?: { id: string; droppedColumns?: string[] }[] }[] };
+  assert.deepEqual(cat.datasets[0]?.collections?.find((c) => c.id === "public.customers")?.droppedColumns, ["password_hash"]);
+  assert.ok(!JSON.stringify(page).includes(CANARY), "no secret value in the rows Knowledge gets");
+  assert.ok(!t.fake.sent.some((s) => s.sql.includes("password_hash") && s.sql.includes("::text")), "a secret-looking column is never selected");
   // no route = the default again, and Knowledge gets nothing from Connect
   assert.equal(((await t.share(id, "knowledge", "shared")) as unknown as { route: string }).route, "via_observer");
   assert.equal((await refusal(t.pull(id, {}, t.ctx.knowledge))).code, "not_found");
