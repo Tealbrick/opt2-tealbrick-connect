@@ -1,8 +1,13 @@
 # Changelog
 
-Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.15 (catalog 0.3.1; a first contact works through a tool with a long name, D-C383-JM1; sender bar and tb.access/1 for Governance, C380; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
+Versions follow `package.json` and `tealbrick.manifest.json` (product id `connect`). Current version: 0.7.16-dev.1 (kit ui 0.7.2: the access list shows 3 rows with View more; a database share direct to Knowledge, C393; catalog 0.3.1; a first contact works through a tool with a long name, D-C383-JM1; sender bar and tb.access/1 for Governance, C380; Rules holds take effect on workflow outward calls, C378; write shares for workflow apps, C366b; contacts_list for Governance, G-5 C373; tool shares write the SDK scope row too; accounts shared with a workflow app for read tools, C373 Jarvis; MCP hold policy per server, C373 Jarvis T3; bring your own API, C373 Jarvis T2; curated Composio policies for social, ads, messaging, CRM, Sheets and WordPress.com, C373 Jarvis; documents dataset 0.7.5; readable hold cards, Postiz draft form, More details, C368/C369; first-contact hold interim, C354a; database accounts and catalog, C336 RQ-3; IN-2 chat buttons, C343a Buzz reactions; conformance 0.1.29).
 
-## Unreleased (C393, implements C329(5); no version bump)
+## 0.7.16-dev.1 (2026-11-10)
+
+- **The access list on the Accounts page is short by default.** "What differs from the default" shows the first 3 rows and a **View more** button (kit ui 0.7.2). A search shows every match, up to 200 rows at a time. View more moves the keyboard to the list head.
+- Also in this build: the C393 change below (a database shared directly with Knowledge).
+
+### C393 (implements C329(5))
 
 - **A database can be shared directly with Knowledge.** The owner may pick "Directly to Knowledge (rows as documents, read only)" for a database shared with Knowledge, so Knowledge's Foundry reads the rows with `data_pull`. The default stays "Through Observer" (`via_observer`). An MCP server shared with Knowledge stays through Observer only; `direct` is still refused with `route_invalid`. Chat and Observer shares do not change.
 
